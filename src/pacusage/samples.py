@@ -82,11 +82,7 @@ def read_and_validate_samples(
             raise PacusageError(
                 f"Condition {condition!r} references absent control condition {control!r}."
             )
-        if control not in control_conditions:
-            raise PacusageError(
-                f"Condition {condition!r} references {control!r}, but {control!r} is not "
-                "a control condition with blank control fields."
-            )
+    _validate_control_graph(mapping)
     unreferenced = sorted(
         control for control in control_conditions if control not in set(mapping.values())
     )
@@ -197,6 +193,21 @@ def _validate_sample_choice(sample_id: str, field: str, value: str, choices: set
         )
 
 
+def _validate_control_graph(mapping: dict[str, str]) -> None:
+    for start in mapping:
+        trail: list[str] = []
+        current = start
+        while mapping[current]:
+            if current in trail:
+                cycle_start = trail.index(current)
+                cycle = trail[cycle_start:] + [current]
+                raise PacusageError(
+                    "Control relationships contain a cycle: " + " -> ".join(cycle) + "."
+                )
+            trail.append(current)
+            current = mapping[current]
+
+
 def write_normalized_samples(samples: Iterable[Sample], path: str | Path) -> None:
     rows = [sample.as_dict() for sample in samples]
     base = [
@@ -222,11 +233,20 @@ def write_normalized_samples(samples: Iterable[Sample], path: str | Path) -> Non
 
 def control_mapping_rows(samples: Iterable[Sample]) -> list[dict[str, str]]:
     mapping = {sample.condition: sample.control_condition for sample in samples}
+    referenced_by_other = {
+        control for condition, control in mapping.items() if condition != control
+    }
     return [
         {
             "condition": condition,
             "control_condition": control,
-            "role": "control" if condition == control else "treatment",
+            "role": (
+                "control"
+                if condition == control
+                else "treatment_and_control"
+                if condition in referenced_by_other
+                else "treatment"
+            ),
         }
         for condition, control in sorted(mapping.items())
     ]

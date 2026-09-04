@@ -95,6 +95,16 @@ def main() -> None:
         "VEH_2": ({(400, "+"): 8, (300, "+"): 4, (800, "-"): 8}, True, False),
         "TRB_1": ({(400, "+"): 3, (300, "+"): 8, (800, "-"): 8}, False, False),
         "TRB_2": ({(400, "+"): 4, (300, "+"): 8, (800, "-"): 8}, False, False),
+        "RES_1": (
+            {(400, "+"): 7, (300, "+"): 2, (350, "+"): 8, (800, "-"): 8},
+            False,
+            False,
+        ),
+        "RES_2": (
+            {(400, "+"): 8, (300, "+"): 2, (350, "+"): 9, (800, "-"): 8},
+            False,
+            False,
+        ),
     }
     paths = {
         sample_id: write_alignment(sample_id, sites, cram, unsorted)
@@ -109,6 +119,8 @@ def main() -> None:
         ("VEH_2", "Vehicle", ""),
         ("TRB_1", "TreatmentB", "Vehicle"),
         ("TRB_2", "TreatmentB", "Vehicle"),
+        ("RES_1", "Rescue", "TreatmentA"),
+        ("RES_2", "Rescue", "TreatmentA"),
     ]
     with (ROOT / "samples.tsv").open("w") as handle:
         handle.write("sample_id\talignment\tcondition\tcontrol\treplicate\n")

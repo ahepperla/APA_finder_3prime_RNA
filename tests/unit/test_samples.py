@@ -4,7 +4,7 @@ import pytest
 
 from pacusage.errors import PacusageError
 from pacusage.parameters import normalize_parameters
-from pacusage.samples import read_and_validate_samples
+from pacusage.samples import control_mapping_rows, read_and_validate_samples
 
 
 def parameters(tmp_path: Path) -> dict:
@@ -44,7 +44,7 @@ def test_control_mapping_and_relative_paths(tmp_path: Path) -> None:
     assert samples[0].alignment == str((tmp_path / "c1.bam").resolve())
 
 
-def test_treatment_cannot_reference_treatment(tmp_path: Path) -> None:
+def test_nested_control_chain_is_valid(tmp_path: Path) -> None:
     names = ["a1.bam", "a2.bam", "b1.bam", "b2.bam", "c1.bam", "c2.bam"]
     touch_alignments(tmp_path, names)
     sheet = tmp_path / "samples.tsv"
@@ -54,7 +54,23 @@ def test_treatment_cannot_reference_treatment(tmp_path: Path) -> None:
         "B1\tb1.bam\tB\tA\nB2\tb2.bam\tB\tA\n"
         "C1\tc1.bam\tC\tB\nC2\tc2.bam\tC\tB\n"
     )
-    with pytest.raises(PacusageError, match="not a control condition"):
+    samples, _ = read_and_validate_samples(sheet, parameters(tmp_path))
+    mapping = {row["condition"]: row for row in control_mapping_rows(samples)}
+    assert mapping["A"]["role"] == "control"
+    assert mapping["B"]["role"] == "treatment_and_control"
+    assert mapping["C"]["role"] == "treatment"
+
+
+def test_control_cycle_is_rejected(tmp_path: Path) -> None:
+    names = ["a1.bam", "a2.bam", "b1.bam", "b2.bam"]
+    touch_alignments(tmp_path, names)
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "sample_id\talignment\tcondition\tcontrol\n"
+        "A1\ta1.bam\tA\tB\nA2\ta2.bam\tA\tB\n"
+        "B1\tb1.bam\tB\tA\nB2\tb2.bam\tB\tA\n"
+    )
+    with pytest.raises(PacusageError, match=r"cycle: A -> B -> A"):
         read_and_validate_samples(sheet, parameters(tmp_path))
 
 

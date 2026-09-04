@@ -129,9 +129,12 @@ Optional columns include `replicate`, `batch`, `donor`, `layout`,
 `strandedness`, `library_profile`, and `evidence_source`. Additional columns
 can be included in the model by naming them in `model_covariates`.
 
-Every condition must have one consistent control value. A blank control marks
-a control condition; every such condition must be referenced by at least one
-treatment. By default every modeled condition needs two biological replicates.
+Every condition must have one consistent direct control value. A blank control
+marks a root control condition. Nested comparisons are supported: a condition
+may be tested against its own control and also serve as the control for another
+condition, such as `WT -> disease_vehicle -> disease_drug`. Control
+relationships must be acyclic. By default every modeled condition needs two
+biological replicates.
 
 ## Coordinates and Interpretation
 

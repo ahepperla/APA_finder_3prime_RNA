@@ -7,3 +7,5 @@ VEH_1	VEH_1.bam	Vehicle		5
 VEH_2	VEH_2.cram	Vehicle		6
 TRB_1	TRB_1.bam	TreatmentB	Vehicle	7
 TRB_2	TRB_2.bam	TreatmentB	Vehicle	8
+RES_1	RES_1.bam	Rescue	TreatmentA	9
+RES_2	RES_2.bam	Rescue	TreatmentA	10

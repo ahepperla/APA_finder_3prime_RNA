@@ -386,9 +386,16 @@ fit_family <- function(
   atlas_checksum
 ) {
   control <- family
-  family_samples <- sample_rows[sample_rows$control_condition == family, , drop = FALSE]
-  treatments <- sort(setdiff(unique(family_samples$condition), control))
+  treatments <- sort(unique(sample_rows$condition[
+    sample_rows$control_condition == family &
+      sample_rows$condition != family
+  ]))
   if (!length(treatments)) return(NULL)
+  family_samples <- sample_rows[
+    sample_rows$condition %in% c(control, treatments),
+    ,
+    drop = FALSE
+  ]
   family_samples$condition <- factor(
     family_samples$condition,
     levels = c(control, treatments)
@@ -673,9 +680,22 @@ fit_motif_preferences <- function(scores, samples, params, output_dir, suffix = 
     }
   }
   merged <- merge(scores, samples, by = "sample_id")
-  for (family in unique(merged$control_condition)) {
-    family_rows <- merged[merged$control_condition == family, , drop = FALSE]
-    treatments <- sort(setdiff(unique(family_rows$condition), family))
+  comparison_map <- unique(
+    samples[
+      samples$condition != samples$control_condition,
+      c("condition", "control_condition"),
+      drop = FALSE
+    ]
+  )
+  for (family in unique(comparison_map$control_condition)) {
+    treatments <- sort(comparison_map$condition[
+      comparison_map$control_condition == family
+    ])
+    family_rows <- merged[
+      merged$condition %in% c(family, treatments),
+      ,
+      drop = FALSE
+    ]
     for (treatment in treatments) {
       subset_rows <- family_rows[
         family_rows$condition %in% c(family, treatment) &
@@ -734,7 +754,9 @@ samples <- read_tsv(arguments$samples)
 counts <- read_tsv(arguments$counts)
 atlas <- read_tsv(arguments$atlas)
 
-families <- unique(samples$control_condition)
+families <- unique(samples$control_condition[
+  samples$condition != samples$control_condition
+])
 all_precision <- list()
 all_results <- list()
 atlas_checksum <- unname(tools::md5sum(arguments$atlas))

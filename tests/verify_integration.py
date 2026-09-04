@@ -16,11 +16,15 @@ def main() -> None:
     pau = pd.read_csv(ROOT / "counts" / "observed_pau.tsv.gz", sep="\t")
     treatment = pd.read_csv(ROOT / "statistics" / "TreatmentA_vs_DMSO.pacs.tsv.gz", sep="\t")
     second_family = pd.read_csv(ROOT / "statistics" / "TreatmentB_vs_Vehicle.pacs.tsv.gz", sep="\t")
+    nested_family = pd.read_csv(
+        ROOT / "statistics" / "Rescue_vs_TreatmentA.pacs.tsv.gz", sep="\t"
+    )
     gained = treatment[treatment["pac_id"].astype(str).str.endswith(".350")].iloc[0]
     assert gained["delta_pau"] > 0.2
     assert gained["event_type"] in {"gained", "gained_candidate"}
     assert gained["bootstrap_successes"] >= 16
     assert len(second_family) >= 2
+    assert len(nested_family) >= 2
     assert "primary_pas_motif_rna" in treatment
     assert "AAUAAA" in set(treatment["primary_pas_motif_rna"].dropna())
 
