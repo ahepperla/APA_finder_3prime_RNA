@@ -131,6 +131,12 @@
         "slurm_queue_size": {"type": "integer", "minimum": 1, "default": 100},
         "slurm_submit_rate": {"type": "string", "default": "10 sec"},
         "scratch": {"type": ["string", "null"], "default": null},
+        "bind_paths": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Host directories explicitly bind-mounted into Apptainer."
+        },
         "container": {"type": "string", "default": "containers/pacusage.sif"}
       }
     }

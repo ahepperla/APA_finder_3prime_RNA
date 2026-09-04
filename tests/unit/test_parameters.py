@@ -21,3 +21,4 @@ def test_command_values_override_defaults() -> None:
     )
     assert params["min_mapq"] == 30
     assert params["pac_cluster_radius"] == 12
+    assert params["bind_paths"] == []

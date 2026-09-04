@@ -10,3 +10,6 @@ strandedness: auto
 evidence_source: auto
 endpoint_model: auto
 
+# Add shared filesystem roots when using Apptainer on an HPC.
+# bind_paths:
+#   - /vast

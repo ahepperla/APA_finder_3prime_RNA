@@ -78,6 +78,18 @@ when using a privileged build service.
 The SIF and all analysis inputs can then be moved to an offline cluster. Set
 `container` in YAML when the image is stored elsewhere.
 
+Some HPC installations do not automatically expose shared filesystems inside
+Apptainer. Add their host roots to `analysis.yaml`:
+
+```yaml
+container: /project/software/PACusage/containers/pacusage.sif
+bind_paths:
+  - /vast
+```
+
+PACusage passes each entry as an Apptainer bind mount with the same host and
+container path. Nextflow work directories are mounted separately.
+
 Explicit command-line values override YAML values:
 
 ```bash

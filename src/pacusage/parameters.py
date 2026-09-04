@@ -81,6 +81,7 @@ DEFAULTS: dict[str, Any] = {
     "save_prepared_reference": False,
     "save_prepared_alignments": False,
     "save_intermediates": False,
+    "bind_paths": [],
 }
 
 REQUIRED = ("input", "assembly", "fasta", "gtf")
@@ -134,6 +135,8 @@ def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
         raise PacusageError("min_replicates_per_condition must be at least 1.")
     if not isinstance(params["model_covariates"], list):
         raise PacusageError("model_covariates must be a YAML list.")
+    if not isinstance(params["bind_paths"], list):
+        raise PacusageError("bind_paths must be a YAML list.")
     return params
 
 
