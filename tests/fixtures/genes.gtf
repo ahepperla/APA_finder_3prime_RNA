@@ -1,0 +1,4 @@
+chr1	fixture	gene	101	400	.	+	.	gene_id "gene_plus"; gene_name "GenePlus";
+chr1	fixture	exon	101	400	.	+	.	gene_id "gene_plus"; transcript_id "plus_tx";
+chr1	fixture	gene	801	1100	.	-	.	gene_id "gene_minus"; gene_name "GeneMinus";
+chr1	fixture	exon	801	1100	.	-	.	gene_id "gene_minus"; transcript_id "minus_tx";

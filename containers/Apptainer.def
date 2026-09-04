@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.11.3-0
+
+%files
+    envs/pacusage.yml /opt/pacusage/environment.yml
+    pyproject.toml /opt/pacusage/pyproject.toml
+    README.md /opt/pacusage/README.md
+    LICENSE /opt/pacusage/LICENSE
+    src /opt/pacusage/src
+
+%post
+    micromamba env create -y -n pacusage -f /opt/pacusage/environment.yml
+    /opt/conda/envs/pacusage/bin/pip install --no-deps /opt/pacusage
+    micromamba clean --all --yes
+
+%environment
+    export PATH=/opt/conda/envs/pacusage/bin:$PATH
+    export LC_ALL=C
+
+%runscript
+    exec "$@"
+

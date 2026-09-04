@@ -1,0 +1,5 @@
+sample_id	alignment	condition	control	replicate
+DMSO_1	/data/dmso_1.bam	DMSO		1
+DMSO_2	/data/dmso_2.bam	DMSO		2
+TRA_1	/data/treatment_a_1.bam	TreatmentA	DMSO	1
+TRA_2	/data/treatment_a_2.bam	TreatmentA	DMSO	2

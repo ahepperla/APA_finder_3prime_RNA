@@ -1,0 +1,5 @@
+sample_id	alignment	condition	control	library_profile
+DMSO_1	DMSO_1.bam	DMSO		plasmidsaurus_3prime
+DMSO_2	DMSO_2.bam	DMSO		plasmidsaurus_3prime
+TRA_1	TRA_1.bam	TreatmentA	DMSO	plasmidsaurus_3prime
+TRA_2	TRA_2.bam	TreatmentA	DMSO	plasmidsaurus_3prime

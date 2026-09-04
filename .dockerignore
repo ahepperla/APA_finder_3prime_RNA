@@ -1,0 +1,7 @@
+.git
+.nextflow*
+.venv
+.Rlib
+work
+results*
+tests

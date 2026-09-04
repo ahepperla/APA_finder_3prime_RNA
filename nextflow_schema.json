@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://github.com/pacusage/pacusage/blob/main/nextflow_schema.json",
+  "title": "PACusage parameters",
+  "description": "Condition-blind PAC discovery and differential polyadenylation usage analysis.",
+  "type": "object",
+  "definitions": {
+    "input_output": {
+      "title": "Input and output",
+      "type": "object",
+      "required": ["input", "assembly", "fasta", "gtf"],
+      "properties": {
+        "input": {"type": "string", "format": "file-path", "description": "TSV sample sheet."},
+        "outdir": {"type": "string", "default": "results", "description": "Output directory."},
+        "assembly": {"type": "string", "description": "Genome assembly label used in PAC IDs."},
+        "fasta": {"type": "string", "format": "file-path", "description": "Genome FASTA."},
+        "gtf": {"type": "string", "format": "file-path", "description": "GTF or GFF3 annotation."},
+        "known_pacs": {"type": ["string", "null"], "format": "file-path", "default": null},
+        "chromosome_aliases": {"type": ["string", "null"], "format": "file-path", "default": null}
+      }
+    },
+    "protocol": {
+      "title": "Protocol and evidence",
+      "type": "object",
+      "properties": {
+        "layout": {"type": "string", "enum": ["auto", "SE", "PE"], "default": "auto"},
+        "strandedness": {"type": "string", "enum": ["auto", "forward", "reverse"], "default": "auto"},
+        "library_profile": {
+          "type": "string",
+          "enum": ["generic_3prime", "plasmidsaurus_3prime", "exact_boundary"],
+          "default": "generic_3prime"
+        },
+        "endpoint_model": {
+          "type": "string",
+          "enum": ["auto", "exact_boundary", "proximal_tag"],
+          "default": "auto"
+        },
+        "evidence_source": {
+          "type": "string",
+          "enum": ["auto", "read_3p", "read_5p", "fragment_3p", "polyA_junction"],
+          "default": "auto"
+        },
+        "min_mapq": {"type": "integer", "minimum": 0, "default": 20},
+        "require_unique": {"type": "boolean", "default": true},
+        "require_proper_pair": {"type": "boolean", "default": true},
+        "exclude_duplicates": {"type": "boolean", "default": true},
+        "excluded_contigs": {"type": "array", "items": {"type": "string"}, "default": []}
+      }
+    },
+    "calibration": {
+      "title": "Replication and calibration",
+      "type": "object",
+      "properties": {
+        "min_replicates_per_condition": {"type": "integer", "minimum": 1, "default": 2},
+        "insufficient_replicates_policy": {"type": "string", "enum": ["error", "warn"], "default": "error"},
+        "strand_min_informative_fragments": {"type": "integer", "minimum": 1, "default": 10000},
+        "strand_max_sampled_fragments": {"type": "integer", "minimum": 1, "default": 200000},
+        "strand_decision_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.8},
+        "calibration_min_genes": {"type": "integer", "minimum": 1, "default": 100},
+        "calibration_max_distance": {"type": "integer", "minimum": 1, "default": 1000},
+        "calibration_quantile_low": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.05},
+        "calibration_quantile_high": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.95},
+        "calibration_min_kernel_correlation": {"type": "number", "minimum": -1, "maximum": 1, "default": 0.8},
+        "calibration_min_model_margin": {"type": "number", "minimum": 0, "default": 0.1},
+        "exact_max_median_abs_offset": {"type": "number", "minimum": 0, "default": 2},
+        "exact_max_central_width": {"type": "number", "minimum": 0, "default": 12},
+        "exact_min_boundary_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
+        "proximal_min_median_upstream_offset": {"type": "number", "minimum": 0, "default": 3}
+      }
+    },
+    "discovery": {
+      "title": "PAC discovery and annotation",
+      "type": "object",
+      "properties": {
+        "pac_seed_radius": {"type": "integer", "minimum": 0, "default": 2},
+        "pac_cluster_radius": {"type": "integer", "minimum": 0, "default": 12},
+        "pac_min_total_count": {"type": "integer", "minimum": 1, "default": 10},
+        "pac_min_sample_count": {"type": "integer", "minimum": 1, "default": 2},
+        "pac_min_supporting_samples": {"type": "integer", "minimum": 1, "default": 2},
+        "known_pac_rescue_total": {"type": "integer", "minimum": 1, "default": 5},
+        "known_pac_match_radius": {"type": "integer", "minimum": 0, "default": 12},
+        "proximal_kernel_overlap_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
+        "proximal_assignment_likelihood_ratio": {"type": "number", "minimum": 1, "default": 3},
+        "pac_coordinate_bootstrap_replicates": {"type": "integer", "minimum": 0, "default": 200},
+        "max_downstream_distance": {"type": "integer", "minimum": 0, "default": 5000},
+        "pas_scan_upstream_far": {"type": "integer", "minimum": 1, "default": 50},
+        "pas_scan_upstream_near": {"type": "integer", "minimum": 0, "default": 5},
+        "pas_core_upstream_far": {"type": "integer", "minimum": 1, "default": 35},
+        "pas_core_upstream_near": {"type": "integer", "minimum": 0, "default": 10},
+        "pas_motif_catalog": {"type": ["string", "null"], "format": "file-path", "default": null},
+        "internal_priming_window": {"type": "integer", "minimum": 1, "default": 20},
+        "internal_priming_max_a_run": {"type": "integer", "minimum": 0, "default": 6},
+        "internal_priming_max_a_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.6}
+      }
+    },
+    "statistics": {
+      "title": "Statistical analysis",
+      "type": "object",
+      "properties": {
+        "min_gene_total": {"type": "integer", "minimum": 1, "default": 20},
+        "min_site_count": {"type": "integer", "minimum": 1, "default": 5},
+        "min_site_usage": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.01},
+        "min_test_supporting_samples": {"type": "integer", "minimum": 1, "default": 2},
+        "model_covariates": {"type": "array", "items": {"type": "string"}, "default": []},
+        "gene_fdr": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.05},
+        "site_fdr": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.05},
+        "min_abs_delta_pau": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.1},
+        "dm_bootstrap_replicates": {"type": "integer", "minimum": 0, "default": 200},
+        "dm_bootstrap_min_success_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.8},
+        "dm_zero_sensitivity_repeats": {"type": "integer", "minimum": 1, "default": 5},
+        "dm_zero_max_delta_pau_spread": {"type": "number", "minimum": 0, "default": 0.02},
+        "random_seed": {"type": "integer", "default": 1729},
+        "event_min_treatment_pau": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.05},
+        "event_max_control_pau": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.01},
+        "event_min_supporting_samples": {"type": "integer", "minimum": 1, "default": 2},
+        "motif_preference_min_genes": {"type": "integer", "minimum": 1, "default": 50},
+        "motif_kmer_length": {"type": "integer", "minimum": 1, "default": 6},
+        "run_kmer_enrichment": {"type": "boolean", "default": true}
+      }
+    },
+    "execution": {
+      "title": "Execution and publication",
+      "type": "object",
+      "properties": {
+        "save_prepared_reference": {"type": "boolean", "default": false},
+        "save_prepared_alignments": {"type": "boolean", "default": false},
+        "save_intermediates": {"type": "boolean", "default": false},
+        "slurm_account": {"type": ["string", "null"], "default": null},
+        "slurm_partition": {"type": ["string", "null"], "default": null},
+        "slurm_qos": {"type": ["string", "null"], "default": null},
+        "slurm_queue_size": {"type": "integer", "minimum": 1, "default": 100},
+        "slurm_submit_rate": {"type": "string", "default": "10 sec"},
+        "scratch": {"type": ["string", "null"], "default": null},
+        "container": {"type": "string", "default": "containers/pacusage.sif"}
+      }
+    }
+  },
+  "allOf": [
+    {"$ref": "#/definitions/input_output"},
+    {"$ref": "#/definitions/protocol"},
+    {"$ref": "#/definitions/calibration"},
+    {"$ref": "#/definitions/discovery"},
+    {"$ref": "#/definitions/statistics"},
+    {"$ref": "#/definitions/execution"}
+  ]
+}

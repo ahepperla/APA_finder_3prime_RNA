@@ -1,0 +1,12 @@
+input: samples.tsv
+outdir: results
+assembly: GRCh38
+fasta: /reference/GRCh38.fa
+gtf: /reference/gencode.gtf
+
+library_profile: generic_3prime
+layout: auto
+strandedness: auto
+evidence_source: auto
+endpoint_model: auto
+

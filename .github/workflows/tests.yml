@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - run: ruff check src tests
+      - run: pytest
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: envs/test.yml
+          activate-environment: pacusage-test
+          auto-activate-base: false
+      - uses: nf-core/setup-nextflow@v2
+        with:
+          version: "24.04.4"
+      - shell: bash -el {0}
+        run: |
+          pip install --no-deps -e .
+          tests/run_nextflow.sh
