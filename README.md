@@ -17,7 +17,7 @@ report.
 
 - Nextflow 24.04 or newer
 - Java 17 or newer
-- Conda/Mamba, or Apptainer
+- Conda/Mamba for the `conda` profile, or Apptainer for the `apptainer` profile
 - A POSIX-like execution environment
 
 Read trimming, alignment, and deduplication happen before PACusage.
@@ -67,8 +67,13 @@ nextflow run /path/to/pacusage \
 Build the default Apptainer image once on a networked system:
 
 ```bash
-apptainer build containers/pacusage.sif containers/Apptainer.def
+apptainer build --fakeroot containers/pacusage.sif containers/Apptainer.def
 ```
+
+The build host does not need Conda, Mamba, or micromamba. The Miniforge base
+image supplies Conda inside the build. Apptainer, network access, and either
+fakeroot support or privileged build access are required. Omit `--fakeroot`
+when using a privileged build service.
 
 The SIF and all analysis inputs can then be moved to an offline cluster. Set
 `container` in YAML when the image is stored elsewhere.

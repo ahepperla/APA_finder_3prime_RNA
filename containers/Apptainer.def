@@ -9,9 +9,10 @@ From: condaforge/miniforge3:24.11.3-0
     src /opt/pacusage/src
 
 %post
-    micromamba env create -y -n pacusage -f /opt/pacusage/environment.yml
-    /opt/conda/envs/pacusage/bin/pip install --no-deps /opt/pacusage
-    micromamba clean --all --yes
+    /opt/conda/bin/conda env create -n pacusage -f /opt/pacusage/environment.yml
+    /opt/conda/envs/pacusage/bin/pip install \
+        --no-deps --no-build-isolation /opt/pacusage
+    /opt/conda/bin/conda clean --all --yes
 
 %environment
     export PATH=/opt/conda/envs/pacusage/bin:$PATH
@@ -19,4 +20,3 @@ From: condaforge/miniforge3:24.11.3-0
 
 %runscript
     exec "$@"
-
