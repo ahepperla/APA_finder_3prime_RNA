@@ -41,7 +41,7 @@ from .models import EvidenceObservation, PacCandidate
 from .parameters import load_parameters, write_resolved_parameters
 from .profiles import get_profile, resolve_profile_defaults
 from .quantification import build_count_outputs, quantify_exact, quantify_proximal
-from .reference import parse_annotation, prepare_reference, transcript_ends
+from .reference import annotation_contigs, parse_annotation, prepare_reference, transcript_ends
 from .report import build_report
 from .samples import control_mapping_rows, read_and_validate_samples, write_normalized_samples
 from .statistics import add_bh_fdr, cmh_kmer_test, filter_testable_features, motif_usage_scores
@@ -234,7 +234,7 @@ def command_validate(args: argparse.Namespace) -> None:
                 fasta_contigs = dict(
                     zip(fasta_handle.references, fasta_handle.lengths, strict=True)
                 )
-            annotation_contigs = {feature.contig for feature in parse_annotation(params["gtf"])}
+            reference_annotation_contigs = annotation_contigs(params["gtf"])
             aliases = _read_aliases(params.get("chromosome_aliases"))
             for sample in samples:
                 details = inspect_alignment(sample.alignment, validation_fasta)
@@ -252,7 +252,12 @@ def command_validate(args: argparse.Namespace) -> None:
                         "exploratory_insufficient_replicates": "",
                     }
                 )
-                validate_contigs(details["contigs"], fasta_contigs, annotation_contigs, aliases)
+                validate_contigs(
+                    details["contigs"],
+                    fasta_contigs,
+                    reference_annotation_contigs,
+                    aliases,
+                )
     write_normalized_samples(samples, output / "normalized_samples.tsv")
     write_resolved_parameters(params, output / "resolved_params.yaml")
     write_tsv(checks, output / "input_validation.tsv")

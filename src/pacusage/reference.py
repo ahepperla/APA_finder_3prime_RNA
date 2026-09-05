@@ -113,40 +113,39 @@ def _scan_fasta_lengths(path: str | Path) -> dict[str, int]:
     return lengths
 
 
+def annotation_contigs(path: str | Path) -> set[str]:
+    return {
+        fields[0]
+        for _, fields in _iter_annotation_rows(path)
+        if fields[6] in {"+", "-"}
+    }
+
+
 def parse_annotation(path: str | Path) -> list[GenomicFeature]:
     records: list[tuple[str, int, int, str, str, dict[str, str], int]] = []
     transcript_to_gene: dict[str, str] = {}
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rt") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip() or line.startswith("#"):
-                continue
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) != 9:
-                raise PacusageError(
-                    f"Annotation {path}, line {line_number}: expected 9 tab-separated fields."
-                )
-            contig, _, feature_type, start, end, _, strand, _, raw_attributes = fields
-            if strand not in {"+", "-"}:
-                continue
-            attributes = parse_attributes(raw_attributes)
-            feature_type = feature_type.lower()
-            if feature_type in {"transcript", "mrna"}:
-                transcript_id = attributes.get("transcript_id") or attributes.get("ID", "")
-                parent_gene = attributes.get("gene_id") or attributes.get("Parent", "")
-                if transcript_id and parent_gene:
-                    transcript_to_gene[transcript_id] = parent_gene
-            records.append(
-                (
-                    contig,
-                    int(start) - 1,
-                    int(end),
-                    strand,
-                    feature_type,
-                    attributes,
-                    line_number,
-                )
+    for line_number, fields in _iter_annotation_rows(path):
+        contig, _, feature_type, start, end, _, strand, _, raw_attributes = fields
+        if strand not in {"+", "-"}:
+            continue
+        attributes = parse_attributes(raw_attributes)
+        feature_type = feature_type.lower()
+        if feature_type in {"transcript", "mrna"}:
+            transcript_id = attributes.get("transcript_id") or attributes.get("ID", "")
+            parent_gene = attributes.get("gene_id") or attributes.get("Parent", "")
+            if transcript_id and parent_gene:
+                transcript_to_gene[transcript_id] = parent_gene
+        records.append(
+            (
+                contig,
+                int(start) - 1,
+                int(end),
+                strand,
+                feature_type,
+                attributes,
+                line_number,
             )
+        )
 
     features: list[GenomicFeature] = []
     for contig, start, end, strand, feature_type, attributes, line_number in records:
@@ -178,6 +177,20 @@ def parse_annotation(path: str | Path) -> list[GenomicFeature]:
             )
         )
     return features
+
+
+def _iter_annotation_rows(path: str | Path) -> Iterator[tuple[int, list[str]]]:
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 9:
+                raise PacusageError(
+                    f"Annotation {path}, line {line_number}: expected 9 tab-separated fields."
+                )
+            yield line_number, fields
 
 
 def parse_attributes(raw: str) -> dict[str, str]:

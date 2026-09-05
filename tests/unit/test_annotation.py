@@ -4,7 +4,7 @@ import pysam
 
 from pacusage.annotation import annotate_candidates, find_motifs
 from pacusage.models import PacCandidate
-from pacusage.reference import parse_annotation
+from pacusage.reference import annotation_contigs, parse_annotation
 
 
 def test_motif_position_and_minus_strand_annotation(tmp_path: Path) -> None:
@@ -65,3 +65,14 @@ def test_gff3_parent_relationships_are_resolved(tmp_path: Path) -> None:
     exon = next(feature for feature in features if feature.feature_type == "exon")
     assert exon.gene_id == "g1"
     assert exon.transcript_id == "t1"
+
+
+def test_annotation_contigs_scans_without_materializing_features(tmp_path: Path) -> None:
+    gtf = tmp_path / "genes.gtf"
+    gtf.write_text(
+        "# comment\n"
+        'chr1\ttest\tgene\t1\t100\t.\t+\t.\tgene_id "g1";\n'
+        'chr2\ttest\texon\t1\t100\t.\t-\t.\tgene_id "g2"; transcript_id "t2";\n'
+        'chr3\ttest\tregion\t1\t100\t.\t.\t.\tID=region3\n'
+    )
+    assert annotation_contigs(gtf) == {"chr1", "chr2"}
