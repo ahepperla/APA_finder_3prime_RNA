@@ -51,6 +51,13 @@ def main() -> None:
     assert "primary_pas_motif_rna" in report_text
     assert "AAUAAA" in report_text
 
+    traces = list(ROOT.parent.glob("trace-*.txt"))
+    assert traces
+    latest_trace = max(traces, key=lambda path: path.stat().st_mtime)
+    trace_text = latest_trace.read_text()
+    assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
+    assert trace_text.count("PACUSAGE:STATISTICS:MERGE_USAGE_MODELS") == 1
+
 
 if __name__ == "__main__":
     main()

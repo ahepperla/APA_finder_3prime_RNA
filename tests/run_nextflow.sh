@@ -13,4 +13,6 @@ test -s results-test/counts/pac_counts.tsv.gz
 test -s results-test/statistics/TreatmentA_vs_DMSO.pacs.tsv.gz
 test -s results-test/statistics/TreatmentB_vs_Vehicle.pacs.tsv.gz
 test -s results-test/statistics/Rescue_vs_TreatmentA.pacs.tsv.gz
+test -s results-test/statistics/gene_precision.tsv.gz
+test -s results-test/statistics/fitted_pau.tsv.gz
 python tests/verify_integration.py

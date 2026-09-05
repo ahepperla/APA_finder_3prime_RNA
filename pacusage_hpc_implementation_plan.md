@@ -1125,7 +1125,9 @@ runtime costs:
 - use name-collated streams for PE reconstruction;
 - aggregate endpoints instead of storing read names;
 - use columnar tables for large operations;
-- parallelize by sample or chromosome;
+- parallelize preparation, calibration, extraction, and quantification by
+  sample, discovery by chromosome/strand internally, and differential usage
+  modeling as independent Nextflow jobs by direct comparison family;
 - benchmark code that touches every fragment;
 - document any optimization that makes code less obvious.
 

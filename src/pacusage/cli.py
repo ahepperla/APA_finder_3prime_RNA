@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import shutil
 import tempfile
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict
@@ -55,7 +56,14 @@ from .reference import (
 from .report import build_report
 from .samples import control_mapping_rows, read_and_validate_samples, write_normalized_samples
 from .statistics import add_bh_fdr, cmh_kmer_test, filter_testable_features, motif_usage_scores
-from .tableio import iter_tsv, read_tsv, sha256_file, write_json, write_tsv
+from .tableio import (
+    iter_tsv,
+    open_text,
+    read_tsv,
+    sha256_file,
+    write_json,
+    write_tsv,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,6 +233,14 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--testable", required=True)
     merge.add_argument("--filtering", required=True)
     merge.set_defaults(function=command_merge_counts)
+
+    merge_statistics = commands.add_parser(
+        "merge-statistics",
+        help="merge independently fitted comparison-family outputs",
+    )
+    merge_statistics.add_argument("--inputs", nargs="+", required=True)
+    merge_statistics.add_argument("--output-dir", required=True)
+    merge_statistics.set_defaults(function=command_merge_statistics)
 
     motifs = commands.add_parser("motif-scores", help="build equal-gene motif usage scores")
     motifs.add_argument("--pau", required=True)
@@ -991,6 +1007,52 @@ def command_merge_counts(args: argparse.Namespace) -> None:
     ]
     model_input.to_csv(args.testable, sep="\t", index=False, compression="infer")
     filtering.to_csv(args.filtering, sep="\t", index=False)
+
+
+def command_merge_statistics(args: argparse.Namespace) -> None:
+    output_directory = Path(args.output_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    inputs = sorted(
+        path
+        for root in (Path(value) for value in args.inputs)
+        for path in root.rglob("*.tsv.gz")
+    )
+    if not inputs:
+        raise PacusageError("No comparison-family statistics files were provided.")
+
+    aggregate_names = {"gene_precision.tsv.gz", "fitted_pau.tsv.gz"}
+    for name in sorted(aggregate_names):
+        shards = [path for path in inputs if path.name == name]
+        if shards:
+            _concatenate_tsv_files(shards, output_directory / name)
+
+    for source in inputs:
+        if source.name in aggregate_names:
+            continue
+        destination = output_directory / source.name
+        if destination.exists():
+            raise PacusageError(
+                f"Duplicate comparison-family output filename: {source.name}"
+            )
+        shutil.copyfile(source, destination)
+
+
+def _concatenate_tsv_files(inputs: list[Path], output: Path) -> None:
+    header: str | None = None
+    with open_text(output, "wt", compresslevel=1) as destination:
+        for path in inputs:
+            with open_text(path) as source:
+                current_header = source.readline()
+                if not current_header:
+                    continue
+                if header is None:
+                    header = current_header
+                    destination.write(header)
+                elif current_header != header:
+                    raise PacusageError(
+                        f"Cannot merge {path.name}: TSV headers differ between families."
+                    )
+                shutil.copyfileobj(source, destination)
 
 
 def command_motif_scores(args: argparse.Namespace) -> None:

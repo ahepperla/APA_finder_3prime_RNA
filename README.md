@@ -67,7 +67,9 @@ nextflow run /path/to/pacusage \
 The Slurm profile separates CPU-parallel BAM work from serial, memory-heavy
 steps. Low, medium, and high-memory jobs automatically retry up to twice after
 an OOM-style exit, increasing their requested memory on each attempt. Completed
-tasks remain reusable with `-resume`.
+tasks remain reusable with `-resume`. Differential usage modeling runs as one
+independent Slurm job per direct comparison family, followed by a lightweight
+merge before k-mer analysis and report generation.
 
 Build the default Apptainer image once on a networked system:
 

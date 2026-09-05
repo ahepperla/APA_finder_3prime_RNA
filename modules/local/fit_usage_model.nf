@@ -1,13 +1,9 @@
 process FIT_USAGE_MODEL {
-    tag 'all-comparisons'
+    tag "${family}"
     label 'serial_high'
 
-    publishDir "${params.outdir}/statistics", mode: 'copy',
-        pattern: '*.tsv.gz'
-    publishDir "${params.outdir}/motifs", mode: 'copy',
-        pattern: '*.preference*.tsv.gz'
-
     input:
+    val family
     path normalized_samples
     path testable_counts
     path atlas
@@ -16,17 +12,20 @@ process FIT_USAGE_MODEL {
     path motif_sensitivity
 
     output:
-    path '*.tsv.gz', emit: statistics
+    tuple val(family), path('family-*'), emit: statistics
 
     script:
+    def outputDirectory = "family-${task.index}"
     """
+    mkdir -p '${outputDirectory}'
     Rscript '${projectDir}/scripts/fit_usage_model.R' \
+        --family '${family}' \
         --samples '${normalized_samples}' \
         --counts '${testable_counts}' \
         --atlas '${atlas}' \
         --params '${resolved_params}' \
         --motif-scores '${motif_scores}' \
         --motif-sensitivity '${motif_sensitivity}' \
-        --output-dir .
+        --output-dir '${outputDirectory}'
     """
 }

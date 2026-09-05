@@ -7,7 +7,7 @@ from pacusage.evidence import write_evidence
 from pacusage.models import EvidenceObservation
 from pacusage.quantification import build_count_outputs, quantify_exact
 from pacusage.reference import parse_annotation, prepare_reference
-from pacusage.tableio import read_tsv
+from pacusage.tableio import read_tsv, write_tsv
 
 
 def test_small_exact_boundary_pipeline(tmp_path: Path) -> None:
@@ -136,3 +136,59 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
     assert qc_rows[0]["support_requirement"] == (
         "0.75 of samples within one condition, rounded up"
     )
+
+
+def test_merge_comparison_family_statistics(tmp_path: Path) -> None:
+    family_a = tmp_path / "family-1"
+    family_b = tmp_path / "family-2"
+    family_a.mkdir()
+    family_b.mkdir()
+    write_tsv(
+        [{"gene_id": "g1", "precision": 10, "family": "control_a"}],
+        family_a / "gene_precision.tsv.gz",
+    )
+    write_tsv(
+        [{"gene_id": "g2", "precision": 20, "family": "control_b"}],
+        family_b / "gene_precision.tsv.gz",
+    )
+    write_tsv(
+        [{"gene_id": "g1", "feature_id": "p1", "delta_pau": 0.25}],
+        family_a / "fitted_pau.tsv.gz",
+    )
+    write_tsv(
+        [{"gene_id": "g2", "feature_id": "p2", "delta_pau": -0.30}],
+        family_b / "fitted_pau.tsv.gz",
+    )
+    write_tsv(
+        [{"gene_id": "g1", "pvalue": 0.01}],
+        family_a / "treatment_a_vs_control_a.genes.tsv.gz",
+    )
+    write_tsv(
+        [{"gene_id": "g2", "pvalue": 0.02}],
+        family_b / "treatment_b_vs_control_b.genes.tsv.gz",
+    )
+
+    output = tmp_path / "merged"
+    assert (
+        main(
+            [
+                "merge-statistics",
+                "--inputs",
+                str(family_a),
+                str(family_b),
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert read_tsv(output / "gene_precision.tsv.gz") == [
+        {"gene_id": "g1", "precision": "10", "family": "control_a"},
+        {"gene_id": "g2", "precision": "20", "family": "control_b"},
+    ]
+    assert [row["feature_id"] for row in read_tsv(output / "fitted_pau.tsv.gz")] == [
+        "p1",
+        "p2",
+    ]
+    assert (output / "treatment_a_vs_control_a.genes.tsv.gz").is_file()
+    assert (output / "treatment_b_vs_control_b.genes.tsv.gz").is_file()

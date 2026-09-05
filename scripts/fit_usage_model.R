@@ -670,7 +670,14 @@ fit_family <- function(
   list(fitted = fitted_list, precision = precision)
 }
 
-fit_motif_preferences <- function(scores, samples, params, output_dir, suffix = "preference") {
+fit_motif_preferences <- function(
+  scores,
+  samples,
+  params,
+  output_dir,
+  suffix = "preference",
+  selected_family = NULL
+) {
   if (is.null(scores) || !nrow(scores)) return(invisible(NULL))
   if (!"primary_pas_motif_rna" %in% names(scores)) {
     if ("primary_pas_motif" %in% names(scores)) {
@@ -691,6 +698,13 @@ fit_motif_preferences <- function(scores, samples, params, output_dir, suffix = 
       drop = FALSE
     ]
   )
+  if (!is.null(selected_family)) {
+    comparison_map <- comparison_map[
+      comparison_map$control_condition == selected_family,
+      ,
+      drop = FALSE
+    ]
+  }
   for (family in unique(comparison_map$control_condition)) {
     treatments <- sort(comparison_map$condition[
       comparison_map$control_condition == family
@@ -758,9 +772,19 @@ samples <- read_tsv(arguments$samples)
 counts <- read_tsv(arguments$counts)
 atlas <- read_tsv(arguments$atlas)
 
-families <- unique(samples$control_condition[
+available_families <- unique(samples$control_condition[
   samples$condition != samples$control_condition
 ])
+families <- available_families
+if (!is.null(arguments$family)) {
+  if (!arguments$family %in% available_families) {
+    stop(
+      "Requested comparison family ", arguments$family,
+      " is absent from the normalized sample sheet."
+    )
+  }
+  families <- arguments$family
+}
 all_precision <- list()
 all_fitted <- list()
 atlas_checksum <- unname(tools::md5sum(arguments$atlas))
@@ -799,7 +823,8 @@ if (!is.null(arguments$motif_scores) && file.exists(arguments$motif_scores)) {
     samples,
     params,
     arguments$output_dir,
-    "preference"
+    "preference",
+    arguments$family
   )
 }
 if (!is.null(arguments$motif_sensitivity) && file.exists(arguments$motif_sensitivity)) {
@@ -808,6 +833,7 @@ if (!is.null(arguments$motif_sensitivity) && file.exists(arguments$motif_sensiti
     samples,
     params,
     arguments$output_dir,
-    "preference_known_rescue_sensitivity"
+    "preference_known_rescue_sensitivity",
+    arguments$family
   )
 }
