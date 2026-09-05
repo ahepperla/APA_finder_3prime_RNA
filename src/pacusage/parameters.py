@@ -51,6 +51,9 @@ DEFAULTS: dict[str, Any] = {
     "proximal_kernel_overlap_threshold": 0.50,
     "proximal_assignment_likelihood_ratio": 3.0,
     "proximal_bin_size": 25,
+    "constitutive_readthrough_filter": True,
+    "constitutive_readthrough_min_junction_count": 2,
+    "constitutive_readthrough_min_replicate_support": "all",
     "max_downstream_distance": 5000,
     "pas_scan_upstream_far": 50,
     "pas_scan_upstream_near": 5,
@@ -136,6 +139,49 @@ def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
         raise PacusageError("min_replicates_per_condition must be at least 1.")
     if int(params["proximal_bin_size"]) < 1:
         raise PacusageError("proximal_bin_size must be at least 1.")
+    raw_junction_count = params["constitutive_readthrough_min_junction_count"]
+    try:
+        junction_count = float(raw_junction_count)
+    except (TypeError, ValueError) as error:
+        raise PacusageError(
+            "constitutive_readthrough_min_junction_count must be an integer of at least 1."
+        ) from error
+    if (
+        isinstance(raw_junction_count, bool)
+        or not math.isfinite(junction_count)
+        or junction_count < 1
+        or not junction_count.is_integer()
+    ):
+        raise PacusageError(
+            "constitutive_readthrough_min_junction_count must be an integer of at least 1."
+        )
+    params["constitutive_readthrough_min_junction_count"] = int(junction_count)
+    raw_readthrough_support = params["constitutive_readthrough_min_replicate_support"]
+    if isinstance(raw_readthrough_support, str) and raw_readthrough_support.strip().lower() == "all":
+        params["constitutive_readthrough_min_replicate_support"] = "all"
+    else:
+        try:
+            readthrough_support = float(raw_readthrough_support)
+        except (TypeError, ValueError) as error:
+            raise PacusageError(
+                "constitutive_readthrough_min_replicate_support must be 'all' or numeric."
+            ) from error
+        if isinstance(raw_readthrough_support, bool) or not math.isfinite(readthrough_support):
+            raise PacusageError(
+                "constitutive_readthrough_min_replicate_support must be 'all' or a finite number."
+            )
+        if readthrough_support <= 0:
+            raise PacusageError(
+                "constitutive_readthrough_min_replicate_support must be greater than zero."
+            )
+        if readthrough_support >= 1 and not readthrough_support.is_integer():
+            raise PacusageError(
+                "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
+                "in (0, 1), or a whole-number sample count."
+            )
+        params["constitutive_readthrough_min_replicate_support"] = (
+            readthrough_support if readthrough_support < 1 else int(readthrough_support)
+        )
     raw_support_threshold = params["pac_min_supporting_samples"]
     try:
         support_threshold = float(raw_support_threshold)

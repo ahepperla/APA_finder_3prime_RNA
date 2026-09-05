@@ -3,7 +3,9 @@ import pysam
 
 from pacusage.cli import _iter_observations
 from pacusage.evidence import (
+    direct_splice_continuations,
     extract_evidence,
+    extract_splice_continuations,
     fragment_boundary,
     is_poly_a_like,
     read_boundary,
@@ -44,6 +46,19 @@ def test_fragment_edges_ignore_introns_and_soft_clips() -> None:
     assert fragment_boundary(first, second, "-") == 100
 
 
+def test_direct_splice_continuations_are_transcript_oriented() -> None:
+    plus = record(0, 100, [(0, 10), (3, 90), (0, 15), (3, 20), (0, 5)])
+    minus = record(16, 100, [(0, 10), (3, 90), (0, 15), (3, 20), (0, 5)])
+    assert direct_splice_continuations(plus, "+") == [
+        (100, 110, 200, 215),
+        (200, 215, 235, 240),
+    ]
+    assert direct_splice_continuations(minus, "-") == [
+        (200, 215, 100, 110),
+        (235, 240, 200, 215),
+    ]
+
+
 def test_terminal_poly_a_clip_on_both_strands() -> None:
     plus = record(0, 100, [(0, 20), (4, 10)], "C" * 20 + "A" * 10)
     minus = record(16, 100, [(4, 10), (0, 20)], "T" * 10 + "G" * 20)
@@ -80,6 +95,44 @@ def test_paired_end_extraction_counts_one_fragment(tmp_path) -> None:
     )
     assert [(item.coordinate, item.count) for item in observations] == [(230, 1)]
     assert qc["accepted_fragments"] == 1
+
+
+def test_paired_splice_continuations_deduplicate_mates(tmp_path) -> None:
+    fasta = tmp_path / "genome.fa"
+    fasta.write_text(">chr1\n" + "A" * 1000 + "\n")
+    pysam.faidx(str(fasta))
+    bam = tmp_path / "pairs.bam"
+    header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 1000}]}
+    first = record(99, 100, [(0, 10), (3, 90), (0, 10)], "A" * 20)
+    first.query_name = "pair1"
+    first.next_reference_id = 0
+    first.next_reference_start = 100
+    second = record(147, 100, [(0, 10), (3, 90), (0, 10)], "A" * 20)
+    second.query_name = "pair1"
+    second.next_reference_id = 0
+    second.next_reference_start = 100
+    with pysam.AlignmentFile(bam, "wb", header=header) as handle:
+        handle.write(first)
+        handle.write(second)
+    continuations, qc = extract_splice_continuations(
+        "sample",
+        bam,
+        fasta,
+        "PE",
+        "forward",
+        min_mapq=0,
+    )
+    assert [
+        (
+            item.upstream_start,
+            item.upstream_end,
+            item.downstream_start,
+            item.downstream_end,
+            item.count,
+        )
+        for item in continuations
+    ] == [(100, 110, 200, 210, 1)]
+    assert qc["splice_direct_edges"] == 1
 
 
 def test_evidence_parquet_is_written_in_batches(tmp_path) -> None:

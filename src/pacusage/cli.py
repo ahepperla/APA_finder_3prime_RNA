@@ -34,15 +34,18 @@ from .clustering import (
     candidates_as_rows,
     cluster_exact_boundaries,
     discover_proximal_pacs,
+    filter_constitutive_readthrough,
 )
 from .errors import PacusageError
 from .evidence import (
     extract_evidence,
+    extract_splice_continuations,
     infer_strandedness,
     write_bedgraphs,
     write_evidence,
+    write_splice_continuations,
 )
-from .models import EvidenceObservation, PacCandidate
+from .models import EvidenceObservation, PacCandidate, SpliceContinuation
 from .parameters import load_parameters, write_resolved_parameters
 from .profiles import ProtocolProfile, get_profile, resolve_profile_defaults
 from .quantification import build_count_outputs, quantify_exact, quantify_proximal
@@ -182,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--parquet", required=True)
     evidence.add_argument("--plus-track", required=True)
     evidence.add_argument("--minus-track", required=True)
+    evidence.add_argument("--splice-continuations", required=True)
     evidence.add_argument("--qc", required=True)
     evidence.add_argument("--threads", type=int, default=1)
     evidence.set_defaults(function=command_extract_evidence)
@@ -193,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     cluster.add_argument("--kernel", required=True)
     cluster.add_argument("--params", required=True)
     cluster.add_argument("--known-pacs")
+    cluster.add_argument("--splice-continuations", nargs="+")
     cluster.add_argument("--accepted", required=True)
     cluster.add_argument("--rejected", required=True)
     cluster.add_argument("--qc", required=True)
@@ -814,6 +819,38 @@ def command_extract_evidence(args: argparse.Namespace) -> None:
     )
     write_evidence(observations, args.tsv, args.parquet)
     write_bedgraphs(observations, args.plus_track, args.minus_track)
+    use_readthrough_filter = (
+        sample_resolution.get("endpoint_model", resolution.get("endpoint_model"))
+        == "proximal_tag"
+        and bool(params["constitutive_readthrough_filter"])
+    )
+    if use_readthrough_filter:
+        continuations, splice_qc = extract_splice_continuations(
+            args.sample_id,
+            args.alignment,
+            args.reference,
+            sample_resolution["layout"],
+            sample_resolution["strandedness"],
+            min_mapq=int(params["min_mapq"]),
+            require_unique=bool(params["require_unique"]),
+            require_proper_pair=bool(params["require_proper_pair"]),
+            exclude_duplicates=bool(params["exclude_duplicates"]),
+            excluded_contigs=params["excluded_contigs"],
+            contig_aliases=_read_aliases(params.get("chromosome_aliases")),
+            threads=args.threads,
+        )
+        splice_qc["splice_filter_enabled"] = True
+    else:
+        continuations = []
+        splice_qc = {
+            "splice_filter_enabled": False,
+            "splice_records_examined": 0,
+            "splice_accepted_fragments": 0,
+            "splice_direct_edges": 0,
+            "splice_unique_continuations": 0,
+        }
+    write_splice_continuations(continuations, args.splice_continuations)
+    qc.update(splice_qc)
     write_tsv([qc], args.qc)
 
 
@@ -855,6 +892,29 @@ def command_cluster(args: argparse.Namespace) -> None:
             observations_sorted=True,
             sample_conditions=sample_conditions,
         )
+    constitutive_readthrough_rejected = 0
+    constitutive_readthrough_filter = (
+        resolution["endpoint_model"] == "proximal_tag"
+        and bool(params["constitutive_readthrough_filter"])
+    )
+    accepted_before_readthrough_filter = len(accepted)
+    if constitutive_readthrough_filter:
+        if not args.splice_continuations:
+            raise PacusageError(
+                "--splice-continuations is required for proximal-tag discovery when "
+                "constitutive_readthrough_filter is enabled."
+            )
+        accepted, readthrough_rejected = filter_constitutive_readthrough(
+            accepted,
+            _iter_splice_continuations(args.splice_continuations),
+            sample_conditions,
+            int(params["constitutive_readthrough_min_junction_count"]),
+            params["constitutive_readthrough_min_replicate_support"],
+        )
+        constitutive_readthrough_rejected = len(readthrough_rejected)
+        rejected.extend(readthrough_rejected)
+        accepted.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
+        rejected.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
     write_tsv(candidates_as_rows(accepted), args.accepted, compresslevel=1)
     write_tsv(candidates_as_rows(rejected), args.rejected, compresslevel=1)
     write_tsv(
@@ -863,6 +923,21 @@ def command_cluster(args: argparse.Namespace) -> None:
                 "endpoint_model": resolution["endpoint_model"],
                 "accepted_pacs": len(accepted),
                 "rejected_candidates": len(rejected),
+                "accepted_before_constitutive_readthrough_filter": (
+                    accepted_before_readthrough_filter
+                ),
+                "constitutive_readthrough_filter_enabled": constitutive_readthrough_filter,
+                "constitutive_readthrough_min_junction_count": (
+                    int(params["constitutive_readthrough_min_junction_count"])
+                    if constitutive_readthrough_filter
+                    else ""
+                ),
+                "constitutive_readthrough_min_replicate_support": (
+                    params["constitutive_readthrough_min_replicate_support"]
+                    if constitutive_readthrough_filter
+                    else ""
+                ),
+                "constitutive_readthrough_rejected": constitutive_readthrough_rejected,
                 "minimum_resolvable_separation": minimum_resolution,
                 "support_requirement": _support_requirement_description(
                     float(params["pac_min_supporting_samples"])
@@ -1211,6 +1286,23 @@ def _iter_observations(
         return
     for stream in streams:
         yield from stream
+
+
+def _iter_splice_continuations(
+    paths: list[str],
+) -> Iterator[SpliceContinuation]:
+    for path in paths:
+        for row in iter_tsv(path):
+            yield SpliceContinuation(
+                sample_id=str(row["sample_id"]),
+                contig=str(row["contig"]),
+                strand=str(row["strand"]),
+                upstream_start=int(row["upstream_start"]),
+                upstream_end=int(row["upstream_end"]),
+                downstream_start=int(row["downstream_start"]),
+                downstream_end=int(row["downstream_end"]),
+                count=int(row["count"]),
+            )
 
 
 def _iter_observation_file(

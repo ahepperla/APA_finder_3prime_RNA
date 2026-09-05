@@ -8,7 +8,7 @@ import tempfile
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from itertools import groupby
 
 import numpy as np
@@ -16,7 +16,7 @@ from scipy.signal import find_peaks, oaconvolve
 
 from .calibration import minimum_resolvable_separation
 from .errors import PacusageError
-from .models import EvidenceObservation, PacCandidate
+from .models import EvidenceObservation, PacCandidate, SpliceContinuation
 
 _SPOOLED_OBSERVATION = struct.Struct("<qIq")
 
@@ -407,6 +407,163 @@ def discover_proximal_pacs(
     accepted.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
     rejected.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
     return accepted, rejected, resolution
+
+
+def filter_constitutive_readthrough(
+    candidates: Iterable[PacCandidate],
+    continuations: Iterable[SpliceContinuation],
+    sample_conditions: Mapping[str, str],
+    minimum_junction_count: int,
+    minimum_replicate_support: float | str,
+) -> tuple[list[PacCandidate], list[PacCandidate]]:
+    """Reject proximal candidates in exon blocks continued in every condition.
+
+    Continuation is assessed only from immediate exon-to-next-exon CIGAR edges.
+    A condition must independently meet the replicate-support threshold, so a
+    condition without consistent continuation protects a candidate.
+    """
+    if minimum_junction_count < 1:
+        raise PacusageError("constitutive_readthrough_min_junction_count must be at least 1.")
+    _validate_constitutive_readthrough_replicate_support(minimum_replicate_support)
+    if not sample_conditions:
+        raise PacusageError(
+            "Constitutive-readthrough filtering requires sample conditions."
+        )
+
+    candidates = list(candidates)
+    continuations = list(continuations)
+    unexpected_samples = sorted(
+        {continuation.sample_id for continuation in continuations}.difference(sample_conditions)
+    )
+    if unexpected_samples:
+        raise PacusageError(
+            "Splice-continuation evidence contains sample IDs absent from the normalized "
+            "sample sheet: "
+            + ", ".join(unexpected_samples[:10])
+        )
+
+    condition_samples: defaultdict[str, list[str]] = defaultdict(list)
+    for sample_id, condition in sample_conditions.items():
+        condition_samples[condition].append(sample_id)
+    required_by_condition = {
+        condition: _required_constitutive_readthrough_replicates(
+            minimum_replicate_support,
+            len(sample_ids),
+        )
+        for condition, sample_ids in condition_samples.items()
+    }
+
+    block_support: dict[
+        tuple[str, str], dict[tuple[int, int], Counter[str]]
+    ] = defaultdict(lambda: defaultdict(Counter))
+    for continuation in continuations:
+        if (
+            continuation.count < 1
+            or continuation.upstream_start >= continuation.upstream_end
+            or continuation.downstream_start >= continuation.downstream_end
+        ):
+            raise PacusageError("Splice-continuation evidence contains an invalid exon block.")
+        key = (continuation.contig, continuation.strand)
+        block = (continuation.upstream_start, continuation.upstream_end)
+        block_support[key][block][continuation.sample_id] += continuation.count
+
+    candidate_indexes: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
+    for index, candidate in enumerate(candidates):
+        candidate_indexes[(candidate.contig, candidate.strand)].append(index)
+
+    rejected_indexes: set[int] = set()
+    for key, indexes in candidate_indexes.items():
+        supports_by_block = block_support.get(key)
+        if not supports_by_block:
+            continue
+        blocks = sorted(
+            (
+                upstream_start,
+                upstream_end,
+                counts,
+            )
+            for (upstream_start, upstream_end), counts in supports_by_block.items()
+        )
+        active: list[tuple[int, Counter[str]]] = []
+        next_block = 0
+        last_coordinate: int | None = None
+        last_support: Counter[str] = Counter()
+        for index in sorted(indexes, key=lambda value: candidates[value].coordinate):
+            coordinate = candidates[index].coordinate
+            if coordinate != last_coordinate:
+                while next_block < len(blocks) and blocks[next_block][0] <= coordinate:
+                    _, upstream_end, counts = blocks[next_block]
+                    active.append((upstream_end, counts))
+                    next_block += 1
+                active = [
+                    (upstream_end, counts)
+                    for upstream_end, counts in active
+                    if coordinate < upstream_end
+                ]
+                last_support = Counter()
+                for _, counts in active:
+                    last_support.update(counts)
+                last_coordinate = coordinate
+            if all(
+                sum(
+                    last_support.get(sample_id, 0) >= minimum_junction_count
+                    for sample_id in sample_ids
+                )
+                >= required_by_condition[condition]
+                for condition, sample_ids in condition_samples.items()
+            ):
+                rejected_indexes.add(index)
+
+    accepted: list[PacCandidate] = []
+    rejected: list[PacCandidate] = []
+    for index, candidate in enumerate(candidates):
+        if index in rejected_indexes:
+            rejected.append(
+                replace(
+                    candidate,
+                    status="rejected",
+                    rejection_reason="constitutive_readthrough",
+                )
+            )
+        else:
+            accepted.append(candidate)
+    return accepted, rejected
+
+
+def _validate_constitutive_readthrough_replicate_support(value: float | str) -> None:
+    if isinstance(value, str):
+        if value == "all":
+            return
+        raise PacusageError(
+            "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
+            "in (0, 1), or a whole-number sample count."
+        )
+    if isinstance(value, bool):
+        raise PacusageError(
+            "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
+            "in (0, 1), or a whole-number sample count."
+        )
+    threshold = float(value)
+    if not math.isfinite(threshold) or threshold <= 0:
+        raise PacusageError(
+            "constitutive_readthrough_min_replicate_support must be greater than zero."
+        )
+    if threshold < 1:
+        return
+    if not threshold.is_integer():
+        raise PacusageError(
+            "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
+            "in (0, 1), or a whole-number sample count."
+        )
+
+
+def _required_constitutive_readthrough_replicates(
+    threshold: float | str,
+    condition_size: int,
+) -> int:
+    if threshold == "all":
+        return condition_size
+    return math.ceil(threshold * condition_size) if threshold < 1 else int(threshold)
 
 
 def _discover_proximal_group(

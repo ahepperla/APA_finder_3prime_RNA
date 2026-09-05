@@ -184,6 +184,27 @@ condition. Whole-number values such as `2` require that many samples. Values
 strictly between zero and one are fractions of the samples in a condition,
 rounded up; for example, `0.5` requires three of five replicates.
 
+For `proximal_tag` libraries, PACusage additionally guards against ordinary
+aligned endpoints in splice-continued exons. It derives immediate
+exon-to-next-exon edges from full-read CIGAR `N` operations, then applies the
+post-discovery `constitutive_readthrough` filter. A candidate is rejected only
+when its representative coordinate is in an upstream CIGAR exon block and
+direct downstream continuation meets the threshold independently in every
+condition. This does not use PAS annotation, endpoint prominence, or a
+treatment effect to create candidates.
+
+The default is intentionally strict:
+`constitutive_readthrough_min_junction_count: 2` requires two direct
+continuation reads in a qualifying sample, and
+`constitutive_readthrough_min_replicate_support: all` requires every replicate
+within every condition. This avoids overloading `1`: as with
+`pac_min_supporting_samples`, a numeric `1` means one replicate. The setting
+can instead be a fraction in `(0, 1)`, rounded up within each condition, or an
+absolute count. A condition that
+does not meet this continuation requirement protects its candidate, allowing a
+condition-specific terminal exon to remain eligible for downstream testing.
+The per-sample continuation tables are written to `evidence/` for audit.
+
 PAU is the raw PAC count divided by all assigned PAC counts for that gene in
 one sample. No pseudocount is added to count or observed-PAU matrices.
 

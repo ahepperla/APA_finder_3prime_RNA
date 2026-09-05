@@ -35,10 +35,14 @@ workflow DISCOVERY {
 
     EXTRACT_3PRIME_EVIDENCE(samples, reference, run_resolution, resolved_params)
     evidence_tables = EXTRACT_3PRIME_EVIDENCE.out.evidence
-        .map { meta, tsv, parquet, plus, minus, qc -> parquet }
+        .map { meta, tsv, parquet, splice, plus, minus, qc -> parquet }
+        .collect()
+    splice_continuations = EXTRACT_3PRIME_EVIDENCE.out.evidence
+        .map { meta, tsv, parquet, splice, plus, minus, qc -> splice }
         .collect()
     CLUSTER_PACS(
         evidence_tables,
+        splice_continuations,
         normalized_samples,
         run_resolution,
         kernel,
@@ -64,6 +68,6 @@ workflow DISCOVERY {
     discovery_qc = CLUSTER_PACS.out.qc
     rejected = CLUSTER_PACS.out.rejected
     filtering_qc = EXTRACT_3PRIME_EVIDENCE.out.evidence.map {
-        meta, tsv, parquet, plus, minus, qc -> qc
+        meta, tsv, parquet, splice, plus, minus, qc -> qc
     }.collect()
 }

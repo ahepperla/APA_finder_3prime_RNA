@@ -94,6 +94,26 @@
           "default": 25,
           "description": "Bin width in nucleotides for proximal-tag regional peak discovery."
         },
+        "constitutive_readthrough_filter": {
+          "type": "boolean",
+          "default": true,
+          "description": "For proximal-tag libraries, reject candidates in CIGAR-supported exon blocks with direct downstream continuation reproducible in every condition."
+        },
+        "constitutive_readthrough_min_junction_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Minimum direct CIGAR splice-continuation reads required within each qualifying sample."
+        },
+        "constitutive_readthrough_min_replicate_support": {
+          "anyOf": [
+            {"type": "string", "enum": ["all"]},
+            {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+            {"type": "integer", "minimum": 1}
+          ],
+          "default": "all",
+          "description": "Required replicate support independently within every condition. Use 'all' to require every replicate; fractions in (0, 1) are rounded up; whole numbers are absolute replicate counts."
+        },
         "max_downstream_distance": {"type": "integer", "minimum": 0, "default": 5000},
         "pas_scan_upstream_far": {"type": "integer", "minimum": 1, "default": 50},
         "pas_scan_upstream_near": {"type": "integer", "minimum": 0, "default": 5},

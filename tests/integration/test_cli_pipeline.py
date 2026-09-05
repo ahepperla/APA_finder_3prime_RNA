@@ -3,8 +3,8 @@ from pathlib import Path
 from pacusage.annotation import annotate_candidates
 from pacusage.cli import main
 from pacusage.clustering import cluster_exact_boundaries
-from pacusage.evidence import write_evidence
-from pacusage.models import EvidenceObservation
+from pacusage.evidence import write_evidence, write_splice_continuations
+from pacusage.models import EvidenceObservation, SpliceContinuation
 from pacusage.quantification import build_count_outputs, quantify_exact
 from pacusage.reference import parse_annotation, prepare_reference
 from pacusage.tableio import read_tsv, write_tsv
@@ -62,6 +62,7 @@ def test_small_exact_boundary_pipeline(tmp_path: Path) -> None:
 
 def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
     evidence_paths = []
+    splice_continuation_paths = []
     for sample_id in ("a", "b"):
         observations = [
             EvidenceObservation(sample_id, "chr1", "+", 90, 3),
@@ -71,6 +72,9 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
         parquet = tmp_path / f"{sample_id}.parquet"
         write_evidence(observations, tsv, parquet)
         evidence_paths.append(str(parquet))
+        splice_continuations = tmp_path / f"{sample_id}.splice_continuations.tsv.gz"
+        write_splice_continuations([], splice_continuations)
+        splice_continuation_paths.append(str(splice_continuations))
 
     params = tmp_path / "params.yaml"
     params.write_text(
@@ -108,6 +112,8 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
                 "cluster",
                 "--evidence",
                 *evidence_paths,
+                "--splice-continuations",
+                *splice_continuation_paths,
                 "--samples",
                 str(samples),
                 "--resolution",
@@ -136,6 +142,101 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
     assert qc_rows[0]["support_requirement"] == (
         "0.75 of samples within one condition, rounded up"
     )
+
+
+def test_proximal_cluster_cli_rejects_constitutive_readthrough(tmp_path: Path) -> None:
+    evidence_paths = []
+    continuation_paths = []
+    sample_ids = ("control_1", "control_2", "treatment_1", "treatment_2")
+    for sample_id in sample_ids:
+        observations = [EvidenceObservation(sample_id, "chr1", "+", 90, 3)]
+        tsv = tmp_path / f"{sample_id}.tsv.gz"
+        parquet = tmp_path / f"{sample_id}.parquet"
+        write_evidence(observations, tsv, parquet)
+        evidence_paths.append(str(parquet))
+        continuation_path = tmp_path / f"{sample_id}.splice_continuations.tsv.gz"
+        write_splice_continuations(
+            [
+                SpliceContinuation(
+                    sample_id,
+                    "chr1",
+                    "+",
+                    50,
+                    150,
+                    200,
+                    300,
+                    2,
+                )
+            ],
+            continuation_path,
+        )
+        continuation_paths.append(str(continuation_path))
+
+    params = tmp_path / "params.yaml"
+    params.write_text(
+        "\n".join(
+            [
+                "input: samples.tsv",
+                "assembly: test",
+                "fasta: genome.fa",
+                "gtf: genes.gtf",
+                "pac_min_total_count: 1",
+                "pac_min_sample_count: 1",
+                "pac_min_supporting_samples: 1",
+                "proximal_bin_size: 1",
+                "constitutive_readthrough_min_junction_count: 2",
+                "constitutive_readthrough_min_replicate_support: all",
+            ]
+        )
+        + "\n"
+    )
+    resolution = tmp_path / "resolution.json"
+    resolution.write_text('{"endpoint_model":"proximal_tag","evidence_source":"read_3p"}\n')
+    samples = tmp_path / "samples.tsv"
+    samples.write_text(
+        "sample_id\tcondition\n"
+        "control_1\tcontrol\n"
+        "control_2\tcontrol\n"
+        "treatment_1\ttreatment\n"
+        "treatment_2\ttreatment\n"
+    )
+    kernel = tmp_path / "kernel.tsv"
+    kernel.write_text("offset\tweight\n10\t1.0\n")
+    accepted = tmp_path / "accepted.tsv"
+    rejected = tmp_path / "rejected.tsv"
+    qc = tmp_path / "qc.tsv"
+
+    assert (
+        main(
+            [
+                "cluster",
+                "--evidence",
+                *evidence_paths,
+                "--splice-continuations",
+                *continuation_paths,
+                "--samples",
+                str(samples),
+                "--resolution",
+                str(resolution),
+                "--kernel",
+                str(kernel),
+                "--params",
+                str(params),
+                "--accepted",
+                str(accepted),
+                "--rejected",
+                str(rejected),
+                "--qc",
+                str(qc),
+            ]
+        )
+        == 0
+    )
+    assert read_tsv(accepted) == []
+    assert [row["rejection_reason"] for row in read_tsv(rejected)] == [
+        "constitutive_readthrough"
+    ]
+    assert read_tsv(qc)[0]["constitutive_readthrough_rejected"] == "1"
 
 
 def test_merge_comparison_family_statistics(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@ process EXTRACT_3PRIME_EVIDENCE {
     label 'high'
 
     publishDir "${params.outdir}/evidence", mode: 'copy',
-        pattern: '*.{3prime_evidence.tsv.gz,3prime_evidence.parquet}'
+        pattern: '*.{3prime_evidence.tsv.gz,3prime_evidence.parquet,splice_continuations.tsv.gz}'
     publishDir "${params.outdir}/tracks", mode: 'copy', pattern: '*.bedGraph.gz'
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: '*.fragment_filtering.tsv'
 
@@ -18,6 +18,7 @@ process EXTRACT_3PRIME_EVIDENCE {
     tuple val(meta),
         path("${meta.sample_id}.3prime_evidence.tsv.gz"),
         path("${meta.sample_id}.3prime_evidence.parquet"),
+        path("${meta.sample_id}.splice_continuations.tsv.gz"),
         path("${meta.sample_id}.plus.3prime_evidence.bedGraph.gz"),
         path("${meta.sample_id}.minus.3prime_evidence.bedGraph.gz"),
         path("${meta.sample_id}.fragment_filtering.tsv"),
@@ -35,8 +36,8 @@ process EXTRACT_3PRIME_EVIDENCE {
         --parquet '${meta.sample_id}.3prime_evidence.parquet' \
         --plus-track '${meta.sample_id}.plus.3prime_evidence.bedGraph.gz' \
         --minus-track '${meta.sample_id}.minus.3prime_evidence.bedGraph.gz' \
+        --splice-continuations '${meta.sample_id}.splice_continuations.tsv.gz' \
         --qc '${meta.sample_id}.fragment_filtering.tsv' \
         --threads ${task.cpus}
     """
 }
-

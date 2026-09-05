@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import pysam
 
 from .errors import PacusageError
-from .models import EvidenceObservation
+from .models import EvidenceObservation, SpliceContinuation
 from .reference import GenomicFeature
 from .tableio import write_tsv
 
@@ -49,6 +49,34 @@ def fragment_boundary(
     if any(value is None for value in starts + ends):
         raise PacusageError(f"Pair {first.query_name!r} has an undefined aligned boundary.")
     return max(ends) if strand == "+" else min(starts)
+
+
+def direct_splice_continuations(
+    record: pysam.AlignedSegment,
+    strand: str,
+) -> list[tuple[int, int, int, int]]:
+    """Return transcript-oriented exon-block pairs joined by direct CIGAR N operations."""
+    if record.reference_start is None or not record.cigartuples:
+        return []
+    reference_position = record.reference_start
+    block_start = reference_position
+    blocks: list[tuple[int, int]] = []
+    for operation, length in record.cigartuples:
+        if operation == 3:
+            if block_start < reference_position:
+                blocks.append((block_start, reference_position))
+            reference_position += length
+            block_start = reference_position
+        elif operation in REFERENCE_CONSUMING:
+            reference_position += length
+    if block_start < reference_position:
+        blocks.append((block_start, reference_position))
+    pairs = zip(blocks, blocks[1:], strict=False)
+    if strand == "+":
+        return [(*left, *right) for left, right in pairs]
+    if strand == "-":
+        return [(*right, *left) for left, right in pairs]
+    raise PacusageError(f"Splice continuation strand must be '+' or '-', not {strand!r}.")
 
 
 def terminal_soft_clip(record: pysam.AlignedSegment, strand: str) -> str:
@@ -252,6 +280,128 @@ def extract_evidence(
     return observations, dict(filtering)
 
 
+def extract_splice_continuations(
+    sample_id: str,
+    alignment: str | Path,
+    reference: str | Path,
+    layout: str,
+    strandedness: str,
+    min_mapq: int = 20,
+    require_unique: bool = True,
+    require_proper_pair: bool = True,
+    exclude_duplicates: bool = True,
+    excluded_contigs: Iterable[str] = (),
+    contig_aliases: dict[str, str] | None = None,
+    threads: int = 1,
+) -> tuple[list[SpliceContinuation], dict[str, Any]]:
+    """Aggregate direct exon-to-next-exon CIGAR evidence for one sample."""
+    if layout not in {"SE", "PE"}:
+        raise PacusageError(f"Sample {sample_id}: layout must resolve to SE or PE, not {layout!r}.")
+    if strandedness not in {"forward", "reverse"}:
+        raise PacusageError(f"Sample {sample_id}: strandedness must resolve to forward or reverse.")
+
+    excluded = set(excluded_contigs)
+    contig_aliases = contig_aliases or {}
+    aggregates: Counter[tuple[str, str, int, int, int, int]] = Counter()
+    filtering: Counter[str] = Counter()
+    alignment = Path(alignment)
+    mode = "rc" if alignment.suffix.lower() == ".cram" else "rb"
+
+    if layout == "SE":
+        with pysam.AlignmentFile(str(alignment), mode, reference_filename=str(reference)) as handle:
+            for record in handle.fetch(until_eof=True):
+                filtering["splice_records_examined"] += 1
+                reason = record_filter_reason(
+                    record, min_mapq, require_unique, exclude_duplicates, excluded
+                )
+                if reason:
+                    filtering[f"splice_{reason}"] += 1
+                    continue
+                strand = transcript_strand(record, strandedness)
+                contig = contig_aliases.get(record.reference_name, record.reference_name)
+                edges = direct_splice_continuations(record, strand)
+                for edge in edges:
+                    aggregates[(contig, strand, *edge)] += 1
+                filtering["splice_accepted_fragments"] += 1
+                filtering["splice_direct_edges"] += len(edges)
+    else:
+        with tempfile.TemporaryDirectory(prefix="pacusage-collate-") as temporary:
+            collated = Path(temporary) / "collated.bam"
+            try:
+                pysam.collate(
+                    "-@",
+                    str(max(1, threads)),
+                    "-o",
+                    str(collated),
+                    str(alignment),
+                    catch_stdout=False,
+                )
+            except Exception as error:
+                raise PacusageError(f"Could not name-collate {alignment}.") from error
+            with pysam.AlignmentFile(str(collated), "rb") as handle:
+                for group in _query_name_groups(handle.fetch(until_eof=True)):
+                    filtering["splice_query_groups_examined"] += 1
+                    primary = [
+                        record
+                        for record in group
+                        if not record.is_secondary and not record.is_supplementary
+                    ]
+                    if len(primary) != 2:
+                        filtering["splice_orphan_or_multiple_primary"] += 1
+                        continue
+                    first, second = primary
+                    reason = pair_filter_reason(
+                        first,
+                        second,
+                        min_mapq,
+                        require_unique,
+                        require_proper_pair,
+                        exclude_duplicates,
+                        excluded,
+                    )
+                    if reason:
+                        filtering[f"splice_{reason}"] += 1
+                        continue
+                    read1 = first if first.is_read1 else second
+                    strand = transcript_strand(read1, strandedness)
+                    contig = contig_aliases.get(read1.reference_name, read1.reference_name)
+                    edges = {
+                        edge
+                        for record in (first, second)
+                        for edge in direct_splice_continuations(record, strand)
+                    }
+                    for edge in edges:
+                        aggregates[(contig, strand, *edge)] += 1
+                    filtering["splice_accepted_fragments"] += 1
+                    filtering["splice_direct_edges"] += len(edges)
+
+    continuations = [
+        SpliceContinuation(
+            sample_id=sample_id,
+            contig=contig,
+            strand=strand,
+            upstream_start=upstream_start,
+            upstream_end=upstream_end,
+            downstream_start=downstream_start,
+            downstream_end=downstream_end,
+            count=count,
+        )
+        for (
+            contig,
+            strand,
+            upstream_start,
+            upstream_end,
+            downstream_start,
+            downstream_end,
+        ), count in sorted(aggregates.items())
+    ]
+    filtering["splice_unique_continuations"] = len(continuations)
+    filtering["sample_id"] = sample_id
+    filtering["splice_layout"] = layout
+    filtering["splice_strandedness"] = strandedness
+    return continuations, dict(filtering)
+
+
 def _query_name_groups(
     records: Iterable[pysam.AlignedSegment],
 ) -> Iterator[list[pysam.AlignedSegment]]:
@@ -300,6 +450,23 @@ def write_evidence(
                 for observation in observations[start : start + 100_000]
             ]
             writer.write_table(pa.Table.from_pylist(rows, schema=schema))
+
+
+def write_splice_continuations(
+    continuations: list[SpliceContinuation],
+    path: str | Path,
+) -> None:
+    fields = [
+        "sample_id",
+        "contig",
+        "strand",
+        "upstream_start",
+        "upstream_end",
+        "downstream_start",
+        "downstream_end",
+        "count",
+    ]
+    write_tsv((asdict(continuation) for continuation in continuations), path, fields)
 
 
 def write_bedgraphs(

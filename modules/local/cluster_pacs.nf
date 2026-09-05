@@ -7,6 +7,7 @@ process CLUSTER_PACS {
 
     input:
     path evidence_tables
+    path splice_continuations
     path normalized_samples
     path run_resolution
     path kernel
@@ -22,6 +23,7 @@ process CLUSTER_PACS {
     """
     pacusage cluster \
         --evidence ${evidence_tables.join(' ')} \
+        --splice-continuations ${splice_continuations.join(' ')} \
         --samples '${normalized_samples}' \
         --resolution '${run_resolution}' \
         --kernel '${kernel}' \

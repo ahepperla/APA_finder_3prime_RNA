@@ -6,9 +6,10 @@ from pacusage.clustering import (
     _regional_peaks,
     cluster_exact_boundaries,
     discover_proximal_pacs,
+    filter_constitutive_readthrough,
 )
 from pacusage.errors import PacusageError
-from pacusage.models import EvidenceObservation
+from pacusage.models import EvidenceObservation, PacCandidate, SpliceContinuation
 
 
 def observation(
@@ -18,6 +19,14 @@ def observation(
     strand: str = "+",
 ) -> EvidenceObservation:
     return EvidenceObservation(sample, "chr1", strand, coordinate, count)
+
+
+def candidate(coordinate: int) -> PacCandidate:
+    return PacCandidate("chr1", "+", coordinate, 10, 2, 6, (coordinate,))
+
+
+def continuation(sample: str, count: int = 2) -> SpliceContinuation:
+    return SpliceContinuation(sample, "chr1", "+", 100, 200, 250, 350, count)
 
 
 def test_exact_seed_ranking_is_deterministic() -> None:
@@ -226,3 +235,62 @@ def test_proximal_fractional_support_rounds_up() -> None:
     )
     assert not rejected
     assert accepted[0].supporting_samples == 3
+
+
+def test_constitutive_readthrough_rejects_only_upstream_blocks_with_universal_support() -> None:
+    conditions = {
+        "control_1": "control",
+        "control_2": "control",
+        "treatment_1": "treatment",
+        "treatment_2": "treatment",
+    }
+    accepted, rejected = filter_constitutive_readthrough(
+        [candidate(150), candidate(350)],
+        [continuation(sample) for sample in conditions],
+        conditions,
+        minimum_junction_count=2,
+        minimum_replicate_support="all",
+    )
+    assert [item.coordinate for item in accepted] == [350]
+    assert [item.coordinate for item in rejected] == [150]
+    assert rejected[0].rejection_reason == "constitutive_readthrough"
+
+
+def test_constitutive_readthrough_keeps_a_condition_specific_terminal_candidate() -> None:
+    conditions = {
+        "control_1": "control",
+        "control_2": "control",
+        "treatment_1": "treatment",
+        "treatment_2": "treatment",
+    }
+    accepted, rejected = filter_constitutive_readthrough(
+        [candidate(150)],
+        [continuation("control_1"), continuation("control_2")],
+        conditions,
+        minimum_junction_count=2,
+        minimum_replicate_support="all",
+    )
+    assert [item.coordinate for item in accepted] == [150]
+    assert not rejected
+
+
+def test_constitutive_readthrough_support_can_use_a_per_condition_fraction() -> None:
+    conditions = {
+        **{f"control_{index}": "control" for index in range(1, 4)},
+        **{f"treatment_{index}": "treatment" for index in range(1, 4)},
+    }
+    continuations = [
+        continuation("control_1"),
+        continuation("control_2"),
+        continuation("treatment_1"),
+        continuation("treatment_2"),
+    ]
+    accepted, rejected = filter_constitutive_readthrough(
+        [candidate(150)],
+        continuations,
+        conditions,
+        minimum_junction_count=2,
+        minimum_replicate_support=0.5,
+    )
+    assert not accepted
+    assert [item.coordinate for item in rejected] == [150]

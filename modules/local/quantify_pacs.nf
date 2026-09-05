@@ -8,7 +8,7 @@ process QUANTIFY_PACS {
 
     input:
     tuple val(meta), path(evidence_tsv), path(evidence_parquet),
-        path(plus_track), path(minus_track), path(filter_qc)
+        path(splice_continuations), path(plus_track), path(minus_track), path(filter_qc)
     path atlas
     path run_resolution
     path kernel

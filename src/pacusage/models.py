@@ -41,6 +41,20 @@ class EvidenceObservation:
 
 
 @dataclass(frozen=True)
+class SpliceContinuation:
+    """Direct CIGAR-supported continuation from one exon block to the next."""
+
+    sample_id: str
+    contig: str
+    strand: str
+    upstream_start: int
+    upstream_end: int
+    downstream_start: int
+    downstream_end: int
+    count: int
+
+
+@dataclass(frozen=True)
 class PacCandidate:
     contig: str
     strand: str
