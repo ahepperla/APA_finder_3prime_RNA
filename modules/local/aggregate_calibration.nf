@@ -1,6 +1,6 @@
-process CALIBRATE_LIBRARY_PROFILE {
+process AGGREGATE_CALIBRATION {
     tag 'run'
-    label 'high'
+    label 'low'
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: 'library_calibration.tsv'
     publishDir "${params.outdir}/manifest", mode: 'copy',
@@ -8,10 +8,7 @@ process CALIBRATE_LIBRARY_PROFILE {
 
     input:
     path normalized_samples
-    path alignments
-    path resolutions
-    path reference
-    path annotation
+    path calibrations
     path resolved_params
 
     output:
@@ -21,17 +18,12 @@ process CALIBRATE_LIBRARY_PROFILE {
 
     script:
     """
-    pacusage calibrate \
+    pacusage aggregate-calibration \
         --samples '${normalized_samples}' \
-        --alignments ${alignments.join(' ')} \
-        --resolutions ${resolutions.join(' ')} \
-        --reference '${reference}' \
-        --annotation '${annotation}' \
+        --calibrations ${calibrations.join(' ')} \
         --params '${resolved_params}' \
         --output library_calibration.tsv \
         --kernel calibration_kernel.tsv \
-        --resolution library_resolution.json \
-        --threads ${task.cpus}
+        --resolution library_resolution.json
     """
 }
-

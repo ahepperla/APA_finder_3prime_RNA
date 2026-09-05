@@ -6,7 +6,7 @@ import argparse
 import json
 import platform
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from . import __version__
 from .alignments import inspect_alignment, prepare_alignment, validate_contigs
 from .annotation import annotate_candidates, load_known_pacs, load_motif_catalog
 from .calibration import (
+    CalibrationMetrics,
     calculate_metrics,
     classify_metrics,
     empirical_kernel,
@@ -40,7 +41,7 @@ from .evidence import (
 )
 from .models import EvidenceObservation, PacCandidate
 from .parameters import load_parameters, write_resolved_parameters
-from .profiles import get_profile, resolve_profile_defaults
+from .profiles import ProtocolProfile, get_profile, resolve_profile_defaults
 from .quantification import build_count_outputs, quantify_exact, quantify_proximal
 from .reference import (
     annotation_contigs,
@@ -126,6 +127,40 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--resolution", required=True)
     calibrate.add_argument("--threads", type=int, default=1)
     calibrate.set_defaults(function=command_calibrate)
+
+    calibration_reference = commands.add_parser(
+        "calibration-reference",
+        help="build compact annotated transcript ends for calibration",
+    )
+    calibration_reference.add_argument("--annotation", required=True)
+    calibration_reference.add_argument("--output", required=True)
+    calibration_reference.set_defaults(function=command_calibration_reference)
+
+    calibrate_sample = commands.add_parser(
+        "calibrate-sample",
+        help="calculate calibration summaries for one sample",
+    )
+    calibrate_sample.add_argument("--sample-id", required=True)
+    calibrate_sample.add_argument("--alignment", required=True)
+    calibrate_sample.add_argument("--resolution", required=True)
+    calibrate_sample.add_argument("--reference", required=True)
+    calibrate_sample.add_argument("--transcript-ends", required=True)
+    calibrate_sample.add_argument("--params", required=True)
+    calibrate_sample.add_argument("--output", required=True)
+    calibrate_sample.add_argument("--threads", type=int, default=1)
+    calibrate_sample.set_defaults(function=command_calibrate_sample)
+
+    aggregate_calibration = commands.add_parser(
+        "aggregate-calibration",
+        help="combine per-sample calibration summaries",
+    )
+    aggregate_calibration.add_argument("--samples", required=True)
+    aggregate_calibration.add_argument("--calibrations", nargs="+", required=True)
+    aggregate_calibration.add_argument("--params", required=True)
+    aggregate_calibration.add_argument("--output", required=True)
+    aggregate_calibration.add_argument("--kernel", required=True)
+    aggregate_calibration.add_argument("--resolution", required=True)
+    aggregate_calibration.set_defaults(function=command_aggregate_calibration)
 
     evidence = commands.add_parser("extract-evidence", help="extract one sample's evidence")
     evidence.add_argument("--sample-id", required=True)
@@ -396,8 +431,8 @@ def command_calibrate(args: argparse.Namespace) -> None:
     if not common_sources:
         raise PacusageError("No evidence source is compatible with every sample.")
 
-    source_metrics: dict[str, list[Any]] = {}
-    source_offsets: dict[str, list[list[int]]] = {}
+    source_metrics: dict[str, list[CalibrationMetrics]] = {}
+    source_offsets: dict[str, list[Mapping[int, int]]] = {}
     for source in sorted(common_sources):
         metrics = []
         offset_lists = []
@@ -451,6 +486,179 @@ def command_calibrate(args: argparse.Namespace) -> None:
         ]
         source_offsets[source] = offset_lists
 
+    _write_calibration_outputs(
+        source_metrics,
+        source_offsets,
+        resolutions,
+        profile,
+        params,
+        args.output,
+        args.kernel,
+        args.resolution,
+    )
+
+
+def command_calibration_reference(args: argparse.Namespace) -> None:
+    ends = transcript_ends(
+        iter_annotation_features(args.annotation, {"exon", "transcript", "mrna"})
+    )
+    write_tsv(
+        (
+            {
+                "contig": contig,
+                "strand": strand,
+                "coordinate": coordinate,
+                "gene_id": gene_id,
+            }
+            for (contig, strand), values in sorted(ends.items())
+            for coordinate, gene_id in values
+        ),
+        args.output,
+        ["contig", "strand", "coordinate", "gene_id"],
+    )
+
+
+def command_calibrate_sample(args: argparse.Namespace) -> None:
+    params = load_parameters(args.params)
+    resolution = _read_json(args.resolution)
+    if resolution.get("sample_id") != args.sample_id:
+        raise PacusageError(
+            f"Calibration resolution belongs to {resolution.get('sample_id')!r}, "
+            f"not {args.sample_id!r}."
+        )
+    profile = get_profile(resolution["library_profile"])
+    sources = set(profile.candidate_sources(resolution["layout"]))
+    if resolution["evidence_source"] != "auto":
+        sources.intersection_update({resolution["evidence_source"]})
+    if not sources:
+        raise PacusageError(f"Sample {args.sample_id} has no compatible calibration source.")
+
+    ends = _read_transcript_ends(args.transcript_ends)
+    source_results: dict[str, dict[str, object]] = {}
+    for source in sorted(sources):
+        observations, _ = extract_evidence(
+            args.sample_id,
+            args.alignment,
+            args.reference,
+            resolution["layout"],
+            resolution["strandedness"],
+            source,
+            min_mapq=int(params["min_mapq"]),
+            require_unique=bool(params["require_unique"]),
+            require_proper_pair=bool(params["require_proper_pair"]),
+            exclude_duplicates=bool(params["exclude_duplicates"]),
+            excluded_contigs=params["excluded_contigs"],
+            contig_aliases=_read_aliases(params.get("chromosome_aliases")),
+            threads=args.threads,
+        )
+        offsets, genes, clips = observation_offsets(
+            observations,
+            ends,
+            int(params["calibration_max_distance"]),
+            int(params["pac_min_sample_count"]),
+        )
+        metrics = calculate_metrics(
+            args.sample_id,
+            source,
+            offsets,
+            genes,
+            clips,
+            float(params["calibration_quantile_low"]),
+            float(params["calibration_quantile_high"]),
+        )
+        source_results[source] = {
+            "metrics": asdict(metrics),
+            "offset_counts": {str(offset): count for offset, count in sorted(offsets.items())},
+        }
+    write_json(
+        {
+            "sample_id": args.sample_id,
+            "resolution": resolution,
+            "sources": source_results,
+        },
+        args.output,
+    )
+
+
+def command_aggregate_calibration(args: argparse.Namespace) -> None:
+    params = load_parameters(args.params)
+    sample_rows = {row["sample_id"]: row for row in read_tsv(args.samples)}
+    payloads: dict[str, dict[str, Any]] = {}
+    for path in args.calibrations:
+        payload = _read_json(path)
+        sample_id = str(payload.get("sample_id", ""))
+        if not sample_id:
+            raise PacusageError(f"Per-sample calibration summary {path} lacks a sample_id.")
+        if sample_id in payloads:
+            raise PacusageError(f"Duplicate per-sample calibration summary for {sample_id}.")
+        payloads[sample_id] = payload
+    if set(sample_rows) != set(payloads):
+        raise PacusageError(
+            "Per-sample calibration summaries do not match the normalized sample sheet."
+        )
+    resolutions = {
+        sample_id: payloads[sample_id]["resolution"] for sample_id in sorted(payloads)
+    }
+    profiles = {value["library_profile"] for value in resolutions.values()}
+    if len(profiles) != 1:
+        raise PacusageError(
+            "Samples use incompatible library profiles. Analyze each protocol in a separate run."
+        )
+    profile = get_profile(next(iter(profiles)))
+    common_sources = set.intersection(
+        *(set(payload["sources"]) for payload in payloads.values())
+    )
+    if not common_sources:
+        raise PacusageError("No evidence source is compatible with every sample.")
+
+    source_metrics: dict[str, list[CalibrationMetrics]] = {}
+    source_offsets: dict[str, list[dict[int, int]]] = {}
+    for source in sorted(common_sources):
+        metrics = []
+        offsets = []
+        for sample_id in sorted(payloads):
+            result = payloads[sample_id]["sources"][source]
+            metrics.append(CalibrationMetrics(**result["metrics"]))
+            offsets.append(
+                {int(offset): int(count) for offset, count in result["offset_counts"].items()}
+            )
+        kernels = [
+            empirical_kernel(
+                values,
+                -int(params["calibration_max_distance"]),
+                int(params["calibration_max_distance"]),
+            )
+            for values in offsets
+        ]
+        correlations = kernel_correlations(kernels)
+        source_metrics[source] = [
+            type(metric)(**{**metric.__dict__, "reproducibility": correlation})
+            for metric, correlation in zip(metrics, correlations, strict=True)
+        ]
+        source_offsets[source] = offsets
+
+    _write_calibration_outputs(
+        source_metrics,
+        source_offsets,
+        resolutions,
+        profile,
+        params,
+        args.output,
+        args.kernel,
+        args.resolution,
+    )
+
+
+def _write_calibration_outputs(
+    source_metrics: dict[str, list[CalibrationMetrics]],
+    source_offsets: dict[str, list[Mapping[int, int]]],
+    resolutions: dict[str, dict[str, Any]],
+    profile: ProtocolProfile,
+    params: dict[str, Any],
+    output_path: str | Path,
+    kernel_path: str | Path,
+    resolution_path: str | Path,
+) -> None:
     selected_source = _select_source(source_metrics, resolutions, profile, params)
     selected_metrics = source_metrics[selected_source]
     requested_models = {value["endpoint_model"] for value in resolutions.values()}
@@ -492,14 +700,14 @@ def command_calibrate(args: argparse.Namespace) -> None:
     ]
     pooled = pooled_kernel(kernels)
     kernel_minimum = -int(params["calibration_max_distance"])
-    write_tsv([asdict(metric) for metric in classified], args.output)
+    write_tsv([asdict(metric) for metric in classified], output_path)
     write_tsv(
         (
             {"offset": index + kernel_minimum, "weight": value}
             for index, value in enumerate(pooled)
             if value > 0
         ),
-        args.kernel,
+        kernel_path,
         ["offset", "weight"],
     )
     write_json(
@@ -518,14 +726,14 @@ def command_calibrate(args: argparse.Namespace) -> None:
                 for sample_id, value in resolutions.items()
             },
         },
-        args.resolution,
+        resolution_path,
     )
 
 
 def _select_source(
-    source_metrics: dict[str, list[Any]],
+    source_metrics: dict[str, list[CalibrationMetrics]],
     resolutions: dict[str, dict[str, Any]],
-    profile: Any,
+    profile: ProtocolProfile,
     params: dict[str, Any],
 ) -> str:
     explicit = {value["evidence_source"] for value in resolutions.values()}
@@ -929,6 +1137,19 @@ def _read_kernel(path: str | Path) -> tuple[np.ndarray, int]:
     for row in rows:
         kernel[int(row["offset"]) - minimum] = float(row["weight"])
     return kernel, minimum
+
+
+def _read_transcript_ends(
+    path: str | Path,
+) -> dict[tuple[str, str], list[tuple[int, str]]]:
+    ends: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for row in iter_tsv(path):
+        ends.setdefault((row["contig"], row["strand"]), []).append(
+            (int(row["coordinate"]), row["gene_id"])
+        )
+    for key in ends:
+        ends[key].sort()
+    return ends
 
 
 def _write_bed(rows: list[dict[str, object]], path: str | Path) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -39,10 +40,23 @@ def observation_offsets(
     genes: Counter[str] = Counter()
     matched: dict[str, Counter[int]] = {}
     clipped_by_gene: Counter[str] = Counter()
+    end_index = {
+        key: ([coordinate for coordinate, _ in values], values)
+        for key, values in ends.items()
+    }
     for observation in observations:
-        candidates = ends.get((observation.contig, observation.strand), [])
-        if not candidates:
+        indexed = end_index.get((observation.contig, observation.strand))
+        if not indexed:
             continue
+        coordinates, values = indexed
+        insertion = bisect_left(coordinates, observation.coordinate)
+        candidate_indexes = []
+        if insertion > 0:
+            previous_coordinate = coordinates[insertion - 1]
+            candidate_indexes.append(bisect_left(coordinates, previous_coordinate))
+        if insertion < len(values):
+            candidate_indexes.append(insertion)
+        candidates = [values[index] for index in candidate_indexes]
         nearest_coordinate, gene_id = min(
             candidates, key=lambda item: abs(item[0] - observation.coordinate)
         )

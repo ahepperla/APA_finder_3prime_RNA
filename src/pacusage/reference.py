@@ -5,7 +5,7 @@ from __future__ import annotations
 import gzip
 import shutil
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -207,7 +207,9 @@ def parse_attributes(raw: str) -> dict[str, str]:
     return values
 
 
-def transcript_ends(features: list[GenomicFeature]) -> dict[tuple[str, str], list[tuple[int, str]]]:
+def transcript_ends(
+    features: Iterable[GenomicFeature],
+) -> dict[tuple[str, str], list[tuple[int, str]]]:
     transcript_ranges: dict[tuple[str, str, str], list[int]] = {}
     transcript_gene: dict[tuple[str, str, str], str] = {}
     for feature in features:

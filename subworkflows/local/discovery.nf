@@ -1,4 +1,6 @@
-include { CALIBRATE_LIBRARY_PROFILE } from '../../modules/local/calibrate_library_profile'
+include { BUILD_CALIBRATION_REFERENCE } from '../../modules/local/build_calibration_reference'
+include { CALIBRATE_SAMPLE } from '../../modules/local/calibrate_sample'
+include { AGGREGATE_CALIBRATION } from '../../modules/local/aggregate_calibration'
 include { EXTRACT_3PRIME_EVIDENCE } from '../../modules/local/extract_3prime_evidence'
 include { CLUSTER_PACS } from '../../modules/local/cluster_pacs'
 include { ANNOTATE_PACS } from '../../modules/local/annotate_pacs'
@@ -12,23 +14,24 @@ workflow DISCOVERY {
     resolved_params
 
     main:
-    alignment_files = samples.map { meta, alignment, index, resolution, strand_qc, alignment_qc ->
-        alignment
-    }.collect()
-    resolution_files = samples.map { meta, alignment, index, resolution, strand_qc, alignment_qc ->
-        resolution
-    }.collect()
-
-    CALIBRATE_LIBRARY_PROFILE(
-        normalized_samples,
-        alignment_files,
-        resolution_files,
+    BUILD_CALIBRATION_REFERENCE(annotation)
+    calibration_transcript_ends = BUILD_CALIBRATION_REFERENCE.out.transcript_ends.first()
+    CALIBRATE_SAMPLE(
+        samples,
         reference,
-        annotation,
+        calibration_transcript_ends,
         resolved_params
     )
-    run_resolution = CALIBRATE_LIBRARY_PROFILE.out.resolution.first()
-    kernel = CALIBRATE_LIBRARY_PROFILE.out.kernel.first()
+    calibration_summaries = CALIBRATE_SAMPLE.out.calibration
+        .map { meta, calibration -> calibration }
+        .collect()
+    AGGREGATE_CALIBRATION(
+        normalized_samples,
+        calibration_summaries,
+        resolved_params
+    )
+    run_resolution = AGGREGATE_CALIBRATION.out.resolution.first()
+    kernel = AGGREGATE_CALIBRATION.out.kernel.first()
 
     EXTRACT_3PRIME_EVIDENCE(samples, reference, run_resolution, resolved_params)
     evidence_tables = EXTRACT_3PRIME_EVIDENCE.out.evidence
@@ -49,7 +52,7 @@ workflow DISCOVERY {
     atlas_checksum = ANNOTATE_PACS.out.checksum
     motifs = ANNOTATE_PACS.out.motifs
     evidence = EXTRACT_3PRIME_EVIDENCE.out.evidence
-    calibration = CALIBRATE_LIBRARY_PROFILE.out.calibration
+    calibration = AGGREGATE_CALIBRATION.out.calibration
     run_resolution = run_resolution
     kernel = kernel
     discovery_qc = CLUSTER_PACS.out.qc

@@ -121,6 +121,12 @@ compatible with those defaults.
 prefers `polyA_junction` evidence when enough genes support it and otherwise
 uses the profile-compatible aligned edge.
 
+Calibration is parallelized by sample. Nextflow first builds one compact table
+of annotated transcript ends, submits one calibration task per BAM/CRAM, and
+then combines the small per-sample summaries into the run-level calibration
+files. On Slurm, a 48-sample run can therefore schedule up to 48 independent
+calibration jobs instead of scanning all alignments in one large-memory job.
+
 When multiple library chemistries resolve differently, run them separately.
 A batch term cannot recover information lost through incompatible endpoint
 definitions.
