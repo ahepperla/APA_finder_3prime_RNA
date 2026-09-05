@@ -12,10 +12,17 @@ from pathlib import Path
 from typing import Any
 
 
-def open_text(path: str | Path, mode: str = "rt"):
+def open_text(
+    path: str | Path,
+    mode: str = "rt",
+    compresslevel: int | None = None,
+):
     path = Path(path)
     if path.suffix == ".gz":
-        return gzip.open(path, mode, newline="")
+        options = {"newline": ""}
+        if compresslevel is not None:
+            options["compresslevel"] = compresslevel
+        return gzip.open(path, mode, **options)
     return path.open(mode, newline="")
 
 
@@ -29,7 +36,10 @@ def iter_tsv(path: str | Path):
 
 
 def write_tsv(
-    rows: Iterable[dict[str, Any]], path: str | Path, fieldnames: list[str] | None = None
+    rows: Iterable[dict[str, Any]],
+    path: str | Path,
+    fieldnames: list[str] | None = None,
+    compresslevel: int | None = None,
 ) -> None:
     iterator = iter(rows)
     if fieldnames is None:
@@ -37,7 +47,7 @@ def write_tsv(
         fieldnames = list(first) if first is not None else []
         if first is not None:
             iterator = chain([first], iterator)
-    with open_text(path, "wt") as handle:
+    with open_text(path, "wt", compresslevel=compresslevel) as handle:
         writer = csv.DictWriter(
             handle,
             delimiter="\t",

@@ -751,10 +751,10 @@ def _genomic_coordinate(coordinate: int, strand: str) -> int:
     return coordinate if strand == "+" else -coordinate
 
 
-def candidates_as_rows(candidates: Iterable[PacCandidate]) -> list[dict[str, object]]:
-    rows = []
+def candidates_as_rows(
+    candidates: Iterable[PacCandidate],
+) -> Iterator[dict[str, object]]:
     for candidate in candidates:
         row = asdict(candidate)
         row["member_coordinates"] = ",".join(map(str, candidate.member_coordinates))
-        rows.append(row)
-    return rows
+        yield row

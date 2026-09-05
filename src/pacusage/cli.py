@@ -839,8 +839,8 @@ def command_cluster(args: argparse.Namespace) -> None:
             observations_sorted=True,
             sample_conditions=sample_conditions,
         )
-    write_tsv(candidates_as_rows(accepted), args.accepted)
-    write_tsv(candidates_as_rows(rejected), args.rejected)
+    write_tsv(candidates_as_rows(accepted), args.accepted, compresslevel=1)
+    write_tsv(candidates_as_rows(rejected), args.rejected, compresslevel=1)
     write_tsv(
         [
             {
