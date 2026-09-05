@@ -30,6 +30,23 @@ def test_proximal_ambiguous_assignment_stays_unassigned() -> None:
     assert qc["assigned_fragments"] == 0
 
 
+def test_proximal_assignment_uses_transcript_oriented_offsets() -> None:
+    atlas = [
+        {"pac_id": "plus", "contig": "chr1", "strand": "+", "coordinate": 100},
+        {"pac_id": "minus", "contig": "chr1", "strand": "-", "coordinate": 200},
+    ]
+    observations = [
+        EvidenceObservation("s", "chr1", "+", 90, 4),
+        EvidenceObservation("s", "chr1", "-", 210, 5),
+    ]
+    rows, qc = quantify_proximal(observations, atlas, np.asarray([1.0]), 10, 3)
+    assert {row["pac_id"]: row["count"] for row in rows} == {
+        "plus": 4,
+        "minus": 5,
+    }
+    assert qc["assigned_fragments"] == 9
+
+
 def test_pau_sums_to_one_without_pseudocounts() -> None:
     per_sample = {
         "a": [{"pac_id": "p1", "count": 3}, {"pac_id": "p2", "count": 1}],

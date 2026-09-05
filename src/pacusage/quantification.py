@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Iterable
 
@@ -20,11 +21,14 @@ def quantify_exact(
     counts: defaultdict[str, int] = defaultdict(int)
     assigned = unassigned = 0
     for observation in observations:
-        candidates = [
-            row
-            for row in index.get((observation.contig, observation.strand), [])
-            if abs(int(row["coordinate"]) - observation.coordinate) <= assignment_radius
-        ]
+        indexed = index.get((observation.contig, observation.strand))
+        if not indexed:
+            unassigned += observation.count
+            continue
+        coordinates, rows = indexed
+        lower = bisect_left(coordinates, observation.coordinate - assignment_radius)
+        upper = bisect_right(coordinates, observation.coordinate + assignment_radius)
+        candidates = rows[lower:upper]
         if not candidates:
             unassigned += observation.count
             continue
@@ -53,21 +57,48 @@ def quantify_proximal(
     kernel_minimum_offset: int,
     likelihood_ratio: float,
 ) -> tuple[list[dict[str, object]], dict[str, int]]:
-    index = _atlas_index(atlas)
+    index = _oriented_atlas_index(atlas)
+    nonzero = np.flatnonzero(kernel > 0)
+    if not len(nonzero):
+        rows = [{"pac_id": str(row["pac_id"]), "count": 0} for row in atlas]
+        total = sum(observation.count for observation in observations)
+        return rows, {
+            "accepted_fragments": total,
+            "assigned_fragments": 0,
+            "unassigned_fragments": total,
+            "ambiguous_fragments": 0,
+        }
+    minimum_offset = kernel_minimum_offset + int(nonzero[0])
+    maximum_offset = kernel_minimum_offset + int(nonzero[-1])
     counts: defaultdict[str, int] = defaultdict(int)
     assigned = unassigned = ambiguous = 0
     for observation in observations:
+        indexed = index.get((observation.contig, observation.strand))
+        if not indexed:
+            unassigned += observation.count
+            continue
+        coordinates, rows = indexed
+        endpoint = (
+            observation.coordinate if observation.strand == "+" else -observation.coordinate
+        )
+        lower = bisect_left(coordinates, endpoint + minimum_offset)
+        upper = bisect_right(coordinates, endpoint + maximum_offset)
         likelihoods: list[tuple[float, int, str]] = []
-        for row in index.get((observation.contig, observation.strand), []):
-            coordinate = int(row["coordinate"])
-            delta = (
-                observation.coordinate - coordinate
-                if observation.strand == "+"
-                else coordinate - observation.coordinate
-            )
-            kernel_index = delta - kernel_minimum_offset
+        for coordinate, row in zip(
+            coordinates[lower:upper],
+            rows[lower:upper],
+            strict=True,
+        ):
+            offset = coordinate - endpoint
+            kernel_index = offset - kernel_minimum_offset
             if 0 <= kernel_index < len(kernel) and kernel[kernel_index] > 0:
-                likelihoods.append((float(kernel[kernel_index]), coordinate, str(row["pac_id"])))
+                likelihoods.append(
+                    (
+                        float(kernel[kernel_index]),
+                        int(row["coordinate"]),
+                        str(row["pac_id"]),
+                    )
+                )
         if not likelihoods:
             unassigned += observation.count
             continue
@@ -91,13 +122,34 @@ def quantify_proximal(
 
 def _atlas_index(
     atlas: Iterable[dict[str, object]],
-) -> dict[tuple[str, str], list[dict[str, object]]]:
+) -> dict[tuple[str, str], tuple[list[int], list[dict[str, object]]]]:
     result: defaultdict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for row in atlas:
         result[(str(row["contig"]), str(row["strand"]))].append(row)
+    indexed = {}
     for key in result:
         result[key].sort(key=lambda row: int(row["coordinate"]))
-    return result
+        indexed[key] = ([int(row["coordinate"]) for row in result[key]], result[key])
+    return indexed
+
+
+def _oriented_atlas_index(
+    atlas: Iterable[dict[str, object]],
+) -> dict[tuple[str, str], tuple[list[int], list[dict[str, object]]]]:
+    result: defaultdict[tuple[str, str], list[tuple[int, dict[str, object]]]] = defaultdict(list)
+    for row in atlas:
+        strand = str(row["strand"])
+        coordinate = int(row["coordinate"])
+        oriented = coordinate if strand == "+" else -coordinate
+        result[(str(row["contig"]), strand)].append((oriented, row))
+    indexed = {}
+    for key, values in result.items():
+        values.sort(key=lambda item: item[0])
+        indexed[key] = (
+            [coordinate for coordinate, _ in values],
+            [row for _, row in values],
+        )
+    return indexed
 
 
 def build_count_outputs(

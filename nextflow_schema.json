@@ -81,7 +81,12 @@
         "known_pac_match_radius": {"type": "integer", "minimum": 0, "default": 12},
         "proximal_kernel_overlap_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
         "proximal_assignment_likelihood_ratio": {"type": "number", "minimum": 1, "default": 3},
-        "pac_coordinate_bootstrap_replicates": {"type": "integer", "minimum": 0, "default": 200},
+        "proximal_bin_size": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 25,
+          "description": "Bin width in nucleotides for proximal-tag regional peak discovery."
+        },
         "max_downstream_distance": {"type": "integer", "minimum": 0, "default": 5000},
         "pas_scan_upstream_far": {"type": "integer", "minimum": 1, "default": 50},
         "pas_scan_upstream_near": {"type": "integer", "minimum": 0, "default": 5},

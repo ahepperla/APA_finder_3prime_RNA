@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-import random
+import struct
+import tempfile
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict
+from itertools import groupby
 
 import numpy as np
+from scipy.signal import find_peaks, oaconvolve
 
 from .calibration import minimum_resolvable_separation
+from .errors import PacusageError
 from .models import EvidenceObservation, PacCandidate
+
+_SPOOLED_OBSERVATION = struct.Struct("<qIq")
 
 
 def cluster_exact_boundaries(
@@ -23,12 +30,24 @@ def cluster_exact_boundaries(
     known_sites: set[tuple[str, str, int]] | None = None,
     known_rescue_total: int = 5,
     known_match_radius: int = 12,
+    observations_sorted: bool = False,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
     known_sites = known_sites or set()
-    grouped, clip_counts = _group_observations(observations)
+    ordered: Iterable[EvidenceObservation]
+    if observations_sorted:
+        ordered = observations
+    else:
+        ordered = sorted(
+            observations,
+            key=lambda item: (item.contig, item.strand, item.coordinate, item.sample_id),
+        )
     accepted: list[PacCandidate] = []
     rejected: list[PacCandidate] = []
-    for (contig, strand), coordinate_counts in sorted(grouped.items()):
+    for (contig, strand), group in groupby(
+        ordered,
+        key=lambda item: (item.contig, item.strand),
+    ):
+        coordinate_counts, clip_counts = _group_exact_observations(group)
         coordinates = sorted(coordinate_counts)
         ranked = sorted(
             (
@@ -47,10 +66,12 @@ def cluster_exact_boundaries(
             coordinate = metrics["coordinate"]
             if coordinate in assigned:
                 continue
+            lower = bisect_left(coordinates, coordinate - cluster_radius)
+            upper = bisect_right(coordinates, coordinate + cluster_radius)
             members = tuple(
                 value
-                for value in coordinates
-                if value not in assigned and abs(value - coordinate) <= cluster_radius
+                for value in coordinates[lower:upper]
+                if value not in assigned
             )
             assigned.update(members)
             per_sample: defaultdict[str, int] = defaultdict(int)
@@ -74,11 +95,12 @@ def cluster_exact_boundaries(
                 else 0.0
             )
             width_90 = _weighted_interval_width(position_counts)
-            clipped = sum(clip_counts[(contig, strand)].get(member, 0) for member in members)
-            flank_count = sum(
-                sum(sample_counts.values())
-                for other, sample_counts in coordinate_counts.items()
-                if cluster_radius < abs(other - coordinate) <= cluster_radius * 2
+            clipped = sum(clip_counts.get(member, 0) for member in members)
+            flank_count = _flank_count(
+                coordinate,
+                coordinates,
+                coordinate_counts,
+                cluster_radius,
             )
             known = _matches_known(contig, strand, coordinate, known_sites, known_match_radius)
             primary_pass = total >= minimum_total and supporting >= minimum_supporting_samples
@@ -113,54 +135,50 @@ def cluster_exact_boundaries(
                 width_90=width_90,
                 poly_a_clip_fraction=clipped / total if total else 0.0,
                 local_enrichment=total / max(flank_count, 1),
+                region_start=min(members),
+                region_end=max(members) + 1,
+                resolution_nt=1,
             )
             (accepted if status != "rejected" else rejected).append(candidate)
     return accepted, rejected
 
 
-def _group_observations(
+def _group_exact_observations(
     observations: Iterable[EvidenceObservation],
 ) -> tuple[
-    dict[tuple[str, str], dict[int, dict[str, int]]],
-    dict[tuple[str, str], dict[int, int]],
+    dict[int, dict[str, int]],
+    dict[int, int],
 ]:
-    counts: dict[tuple[str, str], dict[int, dict[str, int]]] = defaultdict(
-        lambda: defaultdict(lambda: defaultdict(int))
-    )
-    clips: dict[tuple[str, str], dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    counts: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    clips: dict[int, int] = defaultdict(int)
     for observation in observations:
-        key = (observation.contig, observation.strand)
-        counts[key][observation.coordinate][
-            observation.sample_id
-        ] += observation.count
-        clips[key][observation.coordinate] += observation.poly_a_clip_count
+        counts[observation.coordinate][observation.sample_id] += observation.count
+        clips[observation.coordinate] += observation.poly_a_clip_count
     return counts, clips
 
 
-def _group_counts(
-    observations: Iterable[EvidenceObservation],
-) -> dict[tuple[str, str], dict[int, dict[str, int]]]:
-    result: dict[tuple[str, str], dict[int, dict[str, int]]] = defaultdict(
-        lambda: defaultdict(lambda: defaultdict(int))
-    )
-    for observation in observations:
-        result[(observation.contig, observation.strand)][observation.coordinate][
-            observation.sample_id
-        ] += observation.count
-    return result
-
-
 def _weighted_interval_width(position_counts: dict[int, int]) -> int:
-    expanded = np.asarray(
-        [coordinate for coordinate, count in sorted(position_counts.items()) for _ in range(count)],
-        dtype=int,
-    )
-    if not len(expanded):
+    total = sum(position_counts.values())
+    if not total:
         return 0
-    return int(
-        np.quantile(expanded, 0.95, method="nearest")
-        - np.quantile(expanded, 0.05, method="nearest")
+    ordered = sorted(position_counts.items())
+    return _weighted_coordinate(ordered, total, 0.95) - _weighted_coordinate(
+        ordered, total, 0.05
     )
+
+
+def _weighted_coordinate(
+    ordered_counts: list[tuple[int, int]],
+    total: int,
+    quantile: float,
+) -> int:
+    target = int(np.rint(quantile * (total - 1)))
+    cumulative = 0
+    for coordinate, count in ordered_counts:
+        cumulative += count
+        if target < cumulative:
+            return coordinate
+    raise ValueError("Weighted coordinate rank exceeds the available observations.")
 
 
 def _seed_metrics(
@@ -170,16 +188,39 @@ def _seed_metrics(
     radius: int,
 ) -> dict[str, int]:
     local: defaultdict[str, int] = defaultdict(int)
-    for other in coordinates:
-        if abs(other - coordinate) <= radius:
-            for sample_id, count in coordinate_counts[other].items():
-                local[sample_id] += count
+    lower = bisect_left(coordinates, coordinate - radius)
+    upper = bisect_right(coordinates, coordinate + radius)
+    for other in coordinates[lower:upper]:
+        for sample_id, count in coordinate_counts[other].items():
+            local[sample_id] += count
     return {
         "coordinate": coordinate,
         "supporting_samples": sum(value > 0 for value in local.values()),
         "capped_support": sum(min(value, 3) for value in local.values()),
         "raw_support": sum(local.values()),
     }
+
+
+def _flank_count(
+    coordinate: int,
+    coordinates: list[int],
+    coordinate_counts: dict[int, dict[str, int]],
+    radius: int,
+) -> int:
+    if radius <= 0:
+        return 0
+    left = coordinates[
+        bisect_left(coordinates, coordinate - 2 * radius) :
+        bisect_left(coordinates, coordinate - radius)
+    ]
+    right = coordinates[
+        bisect_right(coordinates, coordinate + radius) :
+        bisect_right(coordinates, coordinate + 2 * radius)
+    ]
+    return sum(
+        sum(coordinate_counts[value].values())
+        for value in (*left, *right)
+    )
 
 
 def _matches_known(
@@ -205,164 +246,320 @@ def discover_proximal_pacs(
     minimum_total: int,
     minimum_sample_count: int,
     minimum_supporting_samples: int,
-    bootstrap_replicates: int = 200,
-    random_seed: int = 1729,
+    bin_size: int = 25,
+    assignment_likelihood_ratio: float = 3.0,
+    observations_sorted: bool = False,
 ) -> tuple[list[PacCandidate], list[PacCandidate], int]:
-    grouped = _group_counts(observations)
+    if bin_size < 1:
+        raise ValueError("Proximal discovery bin size must be at least one nucleotide.")
+    nonzero = np.flatnonzero(kernel > 0)
+    if not len(nonzero):
+        raise PacusageError("The calibration kernel contains no positive weights.")
     resolution = minimum_resolvable_separation(kernel, overlap_threshold)
+    effective_bin_size = min(bin_size, max(1, resolution))
+    binned_kernel, kernel_minimum_bin = _bin_kernel(
+        kernel,
+        kernel_minimum_offset,
+        effective_bin_size,
+    )
+    kernel_minimum_nonzero = kernel_minimum_offset + int(nonzero[0])
+    kernel_maximum_nonzero = kernel_minimum_offset + int(nonzero[-1])
+    ordered: Iterable[EvidenceObservation]
+    if observations_sorted:
+        ordered = observations
+    else:
+        ordered = sorted(
+            observations,
+            key=lambda item: (item.contig, item.strand, item.coordinate, item.sample_id),
+        )
     accepted: list[PacCandidate] = []
     rejected: list[PacCandidate] = []
-    offsets = np.flatnonzero(kernel > 0) + kernel_minimum_offset
-    for (contig, strand), coordinate_counts in sorted(grouped.items()):
-        candidate_coordinates: set[int] = set()
-        for endpoint in coordinate_counts:
-            for offset in offsets:
-                candidate_coordinates.add(
-                    endpoint - int(offset) if strand == "+" else endpoint + int(offset)
-                )
-        scores: dict[int, tuple[float, int, int, int]] = {}
-        for coordinate in candidate_coordinates:
-            sample_scores: defaultdict[str, float] = defaultdict(float)
-            raw_support = 0
-            for endpoint, sample_counts in coordinate_counts.items():
-                delta = endpoint - coordinate if strand == "+" else coordinate - endpoint
-                kernel_index = delta - kernel_minimum_offset
-                if kernel_index < 0 or kernel_index >= len(kernel):
-                    continue
-                weight = float(kernel[kernel_index])
-                if weight <= 0:
-                    continue
-                for sample_id, count in sample_counts.items():
-                    sample_scores[sample_id] += min(count, 3) * weight
-                    raw_support += count
-            supporting = sum(score > 0 for score in sample_scores.values())
-            capped = int(round(sum(sample_scores.values()) * 1000000))
-            scores[coordinate] = (sum(sample_scores.values()), supporting, capped, raw_support)
-        local_maxima = [
-            coordinate
-            for coordinate in sorted(scores)
-            if scores[coordinate][0]
-            >= max(
-                scores.get(coordinate - 1, (-1, 0, 0, 0))[0],
-                scores.get(coordinate + 1, (-1, 0, 0, 0))[0],
-            )
-        ]
-        ranked = sorted(
-            local_maxima,
-            key=lambda coordinate: (
-                -scores[coordinate][1],
-                -scores[coordinate][2],
-                -scores[coordinate][0],
-                -scores[coordinate][3],
-                coordinate,
-            ),
+    for (contig, strand), group in groupby(
+        ordered,
+        key=lambda item: (item.contig, item.strand),
+    ):
+        group_accepted, group_rejected = _discover_proximal_group(
+            contig,
+            strand,
+            group,
+            kernel,
+            kernel_minimum_offset,
+            kernel_minimum_nonzero,
+            kernel_maximum_nonzero,
+            binned_kernel,
+            kernel_minimum_bin,
+            resolution,
+            effective_bin_size,
+            assignment_likelihood_ratio,
+            minimum_total,
+            minimum_sample_count,
+            minimum_supporting_samples,
         )
-        assigned_maxima: set[int] = set()
-        for coordinate in ranked:
-            if coordinate in assigned_maxima:
-                continue
-            merged = tuple(
-                value
-                for value in local_maxima
-                if value not in assigned_maxima and abs(value - coordinate) < resolution
-            )
-            assigned_maxima.update(merged)
-            per_sample: defaultdict[str, int] = defaultdict(int)
-            for endpoint, sample_counts in coordinate_counts.items():
-                delta = endpoint - coordinate if strand == "+" else coordinate - endpoint
-                kernel_index = delta - kernel_minimum_offset
-                if 0 <= kernel_index < len(kernel) and kernel[kernel_index] > 0:
-                    for sample_id, count in sample_counts.items():
-                        per_sample[sample_id] += count
-            total = sum(per_sample.values())
-            supporting = sum(count >= minimum_sample_count for count in per_sample.values())
-            status = (
-                "primary"
-                if total >= minimum_total and supporting >= minimum_supporting_samples
-                else "rejected"
-            )
-            failures = []
-            if total < minimum_total:
-                failures.append(f"total_count<{minimum_total}")
-            if supporting < minimum_supporting_samples:
-                failures.append(f"supporting_samples<{minimum_supporting_samples}")
-            sample_observations: dict[str, list[EvidenceObservation]] = defaultdict(list)
-            for endpoint, sample_counts in coordinate_counts.items():
-                for sample_id, count in sample_counts.items():
-                    sample_observations[sample_id].append(
-                        EvidenceObservation(
-                            sample_id=sample_id,
-                            contig=contig,
-                            strand=strand,
-                            coordinate=endpoint,
-                            count=count,
-                        )
-                    )
-            interval_low, interval_high, successes = bootstrap_proximal_coordinate(
-                sample_observations,
-                kernel,
-                kernel_minimum_offset,
-                strand,
-                range(coordinate - resolution, coordinate + resolution + 1),
-                bootstrap_replicates,
-                random_seed + coordinate,
-            )
-            candidate = PacCandidate(
-                contig=contig,
-                strand=strand,
-                coordinate=coordinate,
-                total_count=total,
-                supporting_samples=supporting,
-                capped_support=sum(min(value, 3) for value in per_sample.values()),
-                member_coordinates=merged,
-                status=status,
-                rejection_reason=";".join(failures) if status == "rejected" else "",
-                coordinate_interval_low=interval_low,
-                coordinate_interval_high=interval_high,
-                coordinate_bootstrap_successes=successes,
-            )
-            (accepted if status == "primary" else rejected).append(candidate)
+        accepted.extend(group_accepted)
+        rejected.extend(group_rejected)
+    accepted.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
+    rejected.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
     return accepted, rejected, resolution
 
 
-def bootstrap_proximal_coordinate(
-    sample_observations: dict[str, list[EvidenceObservation]],
+def _discover_proximal_group(
+    contig: str,
+    strand: str,
+    observations: Iterable[EvidenceObservation],
     kernel: np.ndarray,
     kernel_minimum_offset: int,
-    strand: str,
-    search_coordinates: Iterable[int],
-    replicates: int,
-    random_seed: int,
-) -> tuple[int | None, int | None, int]:
-    sample_ids = sorted(sample_observations)
-    coordinates = sorted(set(search_coordinates))
-    if not sample_ids or not coordinates:
-        return None, None, 0
-    rng = random.Random(random_seed)
-    maxima: list[int] = []
-    for _ in range(replicates):
-        sampled = [rng.choice(sample_ids) for _ in sample_ids]
-        scores: dict[int, float] = defaultdict(float)
-        for sample_id in sampled:
-            for observation in sample_observations[sample_id]:
-                for coordinate in coordinates:
-                    delta = (
-                        observation.coordinate - coordinate
-                        if strand == "+"
-                        else coordinate - observation.coordinate
-                    )
-                    index = delta - kernel_minimum_offset
-                    if 0 <= index < len(kernel):
-                        scores[coordinate] += min(observation.count, 3) * kernel[index]
-        if scores:
-            maxima.append(min(scores, key=lambda value: (-scores[value], value)))
-    if len(maxima) < max(1, int(replicates * 0.8)):
-        return None, None, len(maxima)
-    return (
-        int(np.quantile(maxima, 0.025, method="nearest")),
-        int(np.quantile(maxima, 0.975, method="nearest")),
-        len(maxima),
-    )
+    kernel_minimum_nonzero: int,
+    kernel_maximum_nonzero: int,
+    binned_kernel: np.ndarray,
+    kernel_minimum_bin: int,
+    resolution: int,
+    bin_size: int,
+    assignment_likelihood_ratio: float,
+    minimum_total: int,
+    minimum_sample_count: int,
+    minimum_supporting_samples: int,
+) -> tuple[list[PacCandidate], list[PacCandidate]]:
+    binned_counts: defaultdict[int, int] = defaultdict(int)
+    sample_indexes: dict[str, int] = {}
+    with tempfile.TemporaryFile() as spool:
+        for observation in observations:
+            oriented = _oriented_coordinate(observation.coordinate, strand)
+            bin_index = _nearest_bin(oriented, bin_size)
+            binned_counts[bin_index] += min(observation.count, 3)
+            sample_index = sample_indexes.setdefault(
+                observation.sample_id,
+                len(sample_indexes),
+            )
+            spool.write(
+                _SPOOLED_OBSERVATION.pack(
+                    oriented,
+                    sample_index,
+                    observation.count,
+                )
+            )
+
+        peaks = _regional_peaks(
+            binned_counts,
+            binned_kernel,
+            kernel_minimum_bin,
+            resolution,
+            bin_size,
+        )
+        peaks = [
+            peak for peak in peaks if _genomic_coordinate(peak[0], strand) >= 0
+        ]
+        if not peaks:
+            return [], []
+        peak_coordinates = [value[0] for value in peaks]
+        counts = np.zeros((len(peaks), len(sample_indexes)), dtype=np.int64)
+        spool.seek(0)
+        while block := spool.read(_SPOOLED_OBSERVATION.size * 65536):
+            if len(block) % _SPOOLED_OBSERVATION.size:
+                raise PacusageError("Temporary proximal-discovery data are truncated.")
+            for endpoint, sample_index, count in _SPOOLED_OBSERVATION.iter_unpack(block):
+                selected = _best_proximal_peak(
+                    endpoint,
+                    peak_coordinates,
+                    kernel,
+                    kernel_minimum_offset,
+                    kernel_minimum_nonzero,
+                    kernel_maximum_nonzero,
+                    assignment_likelihood_ratio,
+                )
+                if selected is not None:
+                    counts[selected, sample_index] += count
+
+    accepted: list[PacCandidate] = []
+    rejected: list[PacCandidate] = []
+    left_width = resolution // 2
+    right_width = resolution - left_width
+    for index, (oriented_coordinate, _, members) in enumerate(peaks):
+        coordinate = _genomic_coordinate(oriented_coordinate, strand)
+        per_sample = counts[index]
+        total = int(per_sample.sum())
+        supporting = int((per_sample >= minimum_sample_count).sum())
+        capped = int(np.minimum(per_sample, 3).sum())
+        failures = []
+        if total < minimum_total:
+            failures.append(f"total_count<{minimum_total}")
+        if supporting < minimum_supporting_samples:
+            failures.append(f"supporting_samples<{minimum_supporting_samples}")
+        status = "primary" if not failures else "rejected"
+        genomic_members = tuple(
+            sorted(_genomic_coordinate(value, strand) for value in members)
+        )
+        candidate = PacCandidate(
+            contig=contig,
+            strand=strand,
+            coordinate=coordinate,
+            total_count=total,
+            supporting_samples=supporting,
+            capped_support=capped,
+            member_coordinates=genomic_members,
+            status=status,
+            rejection_reason=";".join(failures),
+            region_start=max(0, coordinate - left_width),
+            region_end=coordinate + right_width,
+            resolution_nt=resolution,
+        )
+        (accepted if status == "primary" else rejected).append(candidate)
+    return accepted, rejected
+
+
+def _regional_peaks(
+    binned_counts: dict[int, int],
+    binned_kernel: np.ndarray,
+    kernel_minimum_bin: int,
+    resolution: int,
+    bin_size: int,
+) -> list[tuple[int, float, tuple[int, ...]]]:
+    if not binned_counts:
+        return []
+    kernel_span = len(binned_kernel) - 1
+    merge_distance_bins = max(0, (resolution - 1) // bin_size)
+    selected: list[tuple[int, float, tuple[int, ...]]] = []
+    for block in _active_bin_blocks(binned_counts, kernel_span):
+        signal_start = block[0][0]
+        signal_end = block[-1][0]
+        signal = np.zeros(signal_end - signal_start + 1, dtype=float)
+        for bin_index, count in block:
+            signal[bin_index - signal_start] = count
+        score = oaconvolve(signal, binned_kernel, mode="full")
+        tolerance = max(float(score.max()) * 1e-12, np.finfo(float).eps)
+        score[score < tolerance] = 0
+        peak_indexes, _ = find_peaks(score, height=tolerance)
+        boundary_peaks = []
+        if len(score) == 1 and score[0] > 0:
+            boundary_peaks.append(0)
+        elif len(score) > 1:
+            if score[0] > 0 and score[0] >= score[1]:
+                boundary_peaks.append(0)
+            if score[-1] > 0 and score[-1] >= score[-2]:
+                boundary_peaks.append(len(score) - 1)
+        if boundary_peaks:
+            peak_indexes = np.unique(
+                np.concatenate((peak_indexes, np.asarray(boundary_peaks, dtype=int)))
+            )
+        if not len(peak_indexes) and score.max() > 0:
+            peak_indexes = np.asarray([int(np.argmax(score))])
+        ranked = sorted(
+            (int(index) for index in peak_indexes),
+            key=lambda index: (
+                -float(score[index]),
+                signal_start + kernel_minimum_bin + index,
+            ),
+        )
+        suppressed = np.zeros(len(score), dtype=bool)
+        retained = []
+        for index in ranked:
+            if suppressed[index]:
+                continue
+            retained.append(index)
+            lower = max(0, index - merge_distance_bins)
+            upper = min(len(score), index + merge_distance_bins + 1)
+            suppressed[lower:upper] = True
+        retained.sort()
+        retained_bins = [signal_start + kernel_minimum_bin + index for index in retained]
+        member_map: dict[int, list[int]] = {value: [] for value in retained_bins}
+        for index in peak_indexes:
+            peak_bin = signal_start + kernel_minimum_bin + int(index)
+            nearest = _nearest_value(peak_bin, retained_bins)
+            if abs(peak_bin - nearest) * bin_size < resolution:
+                member_map[nearest].append(peak_bin * bin_size)
+        for index, peak_bin in zip(retained, retained_bins, strict=True):
+            coordinate = peak_bin * bin_size
+            selected.append(
+                (
+                    coordinate,
+                    float(score[index]),
+                    tuple(sorted(set(member_map[peak_bin] or [coordinate]))),
+                )
+            )
+    selected.sort(key=lambda value: value[0])
+    return selected
+
+
+def _active_bin_blocks(
+    counts: dict[int, int],
+    maximum_gap: int,
+) -> Iterator[list[tuple[int, int]]]:
+    block: list[tuple[int, int]] = []
+    previous: int | None = None
+    for item in sorted(counts.items()):
+        if previous is not None and item[0] - previous > maximum_gap:
+            yield block
+            block = []
+        block.append(item)
+        previous = item[0]
+    if block:
+        yield block
+
+
+def _bin_kernel(
+    kernel: np.ndarray,
+    kernel_minimum_offset: int,
+    bin_size: int,
+) -> tuple[np.ndarray, int]:
+    weights: defaultdict[int, float] = defaultdict(float)
+    for index, weight in enumerate(kernel):
+        if weight <= 0:
+            continue
+        offset = kernel_minimum_offset + index
+        weights[_nearest_bin(offset, bin_size)] += float(weight)
+    if not weights:
+        raise PacusageError("The calibration kernel contains no positive weights.")
+    minimum = min(weights)
+    maximum = max(weights)
+    result = np.zeros(maximum - minimum + 1, dtype=float)
+    for bin_index, weight in weights.items():
+        result[bin_index - minimum] = weight
+    return result / result.sum(), minimum
+
+
+def _best_proximal_peak(
+    endpoint: int,
+    peak_coordinates: list[int],
+    kernel: np.ndarray,
+    kernel_minimum_offset: int,
+    kernel_minimum_nonzero: int,
+    kernel_maximum_nonzero: int,
+    likelihood_ratio: float,
+) -> int | None:
+    lower = bisect_left(peak_coordinates, endpoint + kernel_minimum_nonzero)
+    upper = bisect_right(peak_coordinates, endpoint + kernel_maximum_nonzero)
+    likelihoods = []
+    for index in range(lower, upper):
+        offset = peak_coordinates[index] - endpoint
+        weight = float(kernel[offset - kernel_minimum_offset])
+        if weight > 0:
+            likelihoods.append((weight, index))
+    if not likelihoods:
+        return None
+    likelihoods.sort(key=lambda value: (-value[0], peak_coordinates[value[1]]))
+    best = likelihoods[0]
+    second = likelihoods[1][0] if len(likelihoods) > 1 else 0.0
+    if second > 0 and best[0] < likelihood_ratio * second:
+        return None
+    return best[1]
+
+
+def _nearest_value(value: int, ordered: list[int]) -> int:
+    insertion = bisect_left(ordered, value)
+    candidates = ordered[max(0, insertion - 1) : min(len(ordered), insertion + 1)]
+    return min(candidates, key=lambda candidate: (abs(candidate - value), candidate))
+
+
+def _nearest_bin(value: int, bin_size: int) -> int:
+    magnitude = (abs(value) + bin_size // 2) // bin_size
+    return int(magnitude if value >= 0 else -magnitude)
+
+
+def _oriented_coordinate(coordinate: int, strand: str) -> int:
+    return coordinate if strand == "+" else -coordinate
+
+
+def _genomic_coordinate(coordinate: int, strand: str) -> int:
+    return coordinate if strand == "+" else -coordinate
 
 
 def candidates_as_rows(candidates: Iterable[PacCandidate]) -> list[dict[str, object]]:

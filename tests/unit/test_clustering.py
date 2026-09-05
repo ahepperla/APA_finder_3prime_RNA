@@ -1,12 +1,23 @@
 import numpy as np
+import pytest
 
 from pacusage.calibration import minimum_resolvable_separation
-from pacusage.clustering import cluster_exact_boundaries, discover_proximal_pacs
+from pacusage.clustering import (
+    _regional_peaks,
+    cluster_exact_boundaries,
+    discover_proximal_pacs,
+)
+from pacusage.errors import PacusageError
 from pacusage.models import EvidenceObservation
 
 
-def observation(sample: str, coordinate: int, count: int) -> EvidenceObservation:
-    return EvidenceObservation(sample, "chr1", "+", coordinate, count)
+def observation(
+    sample: str,
+    coordinate: int,
+    count: int,
+    strand: str = "+",
+) -> EvidenceObservation:
+    return EvidenceObservation(sample, "chr1", strand, coordinate, count)
 
 
 def test_exact_seed_ranking_is_deterministic() -> None:
@@ -50,3 +61,52 @@ def test_proximal_resolution_merges_unresolved_maxima() -> None:
     assert observed_resolution == resolution
     assert accepted
     assert len({value for candidate in accepted for value in candidate.member_coordinates}) >= 1
+
+
+@pytest.mark.parametrize(
+    ("strand", "endpoint", "expected_coordinate"),
+    [("+", 90, 100), ("-", 110, 100)],
+)
+def test_proximal_positive_offset_points_toward_the_pac(
+    strand: str,
+    endpoint: int,
+    expected_coordinate: int,
+) -> None:
+    observations = [
+        observation("a", endpoint, 3, strand),
+        observation("b", endpoint, 3, strand),
+    ]
+    accepted, rejected, resolution = discover_proximal_pacs(
+        observations,
+        np.asarray([1.0]),
+        kernel_minimum_offset=10,
+        overlap_threshold=0.5,
+        minimum_total=1,
+        minimum_sample_count=1,
+        minimum_supporting_samples=1,
+        bin_size=1,
+    )
+    assert not rejected
+    assert resolution == 1
+    assert [candidate.coordinate for candidate in accepted] == [expected_coordinate]
+    assert accepted[0].region_start == expected_coordinate
+    assert accepted[0].region_end == expected_coordinate + 1
+
+
+def test_regional_peaks_merge_only_inside_calibrated_resolution() -> None:
+    kernel = np.zeros(41)
+    kernel[20] = 1
+    peaks = _regional_peaks(
+        {0: 3, 10: 3, 40: 3},
+        kernel,
+        kernel_minimum_bin=-20,
+        resolution=315,
+        bin_size=25,
+    )
+    assert [peak[0] for peak in peaks] == [0, 1000]
+    assert peaks[0][2] == (0, 250)
+
+
+def test_proximal_discovery_rejects_an_empty_kernel() -> None:
+    with pytest.raises(PacusageError, match="no positive weights"):
+        discover_proximal_pacs([], np.zeros(3), -1, 0.5, 1, 1, 1)

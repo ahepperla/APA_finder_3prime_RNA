@@ -153,6 +153,17 @@ def annotate_candidates(
                     "coordinate_interval_low": candidate.coordinate_interval_low,
                     "coordinate_interval_high": candidate.coordinate_interval_high,
                     "coordinate_bootstrap_successes": (candidate.coordinate_bootstrap_successes),
+                    "region_start": (
+                        candidate.region_start
+                        if candidate.region_start is not None
+                        else candidate.coordinate
+                    ),
+                    "region_end": (
+                        candidate.region_end
+                        if candidate.region_end is not None
+                        else candidate.coordinate + 1
+                    ),
+                    "resolution_nt": candidate.resolution_nt,
                     "calibration_profile": "PACusage-0.1",
                     "candidate_status": candidate.status,
                     "known_pac": bool(known_matches),

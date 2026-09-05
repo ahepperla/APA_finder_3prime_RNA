@@ -1,6 +1,7 @@
 import pandas as pd
 import pysam
 
+from pacusage.cli import _iter_observations
 from pacusage.evidence import (
     extract_evidence,
     fragment_boundary,
@@ -93,4 +94,30 @@ def test_evidence_parquet_is_written_in_batches(tmp_path) -> None:
     assert frame[["coordinate", "count"]].to_records(index=False).tolist() == [
         (100, 3),
         (200, 4),
+    ]
+
+
+def test_parquet_evidence_streams_in_global_coordinate_order(tmp_path) -> None:
+    first = [
+        EvidenceObservation("a", "chr1", "+", 100, 3),
+        EvidenceObservation("a", "chr2", "+", 50, 2),
+    ]
+    second = [
+        EvidenceObservation("b", "chr1", "+", 90, 4),
+        EvidenceObservation("b", "chr1", "-", 200, 1),
+    ]
+    paths = []
+    for name, observations in (("a", first), ("b", second)):
+        tsv = tmp_path / f"{name}.tsv.gz"
+        parquet = tmp_path / f"{name}.parquet"
+        write_evidence(observations, tsv, parquet)
+        paths.append(str(parquet))
+    merged = list(_iter_observations(paths, merge_sorted=True))
+    assert [
+        (row.contig, row.strand, row.coordinate, row.sample_id) for row in merged
+    ] == [
+        ("chr1", "+", 90, "b"),
+        ("chr1", "+", 100, "a"),
+        ("chr1", "-", 200, "b"),
+        ("chr2", "+", 50, "a"),
     ]

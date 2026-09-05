@@ -49,7 +49,7 @@ DEFAULTS: dict[str, Any] = {
     "known_pac_match_radius": 12,
     "proximal_kernel_overlap_threshold": 0.50,
     "proximal_assignment_likelihood_ratio": 3.0,
-    "pac_coordinate_bootstrap_replicates": 200,
+    "proximal_bin_size": 25,
     "max_downstream_distance": 5000,
     "pas_scan_upstream_far": 50,
     "pas_scan_upstream_near": 5,
@@ -133,6 +133,8 @@ def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
         raise PacusageError("Calibration quantiles must satisfy 0 <= low < high <= 1.")
     if int(params["min_replicates_per_condition"]) < 1:
         raise PacusageError("min_replicates_per_condition must be at least 1.")
+    if int(params["proximal_bin_size"]) < 1:
+        raise PacusageError("proximal_bin_size must be at least 1.")
     if not isinstance(params["model_covariates"], list):
         raise PacusageError("model_covariates must be a YAML list.")
     if not isinstance(params["bind_paths"], list):

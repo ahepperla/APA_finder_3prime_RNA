@@ -150,12 +150,28 @@ biological replicates.
 ## Coordinates and Interpretation
 
 PACusage uses zero-based interbase coordinates internally and in PAC IDs.
-BED output represents each coordinate as `[coordinate, coordinate + 1)`.
+Exact-boundary BED entries represent `[coordinate, coordinate + 1)`;
+proximal-tag BED entries span `[region_start, region_end)`.
 
 An **end observation** is a transcript-oriented aligned boundary. It is called
 an exact PAC only after the selected protocol and calibration support
 nucleotide resolution. Proximal-tag libraries produce estimated PAC
 coordinates and resolution groups.
+
+The two discovery modes remain separate:
+
+- `exact_boundary` clusters observed cleavage boundaries directly and reports
+  nucleotide-scale representatives.
+- `proximal_tag` bins endpoints (25 nt by default), convolves each
+  chromosome/strand signal with the calibrated offset kernel, finds regional
+  score peaks, and merges peaks closer than the calibrated minimum resolvable
+  separation. The atlas reports `region_start`, `region_end`, and
+  `resolution_nt`; its representative coordinate is not a claimed
+  single-nucleotide cleavage site.
+
+Discovery and quantification stream the per-sample Parquet evidence files.
+This avoids expanding every endpoint over every kernel offset and keeps
+large, many-sample runs bounded by one chromosome/strand group at a time.
 
 PAU is the raw PAC count divided by all assigned PAC counts for that gene in
 one sample. No pseudocount is added to count or observed-PAU matrices.

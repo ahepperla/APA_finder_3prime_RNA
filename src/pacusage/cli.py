@@ -8,11 +8,13 @@ import platform
 import tempfile
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict
+from heapq import merge
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pysam
 
 from . import __version__
@@ -801,7 +803,7 @@ def command_extract_evidence(args: argparse.Namespace) -> None:
 def command_cluster(args: argparse.Namespace) -> None:
     params = load_parameters(args.params)
     resolution = _read_json(args.resolution)
-    observations = _iter_observations(args.evidence)
+    observations = _iter_observations(args.evidence, merge_sorted=True)
     known = load_known_pacs(args.known_pacs)
     if resolution["endpoint_model"] == "exact_boundary":
         accepted, rejected = cluster_exact_boundaries(
@@ -814,6 +816,7 @@ def command_cluster(args: argparse.Namespace) -> None:
             known,
             int(params["known_pac_rescue_total"]),
             int(params["known_pac_match_radius"]),
+            observations_sorted=True,
         )
         minimum_resolution = int(params["pac_cluster_radius"])
     else:
@@ -826,8 +829,9 @@ def command_cluster(args: argparse.Namespace) -> None:
             int(params["pac_min_total_count"]),
             int(params["pac_min_sample_count"]),
             int(params["pac_min_supporting_samples"]),
-            int(params["pac_coordinate_bootstrap_replicates"]),
-            int(params["random_seed"]),
+            int(params["proximal_bin_size"]),
+            float(params["proximal_assignment_likelihood_ratio"]),
+            observations_sorted=True,
         )
     write_tsv(candidates_as_rows(accepted), args.accepted)
     write_tsv(candidates_as_rows(rejected), args.rejected)
@@ -867,6 +871,9 @@ def command_annotate(args: argparse.Namespace) -> None:
             coordinate_interval_low=_optional_int(row.get("coordinate_interval_low")),
             coordinate_interval_high=_optional_int(row.get("coordinate_interval_high")),
             coordinate_bootstrap_successes=int(row.get("coordinate_bootstrap_successes", 0)),
+            region_start=_optional_int(row.get("region_start")),
+            region_end=_optional_int(row.get("region_end")),
+            resolution_nt=int(row.get("resolution_nt", 0)),
         )
         for row in read_tsv(args.candidates)
     ]
@@ -1113,18 +1120,72 @@ def _sample_id_from_alignment(path: str) -> str:
     return name
 
 
-def _iter_observations(paths: list[str]) -> Iterator[EvidenceObservation]:
-    for path in paths:
-        for row in iter_tsv(path):
-            yield EvidenceObservation(
-                sample_id=row["sample_id"],
-                contig=row["contig"],
-                strand=row["strand"],
-                coordinate=int(row["coordinate"]),
-                count=int(row["count"]),
-                poly_a_clip_count=int(row.get("poly_a_clip_count", 0)),
-                evidence_source=row["evidence_source"],
-            )
+def _iter_observations(
+    paths: list[str],
+    merge_sorted: bool = False,
+) -> Iterator[EvidenceObservation]:
+    streams = [_iter_observation_file(path, require_sorted=merge_sorted) for path in paths]
+    if merge_sorted:
+        yield from merge(*streams, key=_observation_sort_key)
+        return
+    for stream in streams:
+        yield from stream
+
+
+def _iter_observation_file(
+    path: str | Path,
+    require_sorted: bool,
+) -> Iterator[EvidenceObservation]:
+    path = Path(path)
+    rows: Iterator[Mapping[str, object]]
+    if path.suffix.lower() == ".parquet":
+        rows = _iter_parquet_rows(path)
+    else:
+        rows = iter_tsv(path)
+    previous: tuple[str, str, int, str] | None = None
+    for row in rows:
+        observation = EvidenceObservation(
+            sample_id=str(row["sample_id"]),
+            contig=str(row["contig"]),
+            strand=str(row["strand"]),
+            coordinate=int(row["coordinate"]),
+            count=int(row["count"]),
+            poly_a_clip_count=int(row.get("poly_a_clip_count", 0)),
+            evidence_source=str(row["evidence_source"]),
+        )
+        key = _observation_sort_key(observation)
+        if require_sorted and previous is not None and key < previous:
+            raise PacusageError(f"Evidence table is not coordinate-sorted: {path}")
+        previous = key
+        yield observation
+
+
+def _iter_parquet_rows(path: Path) -> Iterator[dict[str, object]]:
+    columns = [
+        "sample_id",
+        "contig",
+        "strand",
+        "coordinate",
+        "count",
+        "poly_a_clip_count",
+        "evidence_source",
+    ]
+    parquet = pq.ParquetFile(path)
+    for batch in parquet.iter_batches(batch_size=100_000, columns=columns):
+        values = batch.to_pydict()
+        for row in zip(*(values[column] for column in columns), strict=True):
+            yield dict(zip(columns, row, strict=True))
+
+
+def _observation_sort_key(
+    observation: EvidenceObservation,
+) -> tuple[str, str, int, str]:
+    return (
+        observation.contig,
+        observation.strand,
+        observation.coordinate,
+        observation.sample_id,
+    )
 
 
 def _read_kernel(path: str | Path) -> tuple[np.ndarray, int]:
@@ -1159,12 +1220,18 @@ def _write_bed(rows: list[dict[str, object]], path: str | Path) -> None:
     with opener(path, "wt") as handle:
         for row in rows:
             coordinate = int(row["coordinate"])
+            if row["endpoint_model"] == "proximal_tag":
+                start = int(row["region_start"])
+                end = int(row["region_end"])
+            else:
+                start = coordinate
+                end = coordinate + 1
             handle.write(
                 "\t".join(
                     [
                         str(row["contig"]),
-                        str(coordinate),
-                        str(coordinate + 1),
+                        str(start),
+                        str(end),
                         str(row["pac_id"]),
                         str(row["total_count"]),
                         str(row["strand"]),

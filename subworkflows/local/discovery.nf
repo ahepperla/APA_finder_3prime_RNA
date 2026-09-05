@@ -35,7 +35,7 @@ workflow DISCOVERY {
 
     EXTRACT_3PRIME_EVIDENCE(samples, reference, run_resolution, resolved_params)
     evidence_tables = EXTRACT_3PRIME_EVIDENCE.out.evidence
-        .map { meta, tsv, parquet, plus, minus, qc -> tsv }
+        .map { meta, tsv, parquet, plus, minus, qc -> parquet }
         .collect()
     CLUSTER_PACS(evidence_tables, run_resolution, kernel, resolved_params)
     ANNOTATE_PACS(

@@ -22,7 +22,7 @@ process QUANTIFY_PACS {
     """
     pacusage quantify \
         --sample-id '${meta.sample_id}' \
-        --evidence '${evidence_tsv}' \
+        --evidence '${evidence_parquet}' \
         --atlas '${atlas}' \
         --resolution '${run_resolution}' \
         --kernel '${kernel}' \

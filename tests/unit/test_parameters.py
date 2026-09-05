@@ -21,4 +21,18 @@ def test_command_values_override_defaults() -> None:
     )
     assert params["min_mapq"] == 30
     assert params["pac_cluster_radius"] == 12
+    assert params["proximal_bin_size"] == 25
     assert params["bind_paths"] == []
+
+
+def test_proximal_bin_size_must_be_positive() -> None:
+    with pytest.raises(PacusageError, match="proximal_bin_size"):
+        normalize_parameters(
+            {
+                "input": "samples.tsv",
+                "assembly": "test",
+                "fasta": "genome.fa",
+                "gtf": "genes.gtf",
+                "proximal_bin_size": 0,
+            }
+        )

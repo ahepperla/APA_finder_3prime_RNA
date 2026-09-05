@@ -219,7 +219,7 @@ known_pac_rescue_total: 5
 known_pac_match_radius: 12
 proximal_kernel_overlap_threshold: 0.50
 proximal_assignment_likelihood_ratio: 3.0
-pac_coordinate_bootstrap_replicates: 200
+proximal_bin_size: 25
 
 max_downstream_distance: 5000
 pas_scan_upstream_far: 50
@@ -537,8 +537,9 @@ For the compatible samples in the run:
    calibrated range. Smooth it once with normalized triangular weights
    `[1, 2, 3, 2, 1]`, normalize it to sum to one, and average sample kernels
    with equal sample weight.
-3. For every possible PAC coordinate \(x\), calculate each sample's matched
-   score
+3. Bin observed endpoints and the pooled calibration kernel at
+   `proximal_bin_size` resolution. For every implied regional PAC coordinate
+   \(x\), calculate the matched score
    \(L_s(x)=\sum_e \min(y_{es},3)K_s(e-x)\), where \(e\) is an observed
    endpoint, \(y_{es}\) is its sample count, and \(K_s\) is the sample kernel.
 4. Identify local maxima of the summed matched score. Rank maxima by supporting
@@ -548,9 +549,10 @@ For the compatible samples in the run:
    requirements used for exact-boundary candidates.
 
 Search only coordinates implied by observed endpoints shifted over the
-nonzero calibrated kernel support. Implement scoring as sparse convolution by
-chromosome and strand, with an FFT-backed path allowed for dense regions, so
-the algorithm does not scan every genomic base.
+nonzero calibrated kernel support. Implement scoring as streaming,
+FFT-backed convolution by chromosome and strand so the algorithm does not
+expand every endpoint across every kernel offset or retain all samples'
+evidence in memory.
 
 Define kernel overlap at separation \(\delta\) as:
 
@@ -561,16 +563,10 @@ O(\delta)=\sum_d \min(K(d),K(d-\delta))
 The minimum resolvable separation is the smallest positive \(\delta\) for which
 `O(delta) <= proximal_kernel_overlap_threshold`. Merge maxima closer than this
 distance into one PAC resolution group. Store the strongest maximum as the
-representative coordinate and retain the merged maxima and score profile in
-metadata. Never report unresolved maxima as independently quantified PACs.
-
-Estimate each PAC's coordinate interval by rerunning the local matched-score
-maximum after bootstrap resampling supporting samples and calibration genes
-with the deterministic run seed. Use the 2.5 and 97.5 percent coordinate
-quantiles from `pac_coordinate_bootstrap_replicates` successful replicates.
-Report the number of successful replicates and label the interval unavailable
-when fewer than 80 percent succeed. This interval describes coordinate
-resolution; it is not a confidence interval for differential PAU.
+representative coordinate, retain the merged maxima, and report
+`region_start`, `region_end`, and `resolution_nt`. Never report unresolved
+maxima as independently quantified PACs or interpret the representative as a
+nucleotide-resolution cleavage site.
 
 For `proximal_tag`, known transcript ends may be used for calibration and
 annotation, but PAS motif sequence must not be used to select or reposition
@@ -639,7 +635,7 @@ Also store:
 
 - `endpoint_model`;
 - `coordinate_precision`: `exact` or `estimated`;
-- estimated coordinate interval;
+- assay-resolution region and width;
 - PAC resolution-group identifier and merged candidate coordinates;
 - calibration profile and version;
 - resolved evidence source;
@@ -1172,7 +1168,7 @@ Cover:
 - control-condition validation and multiple comparison families;
 - PAC seed ranking, radius boundaries, and deterministic ties;
 - deterministic proximal kernels, peak ranking, minimum resolvable separation,
-  resolution-group merging, and coordinate bootstrap intervals;
+  regional peak merging, and assay-resolution intervals;
 - calibrated proximal-tag assignment likelihood ratios and ambiguity handling;
 - protocol evidence sources and rejection of incompatible comparison families;
 - prevention of motif use during primary PAC discovery;
