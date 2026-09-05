@@ -173,6 +173,13 @@ Discovery and quantification stream the per-sample Parquet evidence files.
 This avoids expanding every endpoint over every kernel offset and keeps
 large, many-sample runs bounded by one chromosome/strand group at a time.
 
+Candidate support is replicate-coherent: `pac_min_supporting_samples` must be
+met by samples from at least one condition. Evidence from unrelated conditions
+cannot be combined merely to pass the discovery threshold. The atlas remains
+condition-blind otherwise: direction and treatment effect are not used during
+discovery, and the final atlas is the union of candidates supported by any
+condition.
+
 PAU is the raw PAC count divided by all assigned PAC counts for that gene in
 one sample. No pseudocount is added to count or observed-PAU matrices.
 

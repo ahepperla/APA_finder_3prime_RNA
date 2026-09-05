@@ -5,8 +5,8 @@ from __future__ import annotations
 import struct
 import tempfile
 from bisect import bisect_left, bisect_right
-from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict
 from itertools import groupby
 
@@ -31,6 +31,7 @@ def cluster_exact_boundaries(
     known_rescue_total: int = 5,
     known_match_radius: int = 12,
     observations_sorted: bool = False,
+    sample_conditions: Mapping[str, str] | None = None,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
     known_sites = known_sites or set()
     ordered: Iterable[EvidenceObservation]
@@ -79,7 +80,11 @@ def cluster_exact_boundaries(
                 for sample_id, count in coordinate_counts[member].items():
                     per_sample[sample_id] += count
             total = sum(per_sample.values())
-            supporting = sum(count >= minimum_sample_count for count in per_sample.values())
+            total_supporting, supporting, supporting_condition = _condition_support(
+                per_sample,
+                minimum_sample_count,
+                sample_conditions,
+            )
             capped = sum(min(count, 3) for count in per_sample.values())
             position_counts = {
                 member: sum(coordinate_counts[member].values()) for member in members
@@ -138,6 +143,8 @@ def cluster_exact_boundaries(
                 region_start=min(members),
                 region_end=max(members) + 1,
                 resolution_nt=1,
+                total_supporting_samples=total_supporting,
+                supporting_condition=supporting_condition,
             )
             (accepted if status != "rejected" else rejected).append(candidate)
     return accepted, rejected
@@ -223,6 +230,35 @@ def _flank_count(
     )
 
 
+def _condition_support(
+    per_sample: Mapping[str, int],
+    minimum_sample_count: int,
+    sample_conditions: Mapping[str, str] | None,
+) -> tuple[int, int, str]:
+    qualifying = [
+        sample_id
+        for sample_id, count in per_sample.items()
+        if count >= minimum_sample_count
+    ]
+    total_supporting = len(qualifying)
+    if not sample_conditions:
+        return total_supporting, total_supporting, ""
+    missing = sorted(set(qualifying).difference(sample_conditions))
+    if missing:
+        raise PacusageError(
+            "Evidence contains sample IDs absent from the normalized sample sheet: "
+            + ", ".join(missing[:10])
+        )
+    by_condition = Counter(sample_conditions[sample_id] for sample_id in qualifying)
+    if not by_condition:
+        return 0, 0, ""
+    supporting_condition = min(
+        by_condition,
+        key=lambda condition: (-by_condition[condition], condition),
+    )
+    return total_supporting, by_condition[supporting_condition], supporting_condition
+
+
 def _matches_known(
     contig: str,
     strand: str,
@@ -249,6 +285,7 @@ def discover_proximal_pacs(
     bin_size: int = 25,
     assignment_likelihood_ratio: float = 3.0,
     observations_sorted: bool = False,
+    sample_conditions: Mapping[str, str] | None = None,
 ) -> tuple[list[PacCandidate], list[PacCandidate], int]:
     if bin_size < 1:
         raise ValueError("Proximal discovery bin size must be at least one nucleotide.")
@@ -294,6 +331,7 @@ def discover_proximal_pacs(
             minimum_total,
             minimum_sample_count,
             minimum_supporting_samples,
+            sample_conditions,
         )
         accepted.extend(group_accepted)
         rejected.extend(group_rejected)
@@ -318,6 +356,7 @@ def _discover_proximal_group(
     minimum_total: int,
     minimum_sample_count: int,
     minimum_supporting_samples: int,
+    sample_conditions: Mapping[str, str] | None,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
     binned_counts: defaultdict[int, int] = defaultdict(int)
     sample_indexes: dict[str, int] = {}
@@ -369,6 +408,14 @@ def _discover_proximal_group(
                 if selected is not None:
                     counts[selected, sample_index] += count
 
+    total_supporting, condition_support, supporting_conditions = (
+        _condition_support_arrays(
+            counts,
+            sample_indexes,
+            minimum_sample_count,
+            sample_conditions,
+        )
+    )
     accepted: list[PacCandidate] = []
     rejected: list[PacCandidate] = []
     left_width = resolution // 2
@@ -377,7 +424,7 @@ def _discover_proximal_group(
         coordinate = _genomic_coordinate(oriented_coordinate, strand)
         per_sample = counts[index]
         total = int(per_sample.sum())
-        supporting = int((per_sample >= minimum_sample_count).sum())
+        supporting = int(condition_support[index])
         capped = int(np.minimum(per_sample, 3).sum())
         failures = []
         if total < minimum_total:
@@ -401,9 +448,44 @@ def _discover_proximal_group(
             region_start=max(0, coordinate - left_width),
             region_end=coordinate + right_width,
             resolution_nt=resolution,
+            total_supporting_samples=int(total_supporting[index]),
+            supporting_condition=str(supporting_conditions[index]),
         )
         (accepted if status == "primary" else rejected).append(candidate)
     return accepted, rejected
+
+
+def _condition_support_arrays(
+    counts: np.ndarray,
+    sample_indexes: Mapping[str, int],
+    minimum_sample_count: int,
+    sample_conditions: Mapping[str, str] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    qualifying = counts >= minimum_sample_count
+    total_supporting = qualifying.sum(axis=1)
+    if not sample_conditions:
+        return (
+            total_supporting,
+            total_supporting.copy(),
+            np.full(len(counts), "", dtype=object),
+        )
+    missing = sorted(set(sample_indexes).difference(sample_conditions))
+    if missing:
+        raise PacusageError(
+            "Evidence contains sample IDs absent from the normalized sample sheet: "
+            + ", ".join(missing[:10])
+        )
+    condition_samples: defaultdict[str, list[int]] = defaultdict(list)
+    for sample_id, sample_index in sample_indexes.items():
+        condition_samples[sample_conditions[sample_id]].append(sample_index)
+    maximum = np.zeros(len(counts), dtype=np.int64)
+    winners = np.full(len(counts), "", dtype=object)
+    for condition in sorted(condition_samples):
+        support = qualifying[:, condition_samples[condition]].sum(axis=1)
+        replace = support > maximum
+        maximum[replace] = support[replace]
+        winners[replace] = condition
+    return total_supporting, maximum, winners
 
 
 def _regional_peaks(

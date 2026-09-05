@@ -47,6 +47,8 @@ def test_motif_position_and_minus_strand_annotation(tmp_path: Path) -> None:
     assert rows[0]["region_start"] == 101
     assert rows[0]["region_end"] == 102
     assert rows[0]["resolution_nt"] == 0
+    assert rows[0]["total_supporting_samples"] == 0
+    assert rows[0]["supporting_condition"] == ""
     assert rows[1]["primary_pas_motif_rna"] == "AAUAAA"
     assert rows[1]["gene_id"] == "minus"
 

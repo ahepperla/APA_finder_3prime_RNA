@@ -76,7 +76,12 @@
         "pac_cluster_radius": {"type": "integer", "minimum": 0, "default": 12},
         "pac_min_total_count": {"type": "integer", "minimum": 1, "default": 10},
         "pac_min_sample_count": {"type": "integer", "minimum": 1, "default": 2},
-        "pac_min_supporting_samples": {"type": "integer", "minimum": 1, "default": 2},
+        "pac_min_supporting_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Minimum qualifying samples from at least one condition required for a PAC."
+        },
         "known_pac_rescue_total": {"type": "integer", "minimum": 1, "default": 5},
         "known_pac_match_radius": {"type": "integer", "minimum": 0, "default": 12},
         "proximal_kernel_overlap_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},

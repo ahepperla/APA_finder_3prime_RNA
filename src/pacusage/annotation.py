@@ -146,6 +146,8 @@ def annotate_candidates(
                     ),
                     "total_count": candidate.total_count,
                     "supporting_samples": candidate.supporting_samples,
+                    "total_supporting_samples": candidate.total_supporting_samples,
+                    "supporting_condition": candidate.supporting_condition,
                     "fraction_within_2nt": round(candidate.fraction_within_2nt, 6),
                     "width_90": candidate.width_90,
                     "local_strand_enrichment": round(candidate.local_enrichment, 6),

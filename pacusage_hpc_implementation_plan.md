@@ -546,7 +546,9 @@ For the compatible samples in the run:
    sample count, summed capped support, matched score, raw support, and genomic
    coordinate, in that order.
 5. Apply the same total-count, per-sample-count, and supporting-sample
-   requirements used for exact-boundary candidates.
+   requirements used for exact-boundary candidates. The supporting-sample
+   threshold must be met by replicates within at least one condition; samples
+   from unrelated conditions cannot be combined to admit a candidate.
 
 Search only coordinates implied by observed endpoints shifted over the
 nonzero calibrated kernel support. Implement scoring as streaming,

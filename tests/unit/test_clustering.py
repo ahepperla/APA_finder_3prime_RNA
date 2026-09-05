@@ -48,6 +48,29 @@ def test_radius_boundary_is_inclusive() -> None:
     assert accepted[0].member_coordinates == (100, 112)
 
 
+def test_exact_support_must_come_from_one_condition() -> None:
+    observations = [
+        observation("control_1", 100, 3),
+        observation("treatment_1", 100, 3),
+    ]
+    accepted, rejected = cluster_exact_boundaries(
+        observations,
+        0,
+        12,
+        1,
+        1,
+        2,
+        sample_conditions={
+            "control_1": "control",
+            "treatment_1": "treatment",
+        },
+    )
+    assert not accepted
+    assert len(rejected) == 1
+    assert rejected[0].supporting_samples == 1
+    assert rejected[0].total_supporting_samples == 2
+
+
 def test_proximal_resolution_merges_unresolved_maxima() -> None:
     kernel = np.array([0.1, 0.2, 0.4, 0.2, 0.1])
     resolution = minimum_resolvable_separation(kernel, 0.5)
@@ -110,3 +133,28 @@ def test_regional_peaks_merge_only_inside_calibrated_resolution() -> None:
 def test_proximal_discovery_rejects_an_empty_kernel() -> None:
     with pytest.raises(PacusageError, match="no positive weights"):
         discover_proximal_pacs([], np.zeros(3), -1, 0.5, 1, 1, 1)
+
+
+def test_proximal_support_must_come_from_one_condition() -> None:
+    observations = [
+        observation("control_1", 90, 3),
+        observation("treatment_1", 90, 3),
+    ]
+    accepted, rejected, _ = discover_proximal_pacs(
+        observations,
+        np.asarray([1.0]),
+        kernel_minimum_offset=10,
+        overlap_threshold=0.5,
+        minimum_total=1,
+        minimum_sample_count=1,
+        minimum_supporting_samples=2,
+        bin_size=1,
+        sample_conditions={
+            "control_1": "control",
+            "treatment_1": "treatment",
+        },
+    )
+    assert not accepted
+    assert len(rejected) == 1
+    assert rejected[0].supporting_samples == 1
+    assert rejected[0].total_supporting_samples == 2

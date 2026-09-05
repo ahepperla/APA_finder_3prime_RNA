@@ -61,3 +61,5 @@ class PacCandidate:
     region_start: int | None = None
     region_end: int | None = None
     resolution_nt: int = 0
+    total_supporting_samples: int = 0
+    supporting_condition: str = ""

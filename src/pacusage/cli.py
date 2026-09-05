@@ -180,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cluster = commands.add_parser("cluster", help="build the condition-blind PAC atlas")
     cluster.add_argument("--evidence", nargs="+", required=True)
+    cluster.add_argument("--samples", required=True)
     cluster.add_argument("--resolution", required=True)
     cluster.add_argument("--kernel", required=True)
     cluster.add_argument("--params", required=True)
@@ -803,6 +804,9 @@ def command_extract_evidence(args: argparse.Namespace) -> None:
 def command_cluster(args: argparse.Namespace) -> None:
     params = load_parameters(args.params)
     resolution = _read_json(args.resolution)
+    sample_conditions = {
+        row["sample_id"]: row["condition"] for row in iter_tsv(args.samples)
+    }
     observations = _iter_observations(args.evidence, merge_sorted=True)
     known = load_known_pacs(args.known_pacs)
     if resolution["endpoint_model"] == "exact_boundary":
@@ -817,6 +821,7 @@ def command_cluster(args: argparse.Namespace) -> None:
             int(params["known_pac_rescue_total"]),
             int(params["known_pac_match_radius"]),
             observations_sorted=True,
+            sample_conditions=sample_conditions,
         )
         minimum_resolution = int(params["pac_cluster_radius"])
     else:
@@ -832,6 +837,7 @@ def command_cluster(args: argparse.Namespace) -> None:
             int(params["proximal_bin_size"]),
             float(params["proximal_assignment_likelihood_ratio"]),
             observations_sorted=True,
+            sample_conditions=sample_conditions,
         )
     write_tsv(candidates_as_rows(accepted), args.accepted)
     write_tsv(candidates_as_rows(rejected), args.rejected)
@@ -842,6 +848,9 @@ def command_cluster(args: argparse.Namespace) -> None:
                 "accepted_pacs": len(accepted),
                 "rejected_candidates": len(rejected),
                 "minimum_resolvable_separation": minimum_resolution,
+                "support_requirement": (
+                    f"{params['pac_min_supporting_samples']} samples within one condition"
+                ),
             }
         ],
         args.qc,
@@ -874,6 +883,8 @@ def command_annotate(args: argparse.Namespace) -> None:
             region_start=_optional_int(row.get("region_start")),
             region_end=_optional_int(row.get("region_end")),
             resolution_nt=int(row.get("resolution_nt", 0)),
+            total_supporting_samples=int(row.get("total_supporting_samples", 0)),
+            supporting_condition=row.get("supporting_condition", ""),
         )
         for row in read_tsv(args.candidates)
     ]

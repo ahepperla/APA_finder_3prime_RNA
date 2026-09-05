@@ -90,6 +90,12 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
     )
     resolution = tmp_path / "resolution.json"
     resolution.write_text('{"endpoint_model":"proximal_tag","evidence_source":"read_3p"}\n')
+    samples = tmp_path / "samples.tsv"
+    samples.write_text(
+        "sample_id\tcondition\n"
+        "a\ttreatment\n"
+        "b\ttreatment\n"
+    )
     kernel = tmp_path / "kernel.tsv"
     kernel.write_text("offset\tweight\n10\t1.0\n")
     accepted = tmp_path / "accepted.tsv"
@@ -102,6 +108,8 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
                 "cluster",
                 "--evidence",
                 *evidence_paths,
+                "--samples",
+                str(samples),
                 "--resolution",
                 str(resolution),
                 "--kernel",

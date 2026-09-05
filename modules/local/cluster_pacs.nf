@@ -7,6 +7,7 @@ process CLUSTER_PACS {
 
     input:
     path evidence_tables
+    path normalized_samples
     path run_resolution
     path kernel
     path resolved_params
@@ -21,6 +22,7 @@ process CLUSTER_PACS {
     """
     pacusage cluster \
         --evidence ${evidence_tables.join(' ')} \
+        --samples '${normalized_samples}' \
         --resolution '${run_resolution}' \
         --kernel '${kernel}' \
         --params '${resolved_params}' \
