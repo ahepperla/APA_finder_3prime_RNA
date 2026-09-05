@@ -1,6 +1,6 @@
 process FIT_USAGE_MODEL {
     tag 'all-comparisons'
-    label 'high'
+    label 'serial_high'
 
     publishDir "${params.outdir}/statistics", mode: 'copy',
         pattern: '*.tsv.gz'

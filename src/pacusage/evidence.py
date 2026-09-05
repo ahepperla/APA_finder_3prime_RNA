@@ -10,7 +10,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pysam
 
 from .errors import PacusageError
@@ -271,7 +272,6 @@ def write_evidence(
     tsv_path: str | Path,
     parquet_path: str | Path,
 ) -> None:
-    rows = [asdict(observation) for observation in observations]
     fields = [
         "sample_id",
         "contig",
@@ -281,8 +281,25 @@ def write_evidence(
         "poly_a_clip_count",
         "evidence_source",
     ]
-    write_tsv(rows, tsv_path, fields)
-    pd.DataFrame(rows, columns=fields).to_parquet(parquet_path, index=False)
+    write_tsv((asdict(observation) for observation in observations), tsv_path, fields)
+    schema = pa.schema(
+        [
+            ("sample_id", pa.string()),
+            ("contig", pa.string()),
+            ("strand", pa.string()),
+            ("coordinate", pa.int64()),
+            ("count", pa.int64()),
+            ("poly_a_clip_count", pa.int64()),
+            ("evidence_source", pa.string()),
+        ]
+    )
+    with pq.ParquetWriter(parquet_path, schema) as writer:
+        for start in range(0, len(observations), 100_000):
+            rows = [
+                asdict(observation)
+                for observation in observations[start : start + 100_000]
+            ]
+            writer.write_table(pa.Table.from_pylist(rows, schema=schema))
 
 
 def write_bedgraphs(
@@ -338,7 +355,6 @@ def infer_strandedness(
     reservoir: list[tuple[bool, str]] = []
     eligible = 0
     rng = random.Random(random_seed)
-    seen_names: set[str] = set()
     with pysam.AlignmentFile(str(alignment), mode, reference_filename=str(reference)) as handle:
         for record in handle.fetch(until_eof=True):
             if (
@@ -348,9 +364,6 @@ def infer_strandedness(
                 or (record.is_paired and not record.is_read1)
             ):
                 continue
-            if record.is_paired and record.query_name in seen_names:
-                continue
-            seen_names.add(record.query_name)
             overlaps = index.query(
                 record.reference_name, record.reference_start, record.reference_end
             )

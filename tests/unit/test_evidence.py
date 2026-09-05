@@ -1,3 +1,4 @@
+import pandas as pd
 import pysam
 
 from pacusage.evidence import (
@@ -7,7 +8,9 @@ from pacusage.evidence import (
     read_boundary,
     terminal_soft_clip,
     transcript_strand,
+    write_evidence,
 )
+from pacusage.models import EvidenceObservation
 
 
 def record(flag: int, start: int, cigar: list[tuple[int, int]], sequence: str = "A" * 30):
@@ -76,3 +79,18 @@ def test_paired_end_extraction_counts_one_fragment(tmp_path) -> None:
     )
     assert [(item.coordinate, item.count) for item in observations] == [(230, 1)]
     assert qc["accepted_fragments"] == 1
+
+
+def test_evidence_parquet_is_written_in_batches(tmp_path) -> None:
+    observations = [
+        EvidenceObservation("sample", "chr1", "+", 100, 3),
+        EvidenceObservation("sample", "chr1", "-", 200, 4, 2),
+    ]
+    tsv = tmp_path / "evidence.tsv.gz"
+    parquet = tmp_path / "evidence.parquet"
+    write_evidence(observations, tsv, parquet)
+    frame = pd.read_parquet(parquet)
+    assert frame[["coordinate", "count"]].to_records(index=False).tolist() == [
+        (100, 3),
+        (200, 4),
+    ]

@@ -1,6 +1,6 @@
 process KMER_ENRICHMENT {
     tag 'exploratory-kmers'
-    label 'medium'
+    label 'serial_high'
 
     publishDir "${params.outdir}/motifs", mode: 'copy',
         pattern: 'kmer/*.tsv.gz',

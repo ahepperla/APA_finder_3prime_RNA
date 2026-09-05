@@ -101,38 +101,35 @@ def _atlas_index(
 
 
 def build_count_outputs(
-    per_sample_counts: dict[str, list[dict[str, object]]],
+    per_sample_counts: dict[str, Iterable[dict[str, object]] | pd.Series],
     atlas: list[dict[str, object]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    atlas_by_id = {str(row["pac_id"]): row for row in atlas}
     sample_ids = sorted(per_sample_counts)
-    count_map = {
-        (sample_id, str(row["pac_id"])): int(row["count"])
-        for sample_id, rows in per_sample_counts.items()
-        for row in rows
-    }
-    wide_rows = []
-    long_rows = []
-    for pac_id in sorted(atlas_by_id):
-        atlas_row = atlas_by_id[pac_id]
-        row: dict[str, object] = {
-            "gene_id": atlas_row.get("gene_id", ""),
-            "pac_id": pac_id,
+    atlas_rows = sorted(atlas, key=lambda row: str(row["pac_id"]))
+    wide = pd.DataFrame(
+        {
+            "gene_id": [row.get("gene_id", "") for row in atlas_rows],
+            "pac_id": [str(row["pac_id"]) for row in atlas_rows],
         }
-        for sample_id in sample_ids:
-            count = count_map.get((sample_id, pac_id), 0)
-            row[sample_id] = count
-            long_rows.append(
-                {
-                    "gene_id": atlas_row.get("gene_id", ""),
-                    "pac_id": pac_id,
-                    "sample_id": sample_id,
-                    "count": count,
-                }
+    )
+    for sample_id in sample_ids:
+        rows = per_sample_counts[sample_id]
+        counts = (
+            rows
+            if isinstance(rows, pd.Series)
+            else pd.Series(
+                {str(row["pac_id"]): int(row["count"]) for row in rows},
+                dtype="int64",
             )
-        wide_rows.append(row)
-    wide = pd.DataFrame(wide_rows, columns=["gene_id", "pac_id", *sample_ids])
-    long = pd.DataFrame(long_rows, columns=["gene_id", "pac_id", "sample_id", "count"])
+        )
+        counts.index = counts.index.astype(str)
+        wide[sample_id] = wide["pac_id"].map(counts).fillna(0).astype("int64")
+    long = wide.melt(
+        id_vars=["gene_id", "pac_id"],
+        value_vars=sample_ids,
+        var_name="sample_id",
+        value_name="count",
+    )
     eligible = long[
         (long["gene_id"].astype(str) != "")
         & ~long["gene_id"].astype(str).str.contains(",", regex=False)

@@ -1,6 +1,6 @@
 process QUANTIFY_PACS {
     tag { meta.sample_id }
-    label 'medium'
+    label 'serial_medium'
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: '*.quantification.tsv'
     publishDir "${params.outdir}/counts/per_sample", mode: 'copy',
@@ -31,4 +31,3 @@ process QUANTIFY_PACS {
         --qc '${meta.sample_id}.quantification.tsv'
     """
 }
-

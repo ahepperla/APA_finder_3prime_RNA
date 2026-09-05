@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 from collections.abc import Iterable
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -19,16 +20,23 @@ def open_text(path: str | Path, mode: str = "rt"):
 
 
 def read_tsv(path: str | Path) -> list[dict[str, str]]:
+    return list(iter_tsv(path))
+
+
+def iter_tsv(path: str | Path):
     with open_text(path) as handle:
-        return list(csv.DictReader(handle, delimiter="\t"))
+        yield from csv.DictReader(handle, delimiter="\t")
 
 
 def write_tsv(
     rows: Iterable[dict[str, Any]], path: str | Path, fieldnames: list[str] | None = None
 ) -> None:
-    materialized = list(rows)
+    iterator = iter(rows)
     if fieldnames is None:
-        fieldnames = list(materialized[0]) if materialized else []
+        first = next(iterator, None)
+        fieldnames = list(first) if first is not None else []
+        if first is not None:
+            iterator = chain([first], iterator)
     with open_text(path, "wt") as handle:
         writer = csv.DictWriter(
             handle,
@@ -39,7 +47,7 @@ def write_tsv(
         )
         if fieldnames:
             writer.writeheader()
-            writer.writerows(materialized)
+            writer.writerows(iterator)
 
 
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:

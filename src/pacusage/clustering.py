@@ -24,10 +24,8 @@ def cluster_exact_boundaries(
     known_rescue_total: int = 5,
     known_match_radius: int = 12,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
-    observations = list(observations)
     known_sites = known_sites or set()
-    grouped = _group_counts(observations)
-    clip_counts = _group_clip_counts(observations)
+    grouped, clip_counts = _group_observations(observations)
     accepted: list[PacCandidate] = []
     rejected: list[PacCandidate] = []
     for (contig, strand), coordinate_counts in sorted(grouped.items()):
@@ -120,6 +118,25 @@ def cluster_exact_boundaries(
     return accepted, rejected
 
 
+def _group_observations(
+    observations: Iterable[EvidenceObservation],
+) -> tuple[
+    dict[tuple[str, str], dict[int, dict[str, int]]],
+    dict[tuple[str, str], dict[int, int]],
+]:
+    counts: dict[tuple[str, str], dict[int, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(int))
+    )
+    clips: dict[tuple[str, str], dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for observation in observations:
+        key = (observation.contig, observation.strand)
+        counts[key][observation.coordinate][
+            observation.sample_id
+        ] += observation.count
+        clips[key][observation.coordinate] += observation.poly_a_clip_count
+    return counts, clips
+
+
 def _group_counts(
     observations: Iterable[EvidenceObservation],
 ) -> dict[tuple[str, str], dict[int, dict[str, int]]]:
@@ -130,17 +147,6 @@ def _group_counts(
         result[(observation.contig, observation.strand)][observation.coordinate][
             observation.sample_id
         ] += observation.count
-    return result
-
-
-def _group_clip_counts(
-    observations: Iterable[EvidenceObservation],
-) -> dict[tuple[str, str], dict[int, int]]:
-    result: dict[tuple[str, str], dict[int, int]] = defaultdict(lambda: defaultdict(int))
-    for observation in observations:
-        result[(observation.contig, observation.strand)][observation.coordinate] += (
-            observation.poly_a_clip_count
-        )
     return result
 
 

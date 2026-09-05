@@ -1,6 +1,6 @@
 process ANNOTATE_PACS {
     tag 'atlas-v1'
-    label 'high'
+    label 'serial_high'
 
     publishDir "${params.outdir}/atlas", mode: 'copy', pattern: 'pacs.v1.*'
     publishDir "${params.outdir}/motifs", mode: 'copy', pattern: 'pac_motifs.tsv.gz'

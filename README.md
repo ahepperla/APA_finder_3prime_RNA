@@ -64,6 +64,11 @@ nextflow run /path/to/pacusage \
   -resume
 ```
 
+The Slurm profile separates CPU-parallel BAM work from serial, memory-heavy
+steps. Low, medium, and high-memory jobs automatically retry up to twice after
+an OOM-style exit, increasing their requested memory on each attempt. Completed
+tasks remain reusable with `-resume`.
+
 Build the default Apptainer image once on a networked system:
 
 ```bash

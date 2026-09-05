@@ -1,6 +1,6 @@
 process PREPARE_REFERENCE {
     tag 'reference'
-    label 'medium'
+    label 'low'
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: 'reference_preparation.tsv'
     publishDir "${params.outdir}/prepared_reference", mode: 'copy',
@@ -28,4 +28,3 @@ process PREPARE_REFERENCE {
         --metadata reference_preparation.tsv
     """
 }
-

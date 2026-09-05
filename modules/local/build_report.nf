@@ -1,6 +1,6 @@
 process BUILD_REPORT {
     tag 'report'
-    label 'low'
+    label 'serial_high'
 
     publishDir "${params.outdir}/report", mode: 'copy'
 
@@ -15,4 +15,3 @@ process BUILD_REPORT {
     pacusage report --results . --output index.html
     """
 }
-

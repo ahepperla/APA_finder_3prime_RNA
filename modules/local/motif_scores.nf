@@ -1,6 +1,6 @@
 process MOTIF_SCORES {
     tag 'motif-usage'
-    label 'low'
+    label 'serial_high'
 
     publishDir "${params.outdir}/motifs", mode: 'copy'
 

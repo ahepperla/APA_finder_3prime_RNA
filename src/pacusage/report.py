@@ -118,24 +118,25 @@ def _locate(root: Path, name: str) -> Path:
     return direct[0] if direct else root / name
 
 
-def _read_table(path: Path) -> pd.DataFrame | None:
+def _read_table(path: Path, **options: object) -> pd.DataFrame | None:
     if not path.is_file():
         return None
     try:
-        return pd.read_csv(path, sep="\t")
+        return pd.read_csv(path, sep="\t", **options)
     except (pd.errors.EmptyDataError, OSError):
         return None
 
 
 def _table_section(title: str, path: Path, limit: int = 200) -> str:
-    frame = _read_table(path)
+    frame = _read_table(path, nrows=limit + 1)
     if frame is None:
         return ""
+    truncated = len(frame) > limit
     table_id = "table-" + "".join(character for character in title.lower() if character.isalnum())
     table = frame.head(limit).fillna("").to_html(index=False, escape=True, table_id=table_id)
     note = (
-        f"<p class='empty'>Showing the first {limit:,} of {len(frame):,} rows.</p>"
-        if len(frame) > limit
+        f"<p class='empty'>Showing the first {limit:,} rows.</p>"
+        if truncated
         else ""
     )
     return (
@@ -160,7 +161,14 @@ def _combined_table_section(title: str, paths: list[Path], limit: int = 200) -> 
 
 
 def _atlas_summary(path: Path) -> str:
-    frame = _read_table(path)
+    columns = {
+        "gene_id",
+        "known_pac",
+        "internal_priming_flag",
+        "assignment_class",
+        "confidence",
+    }
+    frame = _read_table(path, usecols=lambda name: name in columns)
     if frame is None:
         return ""
     assignment = Counter(frame.get("assignment_class", pd.Series(dtype=str)).fillna("unassigned"))
@@ -192,7 +200,11 @@ def _atlas_summary(path: Path) -> str:
 
 
 def _pau_qc_sections(root: Path) -> str:
-    frame = _read_table(_locate(root, "observed_pau.tsv.gz"))
+    columns = {"gene_id", "pac_id", "sample_id", "pau"}
+    frame = _read_table(
+        _locate(root, "observed_pau.tsv.gz"),
+        usecols=lambda name: name in columns,
+    )
     if frame is None or frame.empty:
         return ""
     matrix = frame.pivot_table(
@@ -224,37 +236,69 @@ def _pau_qc_sections(root: Path) -> str:
 
 def _model_diagnostic_sections(root: Path) -> str:
     pac_files = sorted(root.rglob("*.pacs.tsv.gz"))
-    frames = [frame for path in pac_files if (frame := _read_table(path)) is not None]
-    if not frames:
+    if not pac_files:
         return ""
-    values = pd.concat(frames, ignore_index=True, sort=False)
+    columns = {
+        "pvalue_pac",
+        "model_status",
+        "zero_boundary_unstable",
+        "bootstrap_successes",
+    }
+    tests = finite_pvalues = stabilized = unstable = intervals = 0
+    pvalue_parts: list[np.ndarray] = []
+    for path in pac_files:
+        try:
+            chunks = pd.read_csv(
+                path,
+                sep="\t",
+                usecols=lambda name: name in columns,
+                chunksize=100_000,
+            )
+            for frame in chunks:
+                tests += len(frame)
+                pvalues = pd.to_numeric(
+                    frame.get("pvalue_pac", pd.Series(dtype=float)), errors="coerce"
+                ).dropna()
+                finite_pvalues += len(pvalues)
+                pvalue_parts.append(pvalues.to_numpy(dtype=float))
+                stabilized += int(
+                    frame.get("model_status", pd.Series(dtype=str))
+                    .astype(str)
+                    .str.contains("add_uniform")
+                    .sum()
+                )
+                unstable += int(
+                    frame.get("zero_boundary_unstable", pd.Series(dtype=bool))
+                    .astype(str)
+                    .str.lower()
+                    .isin(["true", "t", "1"])
+                    .sum()
+                )
+                intervals += int(
+                    pd.to_numeric(
+                        frame.get("bootstrap_successes", pd.Series(dtype=float)),
+                        errors="coerce",
+                    )
+                    .fillna(0)
+                    .gt(0)
+                    .sum()
+                )
+        except (pd.errors.EmptyDataError, OSError):
+            continue
+    if not tests:
+        return ""
     metrics = {
-        "PAC tests": len(values),
-        "Finite PAC p-values": int(
-            pd.to_numeric(values.get("pvalue_pac"), errors="coerce").notna().sum()
-        ),
-        "Stabilized fits": int(
-            values.get("model_status", pd.Series(dtype=str))
-            .astype(str)
-            .str.contains("add_uniform")
-            .sum()
-        ),
-        "Unstable boundaries": int(
-            values.get("zero_boundary_unstable", pd.Series(dtype=bool))
-            .astype(str)
-            .str.lower()
-            .isin(["true", "t", "1"])
-            .sum()
-        ),
-        "Bootstrap intervals": int(
-            pd.to_numeric(values.get("bootstrap_successes"), errors="coerce").fillna(0).gt(0).sum()
-        ),
+        "PAC tests": tests,
+        "Finite PAC p-values": finite_pvalues,
+        "Stabilized fits": stabilized,
+        "Unstable boundaries": unstable,
+        "Bootstrap intervals": intervals,
     }
     boxes = "".join(
         f"<div class='metric'><strong>{value:,}</strong>{html.escape(label)}</div>"
         for label, value in metrics.items()
     )
-    pvalues = pd.to_numeric(values.get("pvalue_pac"), errors="coerce").dropna().to_numpy()
+    pvalues = np.concatenate(pvalue_parts) if pvalue_parts else np.asarray([], dtype=float)
     histogram = _histogram_svg(pvalues)
     return (
         f"<section><h2>Model diagnostics</h2><div class='metrics'>{boxes}</div>"
@@ -338,9 +382,19 @@ def _top_genes_section(root: Path) -> str:
 
 
 def _gene_plot_section(root: Path) -> str:
-    pau = _read_table(_locate(root, "observed_pau.tsv.gz"))
-    atlas = _read_table(_locate(root, "pacs.v1.metadata.tsv.gz"))
-    samples = _read_table(_locate(root, "normalized_samples.tsv"))
+    pau_columns = {"gene_id", "pac_id", "sample_id", "count", "pau"}
+    pau = _read_table(
+        _locate(root, "observed_pau.tsv.gz"),
+        usecols=lambda name: name in pau_columns,
+    )
+    atlas = _read_table(
+        _locate(root, "pacs.v1.metadata.tsv.gz"),
+        usecols=lambda name: name in {"pac_id", "coordinate", "strand"},
+    )
+    samples = _read_table(
+        _locate(root, "normalized_samples.tsv"),
+        usecols=lambda name: name in {"sample_id", "condition"},
+    )
     if pau is None or atlas is None or samples is None or pau.empty:
         return ""
     merged = pau.merge(atlas[["pac_id", "coordinate", "strand"]], on="pac_id", how="left").merge(

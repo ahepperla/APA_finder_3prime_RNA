@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,11 +34,11 @@ def observation_offsets(
     ends: dict[tuple[str, str], list[tuple[int, str]]],
     maximum_distance: int,
     minimum_count_per_gene: int,
-) -> tuple[list[int], int, int]:
-    offsets: list[int] = []
+) -> tuple[Counter[int], int, int]:
+    offsets: Counter[int] = Counter()
     genes: Counter[str] = Counter()
-    clips = 0
-    matched: list[tuple[int, str, int, int]] = []
+    matched: dict[str, Counter[int]] = {}
+    clipped_by_gene: Counter[str] = Counter()
     for observation in observations:
         candidates = ends.get((observation.contig, observation.strand), [])
         if not candidates:
@@ -54,26 +54,28 @@ def observation_offsets(
             if observation.strand == "+"
             else observation.coordinate - nearest_coordinate
         )
-        matched.append((offset, gene_id, observation.count, observation.poly_a_clip_count))
+        matched.setdefault(gene_id, Counter())[offset] += observation.count
+        clipped_by_gene[gene_id] += min(observation.poly_a_clip_count, observation.count)
         genes[gene_id] += observation.count
     eligible = {gene for gene, count in genes.items() if count >= minimum_count_per_gene}
-    for offset, gene_id, count, clip_count in matched:
-        if gene_id in eligible:
-            offsets.extend([offset] * count)
-            clips += min(clip_count, count)
+    for gene_id in eligible:
+        offsets.update(matched[gene_id])
+    clips = sum(clipped_by_gene[gene_id] for gene_id in eligible)
     return offsets, len(eligible), clips
 
 
 def calculate_metrics(
     sample_id: str,
     evidence_source: str,
-    offsets: list[int],
+    offsets: Mapping[int, int] | Iterable[int],
     calibration_genes: int,
     poly_a_clips: int,
     quantile_low: float,
     quantile_high: float,
 ) -> CalibrationMetrics:
-    if not offsets:
+    counts = _offset_counts(offsets)
+    total = sum(counts.values())
+    if not total:
         return CalibrationMetrics(
             sample_id=sample_id,
             evidence_source=evidence_source,
@@ -87,8 +89,6 @@ def calculate_metrics(
             poly_a_clip_fraction=0.0,
             reason="no observations near calibration transcript ends",
         )
-    array = np.asarray(offsets, dtype=float)
-    counts = Counter(offsets)
     mode = min(
         (offset for offset, count in counts.items() if count == max(counts.values())),
         default=0,
@@ -97,13 +97,15 @@ def calculate_metrics(
         sample_id=sample_id,
         evidence_source=evidence_source,
         calibration_genes=calibration_genes,
-        observations=len(offsets),
-        median_offset=float(np.median(array)),
+        observations=total,
+        median_offset=_weighted_quantile(counts, 0.5),
         modal_offset=mode,
-        central_low=float(np.quantile(array, quantile_low)),
-        central_high=float(np.quantile(array, quantile_high)),
-        adjacent_boundary_fraction=float(np.mean(np.abs(array) <= 1)),
-        poly_a_clip_fraction=poly_a_clips / len(offsets),
+        central_low=_weighted_quantile(counts, quantile_low),
+        central_high=_weighted_quantile(counts, quantile_high),
+        adjacent_boundary_fraction=(
+            sum(count for offset, count in counts.items() if abs(offset) <= 1) / total
+        ),
+        poly_a_clip_fraction=poly_a_clips / total,
     )
 
 
@@ -138,15 +140,44 @@ def classify_metrics(metrics: CalibrationMetrics, params: dict) -> CalibrationMe
     return CalibrationMetrics(**values)
 
 
-def empirical_kernel(offsets: Iterable[int], minimum: int, maximum: int) -> np.ndarray:
+def empirical_kernel(
+    offsets: Mapping[int, int] | Iterable[int], minimum: int, maximum: int
+) -> np.ndarray:
     values = np.zeros(maximum - minimum + 1, dtype=float)
-    for offset in offsets:
+    for offset, count in _offset_counts(offsets).items():
         if minimum <= offset <= maximum:
-            values[offset - minimum] += 1
+            values[offset - minimum] += count
     if not values.any():
         return values
     smoothed = np.convolve(values, np.asarray([1, 2, 3, 2, 1], dtype=float), mode="same")
     return smoothed / smoothed.sum()
+
+
+def _offset_counts(offsets: Mapping[int, int] | Iterable[int]) -> Counter[int]:
+    if isinstance(offsets, Mapping):
+        return Counter(
+            {int(offset): int(count) for offset, count in offsets.items() if int(count) > 0}
+        )
+    return Counter(int(offset) for offset in offsets)
+
+
+def _weighted_quantile(counts: Mapping[int, int], quantile: float) -> float:
+    total = sum(counts.values())
+    position = quantile * (total - 1)
+    lower_rank = int(np.floor(position))
+    upper_rank = int(np.ceil(position))
+
+    def value_at(rank: int) -> int:
+        cumulative = 0
+        for value, count in sorted(counts.items()):
+            cumulative += count
+            if rank < cumulative:
+                return value
+        raise ValueError("Weighted quantile rank exceeds the available observations.")
+
+    lower = value_at(lower_rank)
+    upper = value_at(upper_rank)
+    return float(lower + (upper - lower) * (position - lower_rank))
 
 
 def kernel_correlations(kernels: list[np.ndarray]) -> list[float]:

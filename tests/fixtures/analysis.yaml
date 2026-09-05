@@ -19,4 +19,4 @@ min_test_supporting_samples: 1
 motif_preference_min_genes: 1
 dm_bootstrap_replicates: 20
 pac_coordinate_bootstrap_replicates: 20
-random_seed: 1739
+random_seed: 1800

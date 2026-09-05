@@ -434,7 +434,7 @@ fit_family <- function(
   precision <- safe_precision(data, unique(filtered$gene_id))
   precision$family <- family
 
-  result_list <- list()
+  fitted_list <- list()
   for (treatment in treatments) {
     comparison <- paste0(treatment, "_vs_", control)
     coefficient <- match(paste0("condition", treatment), colnames(design))
@@ -661,9 +661,13 @@ fit_family <- function(
     write_gzip_tsv(output, pac_path)
     events <- output[output$event_type != "none", , drop = FALSE]
     write_gzip_tsv(events, event_path)
-    result_list[[comparison]] <- output
+    fitted_list[[comparison]] <- output[, c(
+      "gene_id", "feature_id", "condition", "control_condition",
+      "fitted_control_pau", "fitted_treatment_pau", "delta_pau",
+      "precision", "alpha_control", "alpha_treatment", "model_status"
+    ), drop = FALSE]
   }
-  list(results = result_list, precision = precision)
+  list(fitted = fitted_list, precision = precision)
 }
 
 fit_motif_preferences <- function(scores, samples, params, output_dir, suffix = "preference") {
@@ -758,7 +762,7 @@ families <- unique(samples$control_condition[
   samples$condition != samples$control_condition
 ])
 all_precision <- list()
-all_results <- list()
+all_fitted <- list()
 atlas_checksum <- unname(tools::md5sum(arguments$atlas))
 for (family in families) {
   fitted <- fit_family(
@@ -772,7 +776,7 @@ for (family in families) {
   )
   if (!is.null(fitted)) {
     all_precision[[family]] <- fitted$precision
-    all_results <- c(all_results, fitted$results)
+    all_fitted <- c(all_fitted, fitted$fitted)
   }
 }
 if (length(all_precision)) {
@@ -781,14 +785,8 @@ if (length(all_precision)) {
     file.path(arguments$output_dir, "gene_precision.tsv.gz")
   )
 }
-if (length(all_results)) {
-  fitted_rows <- do.call(rbind, lapply(all_results, function(value) {
-    value[, c(
-      "gene_id", "feature_id", "condition", "control_condition",
-      "fitted_control_pau", "fitted_treatment_pau", "delta_pau",
-      "precision", "alpha_control", "alpha_treatment", "model_status"
-    )]
-  }))
+if (length(all_fitted)) {
+  fitted_rows <- do.call(rbind, all_fitted)
   write_gzip_tsv(
     fitted_rows,
     file.path(arguments$output_dir, "fitted_pau.tsv.gz")

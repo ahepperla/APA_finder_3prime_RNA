@@ -6,6 +6,7 @@ import argparse
 import json
 import platform
 import tempfile
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -41,11 +42,17 @@ from .models import EvidenceObservation, PacCandidate
 from .parameters import load_parameters, write_resolved_parameters
 from .profiles import get_profile, resolve_profile_defaults
 from .quantification import build_count_outputs, quantify_exact, quantify_proximal
-from .reference import annotation_contigs, parse_annotation, prepare_reference, transcript_ends
+from .reference import (
+    annotation_contigs,
+    iter_annotation_features,
+    parse_annotation,
+    prepare_reference,
+    transcript_ends,
+)
 from .report import build_report
 from .samples import control_mapping_rows, read_and_validate_samples, write_normalized_samples
 from .statistics import add_bh_fdr, cmh_kmer_test, filter_testable_features, motif_usage_scores
-from .tableio import read_tsv, sha256_file, write_json, write_tsv
+from .tableio import iter_tsv, read_tsv, sha256_file, write_json, write_tsv
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -306,7 +313,6 @@ def command_prepare_alignment(args: argparse.Namespace) -> None:
 
 
 def command_infer_strandedness(args: argparse.Namespace) -> None:
-    features = parse_annotation(args.annotation)
     inspection = inspect_alignment(args.alignment, args.reference)
     if args.layout == "auto":
         layout = inspection["layout"]
@@ -325,7 +331,7 @@ def command_infer_strandedness(args: argparse.Namespace) -> None:
     diagnostics = infer_strandedness(
         args.alignment,
         args.reference,
-        features,
+        iter_annotation_features(args.annotation, {"exon"}),
         args.minimum_informative,
         args.maximum_sampled,
         args.decision_fraction,
@@ -379,7 +385,9 @@ def command_calibrate(args: argparse.Namespace) -> None:
             "Samples use incompatible library profiles. Analyze each protocol in a separate run."
         )
     profile = get_profile(next(iter(profiles)))
-    ends = transcript_ends(parse_annotation(args.annotation))
+    ends = transcript_ends(
+        iter_annotation_features(args.annotation, {"exon", "transcript", "mrna"})
+    )
     common_sources = set(profile.candidate_sources(next(iter(resolutions.values()))["layout"]))
     for resolution in resolutions.values():
         common_sources.intersection_update(profile.candidate_sources(resolution["layout"]))
@@ -585,7 +593,7 @@ def command_extract_evidence(args: argparse.Namespace) -> None:
 def command_cluster(args: argparse.Namespace) -> None:
     params = load_parameters(args.params)
     resolution = _read_json(args.resolution)
-    observations = _read_observations(args.evidence)
+    observations = _iter_observations(args.evidence)
     known = load_known_pacs(args.known_pacs)
     if resolution["endpoint_model"] == "exact_boundary":
         accepted, rejected = cluster_exact_boundaries(
@@ -657,7 +665,7 @@ def command_annotate(args: argparse.Namespace) -> None:
     known = load_known_pacs(args.known_pacs)
     rows = annotate_candidates(
         candidates,
-        parse_annotation(args.annotation),
+        parse_annotation(args.annotation, {"gene", "exon"}),
         args.reference,
         str(params["assembly"]),
         resolution["endpoint_model"],
@@ -698,7 +706,7 @@ def command_annotate(args: argparse.Namespace) -> None:
 def command_quantify(args: argparse.Namespace) -> None:
     params = load_parameters(args.params)
     resolution = _read_json(args.resolution)
-    observations = _read_observations([args.evidence])
+    observations = _iter_observations([args.evidence])
     atlas = read_tsv(args.atlas)
     if resolution["endpoint_model"] == "exact_boundary":
         rows, qc = quantify_exact(observations, atlas, int(params["pac_cluster_radius"]))
@@ -721,15 +729,16 @@ def command_quantify(args: argparse.Namespace) -> None:
 def command_merge_counts(args: argparse.Namespace) -> None:
     params = load_parameters(args.params)
     atlas = read_tsv(args.atlas)
-    per_sample: dict[str, list[dict[str, object]]] = {}
+    per_sample: dict[str, pd.Series] = {}
     for path in args.counts:
-        rows = read_tsv(path)
-        if not rows:
+        frame = pd.read_csv(path, sep="\t", usecols=["sample_id", "pac_id", "count"])
+        if frame.empty:
             continue
-        sample_id = rows[0]["sample_id"]
-        per_sample[sample_id] = [
-            {"pac_id": row["pac_id"], "count": int(row["count"])} for row in rows
-        ]
+        sample_ids = frame["sample_id"].astype(str).unique()
+        if len(sample_ids) != 1:
+            raise PacusageError(f"Count table {path} contains multiple sample IDs.")
+        sample_id = sample_ids[0]
+        per_sample[sample_id] = frame.set_index(frame["pac_id"].astype(str))["count"]
     wide, long, totals, pau = build_count_outputs(per_sample, atlas)
     wide.to_csv(args.wide, sep="\t", index=False, compression="infer")
     long.to_parquet(args.long, index=False)
@@ -896,22 +905,18 @@ def _sample_id_from_alignment(path: str) -> str:
     return name
 
 
-def _read_observations(paths: list[str]) -> list[EvidenceObservation]:
-    observations = []
+def _iter_observations(paths: list[str]) -> Iterator[EvidenceObservation]:
     for path in paths:
-        for row in read_tsv(path):
-            observations.append(
-                EvidenceObservation(
-                    sample_id=row["sample_id"],
-                    contig=row["contig"],
-                    strand=row["strand"],
-                    coordinate=int(row["coordinate"]),
-                    count=int(row["count"]),
-                    poly_a_clip_count=int(row.get("poly_a_clip_count", 0)),
-                    evidence_source=row["evidence_source"],
-                )
+        for row in iter_tsv(path):
+            yield EvidenceObservation(
+                sample_id=row["sample_id"],
+                contig=row["contig"],
+                strand=row["strand"],
+                coordinate=int(row["coordinate"]),
+                count=int(row["count"]),
+                poly_a_clip_count=int(row.get("poly_a_clip_count", 0)),
+                evidence_source=row["evidence_source"],
             )
-    return observations
 
 
 def _read_kernel(path: str | Path) -> tuple[np.ndarray, int]:

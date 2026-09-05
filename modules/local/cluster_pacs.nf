@@ -1,6 +1,6 @@
 process CLUSTER_PACS {
     tag 'atlas-v1'
-    label 'high'
+    label 'serial_high'
 
     publishDir "${params.outdir}/atlas", mode: 'copy', pattern: 'rejected_candidates.tsv.gz'
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: 'pac_discovery.tsv'
@@ -30,4 +30,3 @@ process CLUSTER_PACS {
         --qc pac_discovery.tsv
     """
 }
-

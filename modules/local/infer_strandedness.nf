@@ -1,6 +1,6 @@
 process INFER_STRANDEDNESS {
     tag { meta.sample_id }
-    label 'medium'
+    label 'serial_medium'
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: '*.strandedness.tsv'
 
@@ -37,4 +37,3 @@ process INFER_STRANDEDNESS {
         --qc '${meta.sample_id}.strandedness.tsv'
     """
 }
-

@@ -121,34 +121,36 @@ def annotation_contigs(path: str | Path) -> set[str]:
     }
 
 
-def parse_annotation(path: str | Path) -> list[GenomicFeature]:
-    records: list[tuple[str, int, int, str, str, dict[str, str], int]] = []
+def parse_annotation(
+    path: str | Path, feature_types: set[str] | None = None
+) -> list[GenomicFeature]:
+    return list(iter_annotation_features(path, feature_types))
+
+
+def iter_annotation_features(
+    path: str | Path, feature_types: set[str] | None = None
+) -> Iterator[GenomicFeature]:
     transcript_to_gene: dict[str, str] = {}
+    for _, fields in _iter_annotation_rows(path):
+        feature_type = fields[2].lower()
+        if feature_type not in {"transcript", "mrna"}:
+            continue
+        raw_attributes = fields[8]
+        attributes = parse_attributes(raw_attributes)
+        transcript_id = attributes.get("transcript_id") or attributes.get("ID", "")
+        parent_gene = attributes.get("gene_id") or attributes.get("Parent", "")
+        if transcript_id and parent_gene:
+            transcript_to_gene[transcript_id] = parent_gene
+
+    selected_types = {value.lower() for value in feature_types} if feature_types else None
     for line_number, fields in _iter_annotation_rows(path):
         contig, _, feature_type, start, end, _, strand, _, raw_attributes = fields
-        if strand not in {"+", "-"}:
+        feature_type = feature_type.lower()
+        if strand not in {"+", "-"} or (
+            selected_types is not None and feature_type not in selected_types
+        ):
             continue
         attributes = parse_attributes(raw_attributes)
-        feature_type = feature_type.lower()
-        if feature_type in {"transcript", "mrna"}:
-            transcript_id = attributes.get("transcript_id") or attributes.get("ID", "")
-            parent_gene = attributes.get("gene_id") or attributes.get("Parent", "")
-            if transcript_id and parent_gene:
-                transcript_to_gene[transcript_id] = parent_gene
-        records.append(
-            (
-                contig,
-                int(start) - 1,
-                int(end),
-                strand,
-                feature_type,
-                attributes,
-                line_number,
-            )
-        )
-
-    features: list[GenomicFeature] = []
-    for contig, start, end, strand, feature_type, attributes, line_number in records:
         transcript_id = attributes.get("transcript_id", "")
         if not transcript_id and feature_type in {"transcript", "mrna"}:
             transcript_id = attributes.get("ID", "")
@@ -164,19 +166,16 @@ def parse_annotation(path: str | Path) -> list[GenomicFeature]:
             raise PacusageError(
                 f"Annotation {path}, line {line_number}: feature lacks a gene identifier."
             )
-        features.append(
-            GenomicFeature(
-                contig=contig,
-                start=start,
-                end=end,
-                strand=strand,
-                feature_type=feature_type,
-                gene_id=gene_id,
-                transcript_id=transcript_id,
-                gene_name=gene_name,
-            )
+        yield GenomicFeature(
+            contig=contig,
+            start=int(start) - 1,
+            end=int(end),
+            strand=strand,
+            feature_type=feature_type,
+            gene_id=gene_id,
+            transcript_id=transcript_id,
+            gene_name=gene_name,
         )
-    return features
 
 
 def _iter_annotation_rows(path: str | Path) -> Iterator[tuple[int, list[str]]]:

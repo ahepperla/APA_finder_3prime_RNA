@@ -1,6 +1,6 @@
 process MERGE_COUNTS {
     tag 'all-samples'
-    label 'medium'
+    label 'serial_high'
 
     publishDir "${params.outdir}/counts", mode: 'copy',
         pattern: '{pac_counts.tsv.gz,pac_counts.long.parquet,gene_totals.tsv.gz,observed_pau.tsv.gz}'
