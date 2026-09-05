@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 import tempfile
 from bisect import bisect_left, bisect_right
@@ -26,13 +27,16 @@ def cluster_exact_boundaries(
     cluster_radius: int,
     minimum_total: int,
     minimum_sample_count: int,
-    minimum_supporting_samples: int,
+    minimum_supporting_samples: float,
     known_sites: set[tuple[str, str, int]] | None = None,
     known_rescue_total: int = 5,
     known_match_radius: int = 12,
     observations_sorted: bool = False,
     sample_conditions: Mapping[str, str] | None = None,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
+    minimum_supporting_samples = _validate_support_threshold(
+        minimum_supporting_samples
+    )
     known_sites = known_sites or set()
     ordered: Iterable[EvidenceObservation]
     if observations_sorted:
@@ -80,10 +84,13 @@ def cluster_exact_boundaries(
                 for sample_id, count in coordinate_counts[member].items():
                     per_sample[sample_id] += count
             total = sum(per_sample.values())
-            total_supporting, supporting, supporting_condition = _condition_support(
-                per_sample,
-                minimum_sample_count,
-                sample_conditions,
+            total_supporting, supporting, supporting_condition, support_pass = (
+                _condition_support(
+                    per_sample,
+                    minimum_sample_count,
+                    sample_conditions,
+                    minimum_supporting_samples,
+                )
             )
             capped = sum(min(count, 3) for count in per_sample.values())
             position_counts = {
@@ -108,9 +115,9 @@ def cluster_exact_boundaries(
                 cluster_radius,
             )
             known = _matches_known(contig, strand, coordinate, known_sites, known_match_radius)
-            primary_pass = total >= minimum_total and supporting >= minimum_supporting_samples
+            primary_pass = total >= minimum_total and support_pass
             rescue_pass = (
-                known and total >= known_rescue_total and supporting >= minimum_supporting_samples
+                known and total >= known_rescue_total and support_pass
             )
             if primary_pass:
                 status = "primary"
@@ -122,8 +129,10 @@ def cluster_exact_boundaries(
                 failures = []
                 if total < minimum_total:
                     failures.append(f"total_count<{minimum_total}")
-                if supporting < minimum_supporting_samples:
-                    failures.append(f"supporting_samples<{minimum_supporting_samples}")
+                if not support_pass:
+                    failures.append(
+                        _support_failure_reason(minimum_supporting_samples)
+                    )
                 status = "rejected"
                 reason = ";".join(failures)
             candidate = PacCandidate(
@@ -234,7 +243,8 @@ def _condition_support(
     per_sample: Mapping[str, int],
     minimum_sample_count: int,
     sample_conditions: Mapping[str, str] | None,
-) -> tuple[int, int, str]:
+    minimum_supporting_samples: float,
+) -> tuple[int, int, str, bool]:
     qualifying = [
         sample_id
         for sample_id, count in per_sample.items()
@@ -242,8 +252,17 @@ def _condition_support(
     ]
     total_supporting = len(qualifying)
     if not sample_conditions:
-        return total_supporting, total_supporting, ""
-    missing = sorted(set(qualifying).difference(sample_conditions))
+        if minimum_supporting_samples < 1:
+            raise PacusageError(
+                "Fractional pac_min_supporting_samples requires sample conditions."
+            )
+        return (
+            total_supporting,
+            total_supporting,
+            "",
+            total_supporting >= int(minimum_supporting_samples),
+        )
+    missing = sorted(set(per_sample).difference(sample_conditions))
     if missing:
         raise PacusageError(
             "Evidence contains sample IDs absent from the normalized sample sheet: "
@@ -251,12 +270,59 @@ def _condition_support(
         )
     by_condition = Counter(sample_conditions[sample_id] for sample_id in qualifying)
     if not by_condition:
-        return 0, 0, ""
-    supporting_condition = min(
-        by_condition,
-        key=lambda condition: (-by_condition[condition], condition),
-    )
-    return total_supporting, by_condition[supporting_condition], supporting_condition
+        return 0, 0, "", False
+    condition_sizes = Counter(sample_conditions.values())
+    fractional = minimum_supporting_samples < 1
+    supporting_condition = ""
+    supporting = 0
+    support_pass = False
+    best_score = -1.0
+    for condition in sorted(condition_sizes):
+        condition_support = by_condition[condition]
+        required = _required_supporting_samples(
+            minimum_supporting_samples,
+            condition_sizes[condition],
+        )
+        condition_pass = condition_support >= required
+        score = (
+            condition_support / condition_sizes[condition]
+            if fractional
+            else float(condition_support)
+        )
+        ranking = (condition_pass, score, condition_support)
+        best_ranking = (support_pass, best_score, supporting)
+        if condition_support > 0 and ranking > best_ranking:
+            supporting_condition = condition
+            supporting = condition_support
+            support_pass = condition_pass
+            best_score = score
+    return total_supporting, supporting, supporting_condition, support_pass
+
+
+def _validate_support_threshold(value: float) -> float:
+    threshold = float(value)
+    if not math.isfinite(threshold):
+        raise PacusageError("pac_min_supporting_samples must be a finite number.")
+    if threshold <= 0:
+        raise PacusageError("pac_min_supporting_samples must be greater than zero.")
+    if threshold >= 1 and not threshold.is_integer():
+        raise PacusageError(
+            "pac_min_supporting_samples must be a fraction in (0, 1) "
+            "or a whole-number sample count."
+        )
+    return threshold
+
+
+def _required_supporting_samples(threshold: float, condition_size: int) -> int:
+    if threshold < 1:
+        return math.ceil(threshold * condition_size)
+    return int(threshold)
+
+
+def _support_failure_reason(threshold: float) -> str:
+    if threshold < 1:
+        return f"supporting_sample_fraction<{threshold:g}"
+    return f"supporting_samples<{int(threshold)}"
 
 
 def _matches_known(
@@ -281,12 +347,15 @@ def discover_proximal_pacs(
     overlap_threshold: float,
     minimum_total: int,
     minimum_sample_count: int,
-    minimum_supporting_samples: int,
+    minimum_supporting_samples: float,
     bin_size: int = 25,
     assignment_likelihood_ratio: float = 3.0,
     observations_sorted: bool = False,
     sample_conditions: Mapping[str, str] | None = None,
 ) -> tuple[list[PacCandidate], list[PacCandidate], int]:
+    minimum_supporting_samples = _validate_support_threshold(
+        minimum_supporting_samples
+    )
     if bin_size < 1:
         raise ValueError("Proximal discovery bin size must be at least one nucleotide.")
     nonzero = np.flatnonzero(kernel > 0)
@@ -355,7 +424,7 @@ def _discover_proximal_group(
     assignment_likelihood_ratio: float,
     minimum_total: int,
     minimum_sample_count: int,
-    minimum_supporting_samples: int,
+    minimum_supporting_samples: float,
     sample_conditions: Mapping[str, str] | None,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
     binned_counts: defaultdict[int, int] = defaultdict(int)
@@ -408,12 +477,13 @@ def _discover_proximal_group(
                 if selected is not None:
                     counts[selected, sample_index] += count
 
-    total_supporting, condition_support, supporting_conditions = (
+    total_supporting, condition_support, supporting_conditions, support_passes = (
         _condition_support_arrays(
             counts,
             sample_indexes,
             minimum_sample_count,
             sample_conditions,
+            minimum_supporting_samples,
         )
     )
     accepted: list[PacCandidate] = []
@@ -429,8 +499,8 @@ def _discover_proximal_group(
         failures = []
         if total < minimum_total:
             failures.append(f"total_count<{minimum_total}")
-        if supporting < minimum_supporting_samples:
-            failures.append(f"supporting_samples<{minimum_supporting_samples}")
+        if not bool(support_passes[index]):
+            failures.append(_support_failure_reason(minimum_supporting_samples))
         status = "primary" if not failures else "rejected"
         genomic_members = tuple(
             sorted(_genomic_coordinate(value, strand) for value in members)
@@ -460,14 +530,20 @@ def _condition_support_arrays(
     sample_indexes: Mapping[str, int],
     minimum_sample_count: int,
     sample_conditions: Mapping[str, str] | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    minimum_supporting_samples: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     qualifying = counts >= minimum_sample_count
     total_supporting = qualifying.sum(axis=1)
     if not sample_conditions:
+        if minimum_supporting_samples < 1:
+            raise PacusageError(
+                "Fractional pac_min_supporting_samples requires sample conditions."
+            )
         return (
             total_supporting,
             total_supporting.copy(),
             np.full(len(counts), "", dtype=object),
+            total_supporting >= int(minimum_supporting_samples),
         )
     missing = sorted(set(sample_indexes).difference(sample_conditions))
     if missing:
@@ -475,17 +551,48 @@ def _condition_support_arrays(
             "Evidence contains sample IDs absent from the normalized sample sheet: "
             + ", ".join(missing[:10])
         )
+    condition_sizes = Counter(sample_conditions.values())
     condition_samples: defaultdict[str, list[int]] = defaultdict(list)
     for sample_id, sample_index in sample_indexes.items():
         condition_samples[sample_conditions[sample_id]].append(sample_index)
     maximum = np.zeros(len(counts), dtype=np.int64)
     winners = np.full(len(counts), "", dtype=object)
-    for condition in sorted(condition_samples):
-        support = qualifying[:, condition_samples[condition]].sum(axis=1)
-        replace = support > maximum
+    passes = np.zeros(len(counts), dtype=bool)
+    best_scores = np.full(len(counts), -1.0)
+    fractional = minimum_supporting_samples < 1
+    for condition in sorted(condition_sizes):
+        indexes = condition_samples[condition]
+        support = (
+            qualifying[:, indexes].sum(axis=1)
+            if indexes
+            else np.zeros(len(counts), dtype=np.int64)
+        )
+        required = _required_supporting_samples(
+            minimum_supporting_samples,
+            condition_sizes[condition],
+        )
+        condition_passes = support >= required
+        scores = (
+            support / condition_sizes[condition]
+            if fractional
+            else support.astype(float)
+        )
+        same_pass_state = condition_passes == passes
+        replace = (support > 0) & (
+            (condition_passes & ~passes)
+            | (
+                same_pass_state
+                & (
+                    (scores > best_scores)
+                    | ((scores == best_scores) & (support > maximum))
+                )
+            )
+        )
         maximum[replace] = support[replace]
         winners[replace] = condition
-    return total_supporting, maximum, winners
+        passes[replace] = condition_passes[replace]
+        best_scores[replace] = scores[replace]
+    return total_supporting, maximum, winners, passes
 
 
 def _regional_peaks(

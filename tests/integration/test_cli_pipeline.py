@@ -82,7 +82,7 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
                 "gtf: genes.gtf",
                 "pac_min_total_count: 1",
                 "pac_min_sample_count: 1",
-                "pac_min_supporting_samples: 2",
+                "pac_min_supporting_samples: 0.75",
                 "proximal_bin_size: 1",
             ]
         )
@@ -132,3 +132,7 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
         ("-", 200),
     ]
     assert all(int(row["resolution_nt"]) == 1 for row in rows)
+    qc_rows = read_tsv(qc)
+    assert qc_rows[0]["support_requirement"] == (
+        "0.75 of samples within one condition, rounded up"
+    )

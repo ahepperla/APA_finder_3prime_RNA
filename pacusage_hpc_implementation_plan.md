@@ -214,6 +214,8 @@ pac_seed_radius: 2
 pac_cluster_radius: 12
 pac_min_total_count: 10
 pac_min_sample_count: 2
+# Whole numbers are sample counts; values in (0, 1) are within-condition
+# fractions rounded up (for example, 0.5 requires 3 of 5 samples).
 pac_min_supporting_samples: 2
 known_pac_rescue_total: 5
 known_pac_match_radius: 12

@@ -178,7 +178,9 @@ met by samples from at least one condition. Evidence from unrelated conditions
 cannot be combined merely to pass the discovery threshold. The atlas remains
 condition-blind otherwise: direction and treatment effect are not used during
 discovery, and the final atlas is the union of candidates supported by any
-condition.
+condition. Whole-number values such as `2` require that many samples. Values
+strictly between zero and one are fractions of the samples in a condition,
+rounded up; for example, `0.5` requires three of five replicates.
 
 PAU is the raw PAC count divided by all assigned PAC counts for that gene in
 one sample. No pseudocount is added to count or observed-PAU matrices.

@@ -36,3 +36,30 @@ def test_proximal_bin_size_must_be_positive() -> None:
                 "proximal_bin_size": 0,
             }
         )
+
+
+def test_fractional_pac_support_is_accepted() -> None:
+    params = normalize_parameters(
+        {
+            "input": "samples.tsv",
+            "assembly": "test",
+            "fasta": "genome.fa",
+            "gtf": "genes.gtf",
+            "pac_min_supporting_samples": 0.5,
+        }
+    )
+    assert params["pac_min_supporting_samples"] == 0.5
+
+
+@pytest.mark.parametrize("value", [0, -0.5, 1.5, float("nan"), True, "invalid"])
+def test_invalid_pac_support_threshold_is_rejected(value: object) -> None:
+    with pytest.raises(PacusageError, match="pac_min_supporting_samples"):
+        normalize_parameters(
+            {
+                "input": "samples.tsv",
+                "assembly": "test",
+                "fasta": "genome.fa",
+                "gtf": "genes.gtf",
+                "pac_min_supporting_samples": value,
+            }
+        )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,25 @@ def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
         raise PacusageError("min_replicates_per_condition must be at least 1.")
     if int(params["proximal_bin_size"]) < 1:
         raise PacusageError("proximal_bin_size must be at least 1.")
+    raw_support_threshold = params["pac_min_supporting_samples"]
+    try:
+        support_threshold = float(raw_support_threshold)
+    except (TypeError, ValueError) as error:
+        raise PacusageError(
+            "pac_min_supporting_samples must be numeric."
+        ) from error
+    if isinstance(raw_support_threshold, bool) or not math.isfinite(support_threshold):
+        raise PacusageError("pac_min_supporting_samples must be a finite number.")
+    if support_threshold <= 0:
+        raise PacusageError("pac_min_supporting_samples must be greater than zero.")
+    if support_threshold >= 1 and not support_threshold.is_integer():
+        raise PacusageError(
+            "pac_min_supporting_samples must be a fraction in (0, 1) "
+            "or a whole-number sample count."
+        )
+    params["pac_min_supporting_samples"] = (
+        support_threshold if support_threshold < 1 else int(support_threshold)
+    )
     if not isinstance(params["model_covariates"], list):
         raise PacusageError("model_covariates must be a YAML list.")
     if not isinstance(params["bind_paths"], list):

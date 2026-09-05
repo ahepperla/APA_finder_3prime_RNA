@@ -71,6 +71,35 @@ def test_exact_support_must_come_from_one_condition() -> None:
     assert rejected[0].total_supporting_samples == 2
 
 
+def test_exact_fractional_support_uses_each_condition_size() -> None:
+    observations = [
+        observation("large_1", 100, 1),
+        observation("large_2", 100, 1),
+        observation("large_3", 100, 1),
+        observation("small_1", 100, 1),
+        observation("small_2", 100, 1),
+    ]
+    sample_conditions = {
+        **{f"large_{index}": "large" for index in range(1, 11)},
+        "small_1": "small",
+        "small_2": "small",
+    }
+    accepted, rejected = cluster_exact_boundaries(
+        observations,
+        seed_radius=0,
+        cluster_radius=12,
+        minimum_total=1,
+        minimum_sample_count=1,
+        minimum_supporting_samples=0.75,
+        sample_conditions=sample_conditions,
+    )
+    assert not rejected
+    assert len(accepted) == 1
+    assert accepted[0].supporting_condition == "small"
+    assert accepted[0].supporting_samples == 2
+    assert accepted[0].total_supporting_samples == 5
+
+
 def test_proximal_resolution_merges_unresolved_maxima() -> None:
     kernel = np.array([0.1, 0.2, 0.4, 0.2, 0.1])
     resolution = minimum_resolvable_separation(kernel, 0.5)
@@ -158,3 +187,42 @@ def test_proximal_support_must_come_from_one_condition() -> None:
     assert len(rejected) == 1
     assert rejected[0].supporting_samples == 1
     assert rejected[0].total_supporting_samples == 2
+
+
+def test_proximal_fractional_support_rounds_up() -> None:
+    sample_conditions = {
+        f"sample_{index}": "condition" for index in range(1, 6)
+    }
+    rejected_observations = [
+        observation(f"sample_{index}", 90, 1) for index in range(1, 3)
+    ]
+    accepted, rejected, _ = discover_proximal_pacs(
+        rejected_observations,
+        np.asarray([1.0]),
+        kernel_minimum_offset=10,
+        overlap_threshold=0.5,
+        minimum_total=1,
+        minimum_sample_count=1,
+        minimum_supporting_samples=0.5,
+        bin_size=1,
+        sample_conditions=sample_conditions,
+    )
+    assert not accepted
+    assert rejected[0].rejection_reason == "supporting_sample_fraction<0.5"
+
+    accepted_observations = [
+        observation(f"sample_{index}", 90, 1) for index in range(1, 4)
+    ]
+    accepted, rejected, _ = discover_proximal_pacs(
+        accepted_observations,
+        np.asarray([1.0]),
+        kernel_minimum_offset=10,
+        overlap_threshold=0.5,
+        minimum_total=1,
+        minimum_sample_count=1,
+        minimum_supporting_samples=0.5,
+        bin_size=1,
+        sample_conditions=sample_conditions,
+    )
+    assert not rejected
+    assert accepted[0].supporting_samples == 3

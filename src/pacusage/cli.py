@@ -816,7 +816,7 @@ def command_cluster(args: argparse.Namespace) -> None:
             int(params["pac_cluster_radius"]),
             int(params["pac_min_total_count"]),
             int(params["pac_min_sample_count"]),
-            int(params["pac_min_supporting_samples"]),
+            float(params["pac_min_supporting_samples"]),
             known,
             int(params["known_pac_rescue_total"]),
             int(params["known_pac_match_radius"]),
@@ -833,7 +833,7 @@ def command_cluster(args: argparse.Namespace) -> None:
             float(params["proximal_kernel_overlap_threshold"]),
             int(params["pac_min_total_count"]),
             int(params["pac_min_sample_count"]),
-            int(params["pac_min_supporting_samples"]),
+            float(params["pac_min_supporting_samples"]),
             int(params["proximal_bin_size"]),
             float(params["proximal_assignment_likelihood_ratio"]),
             observations_sorted=True,
@@ -848,13 +848,21 @@ def command_cluster(args: argparse.Namespace) -> None:
                 "accepted_pacs": len(accepted),
                 "rejected_candidates": len(rejected),
                 "minimum_resolvable_separation": minimum_resolution,
-                "support_requirement": (
-                    f"{params['pac_min_supporting_samples']} samples within one condition"
+                "support_requirement": _support_requirement_description(
+                    float(params["pac_min_supporting_samples"])
                 ),
             }
         ],
         args.qc,
     )
+
+
+def _support_requirement_description(threshold: float) -> str:
+    if threshold < 1:
+        return (
+            f"{threshold:g} of samples within one condition, rounded up"
+        )
+    return f"{int(threshold)} samples within one condition"
 
 
 def command_annotate(args: argparse.Namespace) -> None:

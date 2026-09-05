@@ -77,10 +77,12 @@
         "pac_min_total_count": {"type": "integer", "minimum": 1, "default": 10},
         "pac_min_sample_count": {"type": "integer", "minimum": 1, "default": 2},
         "pac_min_supporting_samples": {
-          "type": "integer",
-          "minimum": 1,
+          "anyOf": [
+            {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+            {"type": "integer", "minimum": 1}
+          ],
           "default": 2,
-          "description": "Minimum qualifying samples from at least one condition required for a PAC."
+          "description": "Required qualifying support within at least one condition. Values in (0, 1) are fractions of that condition's samples, rounded up; whole numbers are absolute sample counts."
         },
         "known_pac_rescue_total": {"type": "integer", "minimum": 1, "default": 5},
         "known_pac_match_radius": {"type": "integer", "minimum": 0, "default": 12},
