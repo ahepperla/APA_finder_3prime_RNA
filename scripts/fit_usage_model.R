@@ -185,7 +185,7 @@ empty_bootstrap_intervals <- function(gene_counts, successes = 0L) {
   )
 }
 
-bootstrap_total <- function(values) {
+bootstrap_total <- function(values, gene_id, sample_id) {
   total <- sum(values)
   if (
     length(total) != 1L ||
@@ -194,9 +194,21 @@ bootstrap_total <- function(values) {
       total > .Machine$integer.max ||
       abs(total - round(total)) > sqrt(.Machine$double.eps) * max(1, abs(total))
   ) {
-    return(NA_integer_)
+    stop(
+      "Invalid bootstrap total for gene ", gene_id,
+      ", sample ", sample_id,
+      ": ", format(total),
+      ". Expected a finite non-negative integer no greater than ",
+      .Machine$integer.max, "."
+    )
   }
   as.integer(round(total))
+}
+
+bootstrap_gene_ids <- function(gene_ids, gene_fdr, detection_candidate, gene_fdr_cutoff) {
+  selected <- (!is.na(gene_fdr) & gene_fdr <= gene_fdr_cutoff) |
+    (!is.na(detection_candidate) & detection_candidate)
+  unique(gene_ids[selected & !is.na(gene_ids) & gene_ids != ""])
 }
 
 stabilize_boundary_gene <- function(
@@ -301,13 +313,16 @@ bootstrap_gene <- function(
   treatment_ids <- sample_rows$sample_id[sample_rows$condition == treatment]
   sample_totals <- vapply(
     sample_ids,
-    function(sample_id) bootstrap_total(gene_counts[[sample_id]]),
+    function(sample_id) bootstrap_total(
+      gene_counts[[sample_id]],
+      gene_id,
+      sample_id
+    ),
     integer(1)
   )
   precision_value <- suppressWarnings(as.numeric(precision)[1])
   if (
-    anyNA(sample_totals) ||
-      !is.finite(precision_value) ||
+    !is.finite(precision_value) ||
       precision_value <= 0 ||
       !all(sample_ids %in% colnames(fitted))
   ) {
@@ -628,10 +643,12 @@ fit_family <- function(
         output$control_supporting_samples >= params$event_min_supporting_samples &
         output$delta_pau <= -params$min_abs_delta_pau
     )
-    bootstrap_genes <- unique(output$gene_id[
-      (!is.na(output$gene_fdr) & output$gene_fdr <= params$gene_fdr) |
-        detection_candidate
-    ])
+    bootstrap_genes <- bootstrap_gene_ids(
+      output$gene_id,
+      output$gene_fdr,
+      detection_candidate,
+      params$gene_fdr
+    )
     for (gene_id in bootstrap_genes) {
       precision_value <- precision$precision[match(gene_id, precision$gene_id)]
       intervals <- bootstrap_gene(

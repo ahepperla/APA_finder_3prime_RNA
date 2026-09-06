@@ -11,8 +11,34 @@ if (is.na(start) || is.na(end) || start > end) {
 }
 eval(parse(text = lines[start:end]))
 
-stopifnot(identical(bootstrap_total(c(1, 2)), 3L))
-stopifnot(identical(bootstrap_total(c(0, 0)), 0L))
-stopifnot(is.na(bootstrap_total(c(1, NA_real_))))
-stopifnot(is.na(bootstrap_total(c(0.5, 0.6))))
-stopifnot(is.na(bootstrap_total(c(.Machine$integer.max, 1))))
+stopifnot(identical(bootstrap_total(c(1, 2), "gene-1", "sample-1"), 3L))
+stopifnot(identical(bootstrap_total(c(0, 0), "gene-1", "sample-1"), 0L))
+
+expect_invalid_total <- function(values) {
+  message <- tryCatch(
+    {
+      bootstrap_total(values, "gene-1", "sample-1")
+      ""
+    },
+    error = conditionMessage
+  )
+  stopifnot(grepl(
+    "Invalid bootstrap total for gene gene-1, sample sample-1",
+    message,
+    fixed = TRUE
+  ))
+}
+
+expect_invalid_total(c(1, NA_real_))
+expect_invalid_total(c(0.5, 0.6))
+expect_invalid_total(c(.Machine$integer.max, 1))
+
+stopifnot(identical(
+  bootstrap_gene_ids(
+    c("gene-1", "gene-2", NA_character_, "gene-4"),
+    c(0.01, NA_real_, 0.01, 0.50),
+    c(FALSE, NA, FALSE, TRUE),
+    0.05
+  ),
+  c("gene-1", "gene-4")
+))
