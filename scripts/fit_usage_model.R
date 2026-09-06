@@ -176,6 +176,29 @@ stable_seed <- function(base_seed, ...) {
   as.integer((as.numeric(base_seed) + offset) %% .Machine$integer.max)
 }
 
+empty_bootstrap_intervals <- function(gene_counts, successes = 0L) {
+  data.frame(
+    feature_id = gene_counts$pac_id,
+    delta_pau_ci_low = NA_real_,
+    delta_pau_ci_high = NA_real_,
+    bootstrap_successes = successes
+  )
+}
+
+bootstrap_total <- function(values) {
+  total <- sum(values)
+  if (
+    length(total) != 1L ||
+      !is.finite(total) ||
+      total < 0 ||
+      total > .Machine$integer.max ||
+      abs(total - round(total)) > sqrt(.Machine$double.eps) * max(1, abs(total))
+  ) {
+    return(NA_integer_)
+  }
+  as.integer(round(total))
+}
+
 stabilize_boundary_gene <- function(
   gene_id,
   counts,
@@ -276,6 +299,20 @@ bootstrap_gene <- function(
   sample_ids <- sample_rows$sample_id
   control_ids <- sample_rows$sample_id[sample_rows$condition == control]
   treatment_ids <- sample_rows$sample_id[sample_rows$condition == treatment]
+  sample_totals <- vapply(
+    sample_ids,
+    function(sample_id) bootstrap_total(gene_counts[[sample_id]]),
+    integer(1)
+  )
+  precision_value <- suppressWarnings(as.numeric(precision)[1])
+  if (
+    anyNA(sample_totals) ||
+      !is.finite(precision_value) ||
+      precision_value <= 0 ||
+      !all(sample_ids %in% colnames(fitted))
+  ) {
+    return(empty_bootstrap_intervals(gene_counts))
+  }
   runs <- list()
   for (repeat_number in seq_len(params$dm_bootstrap_replicates)) {
     set.seed(stable_seed(
@@ -287,14 +324,38 @@ bootstrap_gene <- function(
       repeat_number
     ))
     simulated <- gene_counts
+    simulation_valid <- TRUE
     for (sample_id in sample_ids) {
-      total <- sum(gene_counts[[sample_id]])
-      expected <- pmax(as.numeric(fitted[[sample_id]]), 1e-10)
-      shapes <- expected * max(as.numeric(precision), 1e-6)
+      total <- sample_totals[[sample_id]]
+      expected <- as.numeric(fitted[[sample_id]])
+      if (
+        length(expected) != nrow(gene_counts) ||
+          any(!is.finite(expected)) ||
+          any(expected < 0)
+      ) {
+        simulation_valid <- FALSE
+        break
+      }
+      expected <- pmax(expected, 1e-10)
+      shapes <- expected * precision_value
+      if (any(!is.finite(shapes)) || any(shapes <= 0)) {
+        simulation_valid <- FALSE
+        break
+      }
       draw <- rgamma(length(shapes), shape = shapes, rate = 1)
-      draw <- draw / sum(draw)
-      simulated[[sample_id]] <- as.integer(rmultinom(1, total, draw)[, 1])
+      draw_total <- sum(draw)
+      if (!is.finite(draw_total) || draw_total <= 0) {
+        simulation_valid <- FALSE
+        break
+      }
+      if (total == 0L) {
+        simulated[[sample_id]] <- integer(length(draw))
+      } else {
+        draw <- draw / draw_total
+        simulated[[sample_id]] <- as.integer(rmultinom(1, total, draw)[, 1])
+      }
     }
+    if (!simulation_valid) next
     run <- tryCatch({
       dm_counts <- simulated
       colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
@@ -320,12 +381,7 @@ bootstrap_gene <- function(
     params$dm_bootstrap_replicates * params$dm_bootstrap_min_success_fraction
   )
   if (length(runs) < minimum_successes) {
-    return(data.frame(
-      feature_id = gene_counts$pac_id,
-      delta_pau_ci_low = NA_real_,
-      delta_pau_ci_high = NA_real_,
-      bootstrap_successes = length(runs)
-    ))
+    return(empty_bootstrap_intervals(gene_counts, length(runs)))
   }
   long <- do.call(rbind, runs)
   output <- lapply(gene_counts$pac_id, function(feature_id) {

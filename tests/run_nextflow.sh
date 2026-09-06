@@ -4,6 +4,7 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${project_dir}"
 
+Rscript tests/test_bootstrap_total.R scripts/fit_usage_model.R
 python tests/fixtures/build_fixture.py
 nextflow run . -profile test,local -resume
 
