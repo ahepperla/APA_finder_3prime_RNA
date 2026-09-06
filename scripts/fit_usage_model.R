@@ -321,12 +321,19 @@ bootstrap_gene <- function(
     integer(1)
   )
   precision_value <- suppressWarnings(as.numeric(precision)[1])
-  if (
-    !is.finite(precision_value) ||
-      precision_value <= 0 ||
-      !all(sample_ids %in% colnames(fitted))
-  ) {
-    return(empty_bootstrap_intervals(gene_counts))
+  if (!is.finite(precision_value) || precision_value <= 0) {
+    stop(
+      "Invalid bootstrap precision for gene ", gene_id,
+      ": ", format(precision_value),
+      ". Expected a finite value greater than zero."
+    )
+  }
+  if (!all(sample_ids %in% colnames(fitted))) {
+    missing_samples <- setdiff(sample_ids, colnames(fitted))
+    stop(
+      "Bootstrap fitted proportions are missing samples for gene ", gene_id,
+      ": ", paste(missing_samples, collapse = ", "), "."
+    )
   }
   runs <- list()
   for (repeat_number in seq_len(params$dm_bootstrap_replicates)) {
@@ -339,29 +346,36 @@ bootstrap_gene <- function(
       repeat_number
     ))
     simulated <- gene_counts
-    simulation_valid <- TRUE
     for (sample_id in sample_ids) {
       total <- sample_totals[[sample_id]]
       expected <- as.numeric(fitted[[sample_id]])
       if (
         length(expected) != nrow(gene_counts) ||
-          any(!is.finite(expected)) ||
-          any(expected < 0)
+        any(!is.finite(expected)) ||
+        any(expected < 0)
       ) {
-        simulation_valid <- FALSE
-        break
+        stop(
+          "Invalid bootstrap fitted proportions for gene ", gene_id,
+          ", sample ", sample_id,
+          ". Expected ", nrow(gene_counts),
+          " finite non-negative values."
+        )
       }
       expected <- pmax(expected, 1e-10)
       shapes <- expected * precision_value
       if (any(!is.finite(shapes)) || any(shapes <= 0)) {
-        simulation_valid <- FALSE
-        break
+        stop(
+          "Invalid bootstrap gamma shapes for gene ", gene_id,
+          ", sample ", sample_id, "."
+        )
       }
       draw <- rgamma(length(shapes), shape = shapes, rate = 1)
       draw_total <- sum(draw)
       if (!is.finite(draw_total) || draw_total <= 0) {
-        simulation_valid <- FALSE
-        break
+        stop(
+          "Invalid bootstrap gamma draw for gene ", gene_id,
+          ", sample ", sample_id, "."
+        )
       }
       if (total == 0L) {
         simulated[[sample_id]] <- integer(length(draw))
@@ -370,7 +384,6 @@ bootstrap_gene <- function(
         simulated[[sample_id]] <- as.integer(rmultinom(1, total, draw)[, 1])
       }
     }
-    if (!simulation_valid) next
     run <- tryCatch({
       dm_counts <- simulated
       colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
