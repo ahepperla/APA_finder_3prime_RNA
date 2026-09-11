@@ -29,6 +29,20 @@ parse_args <- function(arguments) {
   result
 }
 
+parse_bootstrap_workers <- function(value) {
+  if (is.null(value)) return(1L)
+  workers <- suppressWarnings(as.numeric(value))
+  if (
+    length(workers) != 1L ||
+      !is.finite(workers) ||
+      workers < 1 ||
+      workers != floor(workers)
+  ) {
+    stop("--bootstrap-workers must be a positive integer.")
+  }
+  as.integer(workers)
+}
+
 read_tsv <- function(path) {
   read.delim(path, check.names = FALSE, stringsAsFactors = FALSE)
 }
@@ -211,6 +225,25 @@ bootstrap_gene_ids <- function(gene_ids, gene_fdr, detection_candidate, gene_fdr
   unique(gene_ids[selected & !is.na(gene_ids) & gene_ids != ""])
 }
 
+bootstrap_apply <- function(repeat_numbers, workers, worker) {
+  if (!length(repeat_numbers)) return(list())
+  workers <- as.integer(workers)
+  if (length(workers) != 1L || is.na(workers) || workers < 1L) {
+    stop("Bootstrap worker count must be a positive integer.")
+  }
+  workers <- min(workers, length(repeat_numbers))
+  if (workers == 1L || .Platform$OS.type == "windows") {
+    return(lapply(repeat_numbers, worker))
+  }
+  parallel::mclapply(
+    repeat_numbers,
+    worker,
+    mc.cores = workers,
+    mc.preschedule = TRUE,
+    mc.set.seed = FALSE
+  )
+}
+
 stabilize_boundary_gene <- function(
   gene_id,
   counts,
@@ -221,7 +254,8 @@ stabilize_boundary_gene <- function(
   treatment,
   params,
   atlas_checksum,
-  comparison
+  comparison,
+  bootstrap_workers
 ) {
   gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
   dm_counts <- gene_counts
@@ -335,8 +369,7 @@ bootstrap_gene <- function(
       ": ", paste(missing_samples, collapse = ", "), "."
     )
   }
-  runs <- list()
-  for (repeat_number in seq_len(params$dm_bootstrap_replicates)) {
+  bootstrap_run <- function(repeat_number) {
     set.seed(stable_seed(
       params$random_seed,
       atlas_checksum,
@@ -401,10 +434,14 @@ bootstrap_gene <- function(
           rowMeans(fitted_run[, control_ids, drop = FALSE])
       )
     }, error = function(error) NULL)
-    if (!is.null(run) && all(is.finite(run$delta_pau))) {
-      runs[[length(runs) + 1]] <- run
-    }
+    if (!is.null(run) && all(is.finite(run$delta_pau))) run else NULL
   }
+  runs <- bootstrap_apply(
+    seq_len(params$dm_bootstrap_replicates),
+    bootstrap_workers,
+    bootstrap_run
+  )
+  runs <- Filter(Negate(is.null), runs)
   minimum_successes <- ceiling(
     params$dm_bootstrap_replicates * params$dm_bootstrap_min_success_fraction
   )
@@ -467,7 +504,8 @@ fit_family <- function(
   atlas,
   params,
   output_dir,
-  atlas_checksum
+  atlas_checksum,
+  bootstrap_workers
 ) {
   control <- family
   treatments <- sort(unique(sample_rows$condition[
@@ -553,7 +591,8 @@ fit_family <- function(
         treatment,
         params,
         atlas_checksum,
-        comparison
+        comparison,
+        bootstrap_workers
       )
       count_index <- which(filtered$gene_id == gene_id)
       stabilization_match <- match(
@@ -852,6 +891,7 @@ fit_motif_preferences <- function(
 }
 
 arguments <- parse_args(commandArgs(trailingOnly = TRUE))
+bootstrap_workers <- parse_bootstrap_workers(arguments$bootstrap_workers)
 dir.create(arguments$output_dir, recursive = TRUE, showWarnings = FALSE)
 params <- yaml::read_yaml(arguments$params)
 samples <- read_tsv(arguments$samples)
@@ -882,7 +922,8 @@ for (family in families) {
     atlas,
     params,
     arguments$output_dir,
-    atlas_checksum
+    atlas_checksum,
+    bootstrap_workers
   )
   if (!is.null(fitted)) {
     all_precision[[family]] <- fitted$precision

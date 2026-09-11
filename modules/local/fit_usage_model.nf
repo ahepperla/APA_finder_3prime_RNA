@@ -1,6 +1,6 @@
 process FIT_USAGE_MODEL {
     tag "${family}"
-    label 'serial_high'
+    label 'high'
 
     input:
     val family
@@ -18,6 +18,9 @@ process FIT_USAGE_MODEL {
     def outputDirectory = "family-${task.index}"
     """
     mkdir -p '${outputDirectory}'
+    export OMP_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
     Rscript '${projectDir}/scripts/fit_usage_model.R' \
         --family '${family}' \
         --samples '${normalized_samples}' \
@@ -26,6 +29,7 @@ process FIT_USAGE_MODEL {
         --params '${resolved_params}' \
         --motif-scores '${motif_scores}' \
         --motif-sensitivity '${motif_sensitivity}' \
+        --bootstrap-workers '${task.cpus}' \
         --output-dir '${outputDirectory}'
     """
 }

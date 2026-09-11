@@ -42,3 +42,14 @@ stopifnot(identical(
   ),
   c("gene-1", "gene-4")
 ))
+
+bootstrap_probe <- function(repeat_number) {
+  set.seed(1000L + repeat_number)
+  c(repeat_number, runif(1))
+}
+
+serial_runs <- bootstrap_apply(1:4, 1L, bootstrap_probe)
+if (.Platform$OS.type != "windows") {
+  parallel_runs <- bootstrap_apply(1:4, 2L, bootstrap_probe)
+  stopifnot(identical(serial_runs, parallel_runs))
+}
