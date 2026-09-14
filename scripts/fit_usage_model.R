@@ -244,6 +244,12 @@ bootstrap_apply <- function(repeat_numbers, workers, worker) {
   )
 }
 
+dominant_pac <- function(feature_ids, fitted_pau) {
+  finite_indices <- which(is.finite(fitted_pau))
+  if (!length(finite_indices)) return(NA_character_)
+  feature_ids[finite_indices[[which.max(fitted_pau[finite_indices])]]]
+}
+
 stabilize_boundary_gene <- function(
   gene_id,
   counts,
@@ -336,7 +342,8 @@ bootstrap_gene <- function(
   treatment,
   params,
   atlas_checksum,
-  comparison
+  comparison,
+  bootstrap_workers
 ) {
   gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
   fitted <- proportions(fitted_model)
@@ -714,7 +721,8 @@ fit_family <- function(
         treatment,
         params,
         atlas_checksum,
-        comparison
+        comparison,
+        bootstrap_workers
       )
       output_indices <- which(output$gene_id == gene_id)
       interval_match <- match(output$feature_id[output_indices], intervals$feature_id)
@@ -729,14 +737,20 @@ fit_family <- function(
     dominant_control <- vapply(
       row_groups,
       function(indices) {
-        output$feature_id[indices[which.max(output$fitted_control_pau[indices])]]
+        dominant_pac(
+          output$feature_id[indices],
+          output$fitted_control_pau[indices]
+        )
       },
       character(1)
     )
     dominant_treatment <- vapply(
       row_groups,
       function(indices) {
-        output$feature_id[indices[which.max(output$fitted_treatment_pau[indices])]]
+        dominant_pac(
+          output$feature_id[indices],
+          output$fitted_treatment_pau[indices]
+        )
       },
       character(1)
     )
@@ -745,12 +759,12 @@ fit_family <- function(
     output$control_detected_complexity <- ave(
       output$fitted_control_pau >= params$event_min_treatment_pau,
       output$gene_id,
-      FUN = sum
+      FUN = function(values) sum(values, na.rm = TRUE)
     )
     output$treatment_detected_complexity <- ave(
       output$fitted_treatment_pau >= params$event_min_treatment_pau,
       output$gene_id,
-      FUN = sum
+      FUN = function(values) sum(values, na.rm = TRUE)
     )
     output$event_type <- apply(
       output,
@@ -765,7 +779,9 @@ fit_family <- function(
       output$exploratory_insufficient_replicates &
         output$event_type == "lost"
     ] <- "lost_candidate"
-    dominant_switch <- output$dominant_pac_control != output$dominant_pac_treatment
+    dominant_switch <- !is.na(output$dominant_pac_control) &
+      !is.na(output$dominant_pac_treatment) &
+      output$dominant_pac_control != output$dominant_pac_treatment
     output$event_type[
       output$event_type == "none" &
         dominant_switch &

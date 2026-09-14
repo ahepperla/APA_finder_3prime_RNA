@@ -53,3 +53,12 @@ if (.Platform$OS.type != "windows") {
   parallel_runs <- bootstrap_apply(1:4, 2L, bootstrap_probe)
   stopifnot(identical(serial_runs, parallel_runs))
 }
+
+stopifnot(identical(
+  dominant_pac(c("pac-1", "pac-2"), c(NA_real_, NA_real_)),
+  NA_character_
+))
+stopifnot(identical(
+  dominant_pac(c("pac-1", "pac-2"), c(NA_real_, 0.25)),
+  "pac-2"
+))
