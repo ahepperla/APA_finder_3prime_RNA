@@ -250,6 +250,13 @@ dominant_pac <- function(feature_ids, fitted_pau) {
   feature_ids[finite_indices[[which.max(fitted_pau[finite_indices])]]]
 }
 
+stable_feature_matches <- function(feature_index, stabilization_match, unstable) {
+  !is.na(feature_index) &
+    !is.na(stabilization_match) &
+    !is.na(unstable) &
+    !unstable
+}
+
 stabilize_boundary_gene <- function(
   gene_id,
   counts,
@@ -470,6 +477,10 @@ bootstrap_gene <- function(
 
 classify_event <- function(row, params) {
   number <- function(value) suppressWarnings(as.numeric(value))
+  finite_number <- function(value) {
+    value <- number(value)
+    length(value) == 1L && is.finite(value)
+  }
   at_least <- function(value, threshold) {
     value <- number(value)
     length(value) == 1L && is.finite(value) && value >= threshold
@@ -486,10 +497,12 @@ classify_event <- function(row, params) {
     row$control_supporting_samples,
     params$event_min_supporting_samples
   )
+  control_support_available <- finite_number(row$control_supporting_samples)
   treatment_detected <- at_least(
     row$treatment_supporting_samples,
     params$event_min_supporting_samples
   )
+  treatment_support_available <- finite_number(row$treatment_supporting_samples)
   positive <- at_least(row$delta_pau, params$min_abs_delta_pau)
   negative <- at_most(row$delta_pau, -params$min_abs_delta_pau)
   significant <- at_most(row$gene_fdr, params$gene_fdr) &&
@@ -501,10 +514,12 @@ classify_event <- function(row, params) {
     confidence != "low" &&
     !truth(row$internal_priming_flag) &&
     !truth(row$exploratory_insufficient_replicates)
-  gained_detection <- !control_detected && treatment_detected &&
+  gained_detection <- control_support_available && treatment_support_available &&
+    !control_detected && treatment_detected &&
     at_most(row$fitted_control_pau, params$event_max_control_pau) &&
     at_least(row$fitted_treatment_pau, params$event_min_treatment_pau) && positive
-  lost_detection <- control_detected && !treatment_detected &&
+  lost_detection <- control_support_available && treatment_support_available &&
+    control_detected && !treatment_detected &&
     at_most(row$fitted_treatment_pau, params$event_max_control_pau) &&
     at_least(row$fitted_control_pau, params$event_min_treatment_pau) && negative
   if (gained_detection) {
@@ -622,10 +637,15 @@ fit_family <- function(
         filtered$pac_id[count_index], stabilized$feature_id
       )
       feature_index <- feature_match[count_index]
-      usable <- !stabilized$zero_boundary_unstable[stabilization_match]
-      replace_indices <- count_index[usable]
-      replace_stabilized <- stabilization_match[usable]
-      replace_features <- feature_index[usable]
+      stabilized_unstable <- stabilized$zero_boundary_unstable[stabilization_match]
+      replaceable <- stable_feature_matches(
+        feature_index,
+        stabilization_match,
+        stabilized_unstable
+      )
+      replace_indices <- count_index[replaceable]
+      replace_stabilized <- stabilization_match[replaceable]
+      replace_features <- feature_index[replaceable]
       if (length(replace_indices)) {
         control_pau[replace_indices] <-
           stabilized$stabilized_control_pau[replace_stabilized]
@@ -636,11 +656,11 @@ fit_family <- function(
       }
       model_status[count_index] <- "drimseq_add_uniform"
       zero_boundary_unstable[count_index] <-
-        stabilized$zero_boundary_unstable[stabilization_match]
+        is.na(stabilized_unstable) | stabilized_unstable
       stabilization_successes[count_index] <-
         stabilized$stabilization_successes[stabilization_match]
       unstable_feature_indices <- feature_index[
-        stabilized$zero_boundary_unstable[stabilization_match]
+        is.na(stabilized_unstable) | stabilized_unstable
       ]
       unstable_feature_indices <- unstable_feature_indices[
         !is.na(unstable_feature_indices)

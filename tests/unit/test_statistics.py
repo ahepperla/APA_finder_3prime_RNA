@@ -5,6 +5,7 @@ import pytest
 from pacusage.errors import PacusageError
 from pacusage.statistics import (
     add_bh_fdr,
+    classify_event,
     deterministic_seed,
     motif_usage_scores,
     validate_design_matrix,
@@ -21,6 +22,40 @@ def test_seed_and_bh_are_deterministic() -> None:
     assert deterministic_seed(1729, "atlas", "g1") == deterministic_seed(1729, "atlas", "g1")
     adjusted = add_bh_fdr([0.01, 0.04, 0.03])
     assert np.allclose(adjusted, [0.03, 0.04, 0.04])
+
+
+def test_classify_event_treats_unavailable_values_as_non_events() -> None:
+    params = {
+        "event_min_supporting_samples": 2,
+        "min_abs_delta_pau": 0.10,
+        "gene_fdr": 0.05,
+        "site_fdr": 0.05,
+        "event_max_control_pau": 0.01,
+        "event_min_treatment_pau": 0.05,
+    }
+    row = pd.Series(
+        {
+            "control_supporting_samples": 0,
+            "treatment_supporting_samples": 2,
+            "delta_pau": 0.20,
+            "gene_fdr": 0.01,
+            "pac_fdr": 0.01,
+            "zero_boundary_unstable": False,
+            "confidence": "high",
+            "internal_priming_flag": False,
+            "fitted_control_pau": 0.0,
+            "fitted_treatment_pau": 0.20,
+        }
+    )
+
+    assert classify_event(row, params) == "gained"
+    missing_fitted = row.copy()
+    missing_fitted["fitted_control_pau"] = np.nan
+    assert classify_event(missing_fitted, params) == "none"
+
+    missing_support = row.copy()
+    missing_support["control_supporting_samples"] = np.nan
+    assert classify_event(missing_support, params) == "none"
 
 
 def test_motif_scores_give_each_gene_equal_weight() -> None:

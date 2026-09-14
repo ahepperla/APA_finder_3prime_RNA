@@ -107,33 +107,46 @@ def filter_testable_features(
 
 
 def classify_event(row: pd.Series, params: dict) -> str:
-    control_detected = int(row["control_supporting_samples"]) >= int(
+    control_support_available = _finite(row.get("control_supporting_samples"))
+    control_detected = _finite_and_at_least(
+        row.get("control_supporting_samples"),
         params["event_min_supporting_samples"]
     )
-    treatment_detected = int(row["treatment_supporting_samples"]) >= int(
+    treatment_support_available = _finite(row.get("treatment_supporting_samples"))
+    treatment_detected = _finite_and_at_least(
+        row.get("treatment_supporting_samples"),
         params["event_min_supporting_samples"]
     )
-    positive = float(row["delta_pau"]) >= float(params["min_abs_delta_pau"])
-    negative = float(row["delta_pau"]) <= -float(params["min_abs_delta_pau"])
+    positive = _finite_and_at_least(row.get("delta_pau"), params["min_abs_delta_pau"])
+    negative = _finite_and_at_most(row.get("delta_pau"), -float(params["min_abs_delta_pau"]))
     significant = _finite_and_at_most(
         row.get("gene_fdr"), float(params["gene_fdr"])
     ) and _finite_and_at_most(row.get("pac_fdr"), float(params["site_fdr"]))
-    stable = not bool(row.get("zero_boundary_unstable", False))
-    confident = str(row.get("confidence", "")) != "low" and not bool(
+    stable = not _truth(row.get("zero_boundary_unstable", False))
+    confidence = row.get("confidence", "")
+    confident = not _missing(confidence) and str(confidence) != "low" and not _truth(
         row.get("internal_priming_flag", False)
     )
     gained_detection = (
-        not control_detected
+        control_support_available
+        and treatment_support_available
+        and not control_detected
         and treatment_detected
-        and float(row["fitted_control_pau"]) <= float(params["event_max_control_pau"])
-        and float(row["fitted_treatment_pau"]) >= float(params["event_min_treatment_pau"])
+        and _finite_and_at_most(row.get("fitted_control_pau"), params["event_max_control_pau"])
+        and _finite_and_at_least(
+            row.get("fitted_treatment_pau"), params["event_min_treatment_pau"]
+        )
         and positive
     )
     lost_detection = (
-        control_detected
+        control_support_available
+        and treatment_support_available
+        and control_detected
         and not treatment_detected
-        and float(row["fitted_treatment_pau"]) <= float(params["event_max_control_pau"])
-        and float(row["fitted_control_pau"]) >= float(params["event_min_treatment_pau"])
+        and _finite_and_at_most(row.get("fitted_treatment_pau"), params["event_max_control_pau"])
+        and _finite_and_at_least(
+            row.get("fitted_control_pau"), params["event_min_treatment_pau"]
+        )
         and negative
     )
     if gained_detection:
@@ -153,6 +166,32 @@ def _finite_and_at_most(value: object, threshold: float) -> bool:
     except (TypeError, ValueError):
         return False
     return np.isfinite(number) and number <= threshold
+
+
+def _finite_and_at_least(value: object, threshold: float) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return np.isfinite(number) and number >= threshold
+
+
+def _finite(value: object) -> bool:
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _missing(value: object) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _truth(value: object) -> bool:
+    return str(value).lower() in {"true", "t", "1"}
 
 
 def motif_usage_scores(

@@ -62,6 +62,14 @@ stopifnot(identical(
   dominant_pac(c("pac-1", "pac-2"), c(NA_real_, 0.25)),
   "pac-2"
 ))
+stopifnot(identical(
+  stable_feature_matches(
+    c(1L, NA_integer_, 3L, 4L),
+    c(1L, 2L, NA_integer_, 4L),
+    c(FALSE, FALSE, FALSE, NA)
+  ),
+  c(TRUE, FALSE, FALSE, FALSE)
+))
 
 classify_start <- grep("^classify_event <-", lines)[1]
 classify_end <- grep("^fit_family <-", lines)[1] - 1L
@@ -96,3 +104,7 @@ stopifnot(identical(classify_event(gained_row, event_params), "gained"))
 missing_fitted_row <- gained_row
 missing_fitted_row$fitted_control_pau <- NA_real_
 stopifnot(identical(classify_event(missing_fitted_row, event_params), "none"))
+
+missing_support_row <- gained_row
+missing_support_row$control_supporting_samples <- NA_real_
+stopifnot(identical(classify_event(missing_support_row, event_params), "none"))
