@@ -62,3 +62,37 @@ stopifnot(identical(
   dominant_pac(c("pac-1", "pac-2"), c(NA_real_, 0.25)),
   "pac-2"
 ))
+
+classify_start <- grep("^classify_event <-", lines)[1]
+classify_end <- grep("^fit_family <-", lines)[1] - 1L
+if (is.na(classify_start) || is.na(classify_end) || classify_start > classify_end) {
+  stop("Could not locate event classifier in ", args[[1]])
+}
+eval(parse(text = lines[classify_start:classify_end]))
+
+event_params <- list(
+  event_min_supporting_samples = 2,
+  min_abs_delta_pau = 0.10,
+  gene_fdr = 0.05,
+  site_fdr = 0.05,
+  event_max_control_pau = 0.01,
+  event_min_treatment_pau = 0.05
+)
+gained_row <- list(
+  control_supporting_samples = 0,
+  treatment_supporting_samples = 2,
+  delta_pau = 0.20,
+  gene_fdr = 0.01,
+  pac_fdr = 0.01,
+  zero_boundary_unstable = FALSE,
+  confidence = "high",
+  internal_priming_flag = FALSE,
+  exploratory_insufficient_replicates = FALSE,
+  fitted_control_pau = 0,
+  fitted_treatment_pau = 0.20
+)
+stopifnot(identical(classify_event(gained_row, event_params), "gained"))
+
+missing_fitted_row <- gained_row
+missing_fitted_row$fitted_control_pau <- NA_real_
+stopifnot(identical(classify_event(missing_fitted_row, event_params), "none"))

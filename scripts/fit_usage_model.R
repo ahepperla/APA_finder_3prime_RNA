@@ -470,27 +470,43 @@ bootstrap_gene <- function(
 
 classify_event <- function(row, params) {
   number <- function(value) suppressWarnings(as.numeric(value))
-  truth <- function(value) tolower(as.character(value)) %in% c("true", "t", "1")
-  control_detected <- number(row$control_supporting_samples) >=
+  at_least <- function(value, threshold) {
+    value <- number(value)
+    length(value) == 1L && is.finite(value) && value >= threshold
+  }
+  at_most <- function(value, threshold) {
+    value <- number(value)
+    length(value) == 1L && is.finite(value) && value <= threshold
+  }
+  truth <- function(value) {
+    value <- tolower(as.character(value))
+    length(value) == 1L && !is.na(value) && value %in% c("true", "t", "1")
+  }
+  control_detected <- at_least(
+    row$control_supporting_samples,
     params$event_min_supporting_samples
-  treatment_detected <- number(row$treatment_supporting_samples) >=
+  )
+  treatment_detected <- at_least(
+    row$treatment_supporting_samples,
     params$event_min_supporting_samples
-  positive <- number(row$delta_pau) >= params$min_abs_delta_pau
-  negative <- number(row$delta_pau) <= -params$min_abs_delta_pau
-  significant <- is.finite(number(row$gene_fdr)) &&
-    number(row$gene_fdr) <= params$gene_fdr &&
-    is.finite(number(row$pac_fdr)) &&
-    number(row$pac_fdr) <= params$site_fdr
+  )
+  positive <- at_least(row$delta_pau, params$min_abs_delta_pau)
+  negative <- at_most(row$delta_pau, -params$min_abs_delta_pau)
+  significant <- at_most(row$gene_fdr, params$gene_fdr) &&
+    at_most(row$pac_fdr, params$site_fdr)
   stable <- !truth(row$zero_boundary_unstable)
-  confident <- as.character(row$confidence) != "low" &&
+  confidence <- as.character(row$confidence)
+  confident <- length(confidence) == 1L &&
+    !is.na(confidence) &&
+    confidence != "low" &&
     !truth(row$internal_priming_flag) &&
     !truth(row$exploratory_insufficient_replicates)
   gained_detection <- !control_detected && treatment_detected &&
-    number(row$fitted_control_pau) <= params$event_max_control_pau &&
-    number(row$fitted_treatment_pau) >= params$event_min_treatment_pau && positive
+    at_most(row$fitted_control_pau, params$event_max_control_pau) &&
+    at_least(row$fitted_treatment_pau, params$event_min_treatment_pau) && positive
   lost_detection <- control_detected && !treatment_detected &&
-    number(row$fitted_treatment_pau) <= params$event_max_control_pau &&
-    number(row$fitted_control_pau) >= params$event_min_treatment_pau && negative
+    at_most(row$fitted_treatment_pau, params$event_max_control_pau) &&
+    at_least(row$fitted_control_pau, params$event_min_treatment_pau) && negative
   if (gained_detection) {
     if (significant && stable && confident) "gained" else "gained_candidate"
   } else if (lost_detection) {
