@@ -876,6 +876,9 @@ a parametric bootstrap:
 4. Report percentile 95 percent intervals and bootstrap success counts.
 5. Leave the interval unavailable and flag the reason when the success
    fraction is below `dm_bootstrap_min_success_fraction`.
+6. `dm_bootstrap_include_candidates` defaults to `true`; setting it to `false`
+   retains intervals for genes passing the contrast-specific gene FDR screen
+   while omitting them for non-significant pre-statistical candidates.
 
 #### Researcher-Facing PAC Events
 

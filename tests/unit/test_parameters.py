@@ -23,6 +23,8 @@ def test_command_values_override_defaults() -> None:
     assert params["pac_cluster_radius"] == 12
     assert params["proximal_bin_size"] == 25
     assert params["constitutive_readthrough_min_replicate_support"] == "all"
+    assert params["dm_bootstrap_include_candidates"] is True
+    assert params["statistics_cpus"] == 8
     assert params["bind_paths"] == []
 
 

@@ -71,6 +71,13 @@ tasks remain reusable with `-resume`. Differential usage modeling runs as one
 independent Slurm job per direct comparison family, followed by a lightweight
 merge before k-mer analysis and report generation.
 
+`FIT_USAGE_MODEL` receives eight CPUs by default. Increase only that process
+with `--statistics_cpus 16`; the requested cores are also passed to its
+bootstrap workers. To reduce bootstrap cost for an exploratory run, set
+`--dm_bootstrap_replicates 100`. Setting
+`--dm_bootstrap_include_candidates false` leaves p-values and event calls
+unchanged, but omits bootstrap intervals for non-significant candidate genes.
+
 Build the default Apptainer image once on a networked system:
 
 ```bash

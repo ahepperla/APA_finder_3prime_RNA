@@ -1,6 +1,6 @@
 process FIT_USAGE_MODEL {
     tag "${family}"
-    label 'high'
+    label 'statistics_high'
 
     input:
     val family

@@ -219,9 +219,17 @@ bootstrap_total <- function(values, gene_id, sample_id) {
   as.integer(round(total))
 }
 
-bootstrap_gene_ids <- function(gene_ids, gene_fdr, detection_candidate, gene_fdr_cutoff) {
-  selected <- (!is.na(gene_fdr) & gene_fdr <= gene_fdr_cutoff) |
-    (!is.na(detection_candidate) & detection_candidate)
+bootstrap_gene_ids <- function(
+  gene_ids,
+  gene_fdr,
+  detection_candidate,
+  gene_fdr_cutoff,
+  include_candidates = TRUE
+) {
+  selected <- !is.na(gene_fdr) & gene_fdr <= gene_fdr_cutoff
+  if (is.null(include_candidates) || isTRUE(include_candidates)) {
+    selected <- selected | (!is.na(detection_candidate) & detection_candidate)
+  }
   unique(gene_ids[selected & !is.na(gene_ids) & gene_ids != ""])
 }
 
@@ -742,7 +750,8 @@ fit_family <- function(
       output$gene_id,
       output$gene_fdr,
       detection_candidate,
-      params$gene_fdr
+      params$gene_fdr,
+      params$dm_bootstrap_include_candidates
     )
     for (gene_id in bootstrap_genes) {
       precision_value <- precision$precision[match(gene_id, precision$gene_id)]

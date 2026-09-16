@@ -42,6 +42,26 @@ stopifnot(identical(
   ),
   c("gene-1", "gene-4")
 ))
+stopifnot(identical(
+  bootstrap_gene_ids(
+    c("gene-1", "gene-2"),
+    c(0.01, NA_real_),
+    c(FALSE, TRUE),
+    0.05,
+    include_candidates = NULL
+  ),
+  c("gene-1", "gene-2")
+))
+stopifnot(identical(
+  bootstrap_gene_ids(
+    c("gene-1", "gene-2", "gene-3"),
+    c(0.01, NA_real_, 0.50),
+    c(FALSE, TRUE, TRUE),
+    0.05,
+    include_candidates = FALSE
+  ),
+  "gene-1"
+))
 
 bootstrap_probe <- function(repeat_number) {
   set.seed(1000L + repeat_number)
