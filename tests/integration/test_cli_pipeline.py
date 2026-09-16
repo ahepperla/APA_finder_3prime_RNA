@@ -293,3 +293,75 @@ def test_merge_comparison_family_statistics(tmp_path: Path) -> None:
     ]
     assert (output / "treatment_a_vs_control_a.genes.tsv.gz").is_file()
     assert (output / "treatment_b_vs_control_b.genes.tsv.gz").is_file()
+
+
+def test_kmer_enrichment_tolerates_unavailable_model_statistics(tmp_path: Path) -> None:
+    statistics = tmp_path / "statistics"
+    statistics.mkdir()
+    write_tsv(
+        [
+            {
+                "pac_id": "pac-event",
+                "event_type": "gained",
+                "pvalue_pac": None,
+                "gene_fdr": None,
+                "delta_pau_ci_low": None,
+                "delta_pau_ci_high": None,
+                "bootstrap_successes": None,
+            },
+            {
+                "pac_id": "pac-background",
+                "event_type": None,
+                "pvalue_pac": None,
+                "gene_fdr": None,
+                "delta_pau_ci_low": None,
+                "delta_pau_ci_high": None,
+                "bootstrap_successes": None,
+            },
+        ],
+        statistics / "treatment_vs_control.events.tsv.gz",
+    )
+    atlas = tmp_path / "atlas.tsv.gz"
+    write_tsv(
+        [
+            {
+                "pac_id": "pac-event",
+                "gene_id": "gene-1",
+                "upstream_sequence": "AAAT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+            {
+                "pac_id": "pac-background",
+                "gene_id": "gene-1",
+                "upstream_sequence": "GGGT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+        ],
+        atlas,
+    )
+
+    output = tmp_path / "kmer"
+    assert (
+        main(
+            [
+                "kmer-enrichment",
+                "--statistics",
+                str(statistics),
+                "--atlas",
+                str(atlas),
+                "--k",
+                "2",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert read_tsv(output / "kmer_enrichment_status.tsv") == [
+        {"comparison": "treatment_vs_control", "tested_kmers": "4"}
+    ]
+    assert (output / "treatment_vs_control.kmer_enrichment.tsv.gz").is_file()
