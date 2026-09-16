@@ -353,6 +353,14 @@ bootstrap_gene <- function(
   bootstrap_workers
 ) {
   gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
+  precision_value <- suppressWarnings(as.numeric(precision)[1])
+  if (!is.finite(precision_value) || precision_value <= 0) {
+    warning(
+      "Skipping bootstrap intervals for gene ", gene_id,
+      " because genewise precision is unavailable."
+    )
+    return(empty_bootstrap_intervals(gene_counts))
+  }
   fitted <- proportions(fitted_model)
   fitted <- fitted[fitted$gene_id == gene_id, , drop = FALSE]
   fitted <- fitted[match(gene_counts$pac_id, fitted$feature_id), , drop = FALSE]
@@ -368,14 +376,6 @@ bootstrap_gene <- function(
     ),
     integer(1)
   )
-  precision_value <- suppressWarnings(as.numeric(precision)[1])
-  if (!is.finite(precision_value) || precision_value <= 0) {
-    stop(
-      "Invalid bootstrap precision for gene ", gene_id,
-      ": ", format(precision_value),
-      ". Expected a finite value greater than zero."
-    )
-  }
   if (!all(sample_ids %in% colnames(fitted))) {
     missing_samples <- setdiff(sample_ids, colnames(fitted))
     stop(

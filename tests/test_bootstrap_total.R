@@ -71,6 +71,41 @@ stopifnot(identical(
   c(TRUE, FALSE, FALSE, FALSE)
 ))
 
+bootstrap_start <- grep("^bootstrap_gene <-", lines)[1]
+bootstrap_end <- grep("^classify_event <-", lines)[1] - 1L
+if (is.na(bootstrap_start) || is.na(bootstrap_end) || bootstrap_start > bootstrap_end) {
+  stop("Could not locate bootstrap implementation in ", args[[1]])
+}
+eval(parse(text = lines[bootstrap_start:bootstrap_end]))
+
+invalid_precision_intervals <- suppressWarnings(bootstrap_gene(
+  gene_id = "gene-1",
+  counts = data.frame(
+    gene_id = c("gene-1", "gene-1"),
+    pac_id = c("pac-1", "pac-2")
+  ),
+  sample_rows = NULL,
+  design = NULL,
+  fitted_model = NULL,
+  precision = NA_real_,
+  control = NULL,
+  treatment = NULL,
+  params = NULL,
+  atlas_checksum = NULL,
+  comparison = NULL,
+  bootstrap_workers = NULL
+))
+stopifnot(identical(
+  invalid_precision_intervals$feature_id,
+  c("pac-1", "pac-2")
+))
+stopifnot(all(is.na(invalid_precision_intervals$delta_pau_ci_low)))
+stopifnot(all(is.na(invalid_precision_intervals$delta_pau_ci_high)))
+stopifnot(identical(
+  invalid_precision_intervals$bootstrap_successes,
+  c(0L, 0L)
+))
+
 classify_start <- grep("^classify_event <-", lines)[1]
 classify_end <- grep("^fit_family <-", lines)[1] - 1L
 if (is.na(classify_start) || is.na(classify_end) || classify_start > classify_end) {
