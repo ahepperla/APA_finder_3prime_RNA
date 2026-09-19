@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  required <- c("DRIMSeq", "stageR", "limma", "yaml")
+  required <- c("BiocParallel", "DRIMSeq", "stageR", "limma", "yaml")
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) {
     stop(
@@ -23,13 +23,20 @@ parse_args <- function(arguments) {
     result[[gsub("-", "_", key)]] <- arguments[[index + 1]]
     index <- index + 2
   }
-  required <- c("samples", "counts", "atlas", "params", "output_dir")
-  missing <- required[!vapply(required, function(key) !is.null(result[[key]]), logical(1))]
-  if (length(missing)) stop("Missing arguments: ", paste(missing, collapse = ", "))
+  if (is.null(result$mode)) result$mode <- "fit"
   result
 }
 
-parse_bootstrap_workers <- function(value) {
+require_args <- function(arguments, required) {
+  missing <- required[!vapply(
+    required,
+    function(key) !is.null(arguments[[key]]) && arguments[[key]] != "",
+    logical(1)
+  )]
+  if (length(missing)) stop("Missing arguments: ", paste(missing, collapse = ", "))
+}
+
+parse_worker_count <- function(value, option_name) {
   if (is.null(value)) return(1L)
   workers <- suppressWarnings(as.numeric(value))
   if (
@@ -38,9 +45,43 @@ parse_bootstrap_workers <- function(value) {
       workers < 1 ||
       workers != floor(workers)
   ) {
-    stop("--bootstrap-workers must be a positive integer.")
+    stop("--", option_name, " must be a positive integer.")
   }
   as.integer(workers)
+}
+
+parse_bootstrap_workers <- function(value) {
+  parse_worker_count(value, "bootstrap-workers")
+}
+
+parse_model_workers <- function(value) {
+  parse_worker_count(value, "model-workers")
+}
+
+parse_batch_size <- function(value) {
+  if (is.null(value)) return(20L)
+  size <- suppressWarnings(as.numeric(value))
+  if (
+    length(size) != 1L ||
+      !is.finite(size) ||
+      size < 1 ||
+      size != floor(size)
+  ) {
+    stop("--bootstrap-batch-size must be a positive integer.")
+  }
+  as.integer(size)
+}
+
+drimseq_bpparam <- function(workers, seed) {
+  if (workers == 1L || .Platform$OS.type == "windows") {
+    return(BiocParallel::SerialParam())
+  }
+  BiocParallel::MulticoreParam(
+    workers = workers,
+    RNGseed = seed,
+    progressbar = FALSE,
+    stop.on.error = TRUE
+  )
 }
 
 read_tsv <- function(path) {
@@ -252,6 +293,27 @@ bootstrap_apply <- function(repeat_numbers, workers, worker) {
   )
 }
 
+bootstrap_result_is_valid <- function(value, feature_ids) {
+  is.data.frame(value) &&
+    identical(names(value), c("feature_id", "delta_pau")) &&
+    nrow(value) == length(feature_ids) &&
+    identical(as.character(value$feature_id), as.character(feature_ids)) &&
+    is.numeric(value$delta_pau) &&
+    all(is.finite(value$delta_pau))
+}
+
+bootstrap_failure_message <- function(value) {
+  condition <- attr(value, "condition")
+  if (!is.null(condition)) return(conditionMessage(condition))
+  if (inherits(value, "bootstrap_failure")) return(value$message)
+  if (inherits(value, "try-error")) return(as.character(value)[[1]])
+  "worker returned an invalid result"
+}
+
+bootstrap_failure <- function(error) {
+  structure(list(message = conditionMessage(error)), class = "bootstrap_failure")
+}
+
 dominant_pac <- function(feature_ids, fitted_pau) {
   finite_indices <- which(is.finite(fitted_pau))
   if (!length(finite_indices)) return(NA_character_)
@@ -263,6 +325,207 @@ stable_feature_matches <- function(feature_index, stabilization_match, unstable)
     !is.na(stabilization_match) &
     !is.na(unstable) &
     !unstable
+}
+
+bootstrap_settings <- function(params) {
+  bootstrap_replicates_value <- suppressWarnings(
+    as.numeric(params$dm_bootstrap_replicates)
+  )
+  if (
+    length(bootstrap_replicates_value) != 1L ||
+      !is.finite(bootstrap_replicates_value) ||
+      bootstrap_replicates_value < 0 ||
+      bootstrap_replicates_value != floor(bootstrap_replicates_value)
+  ) {
+    stop("dm_bootstrap_replicates must be a non-negative integer.")
+  }
+  bootstrap_min_success_fraction <- suppressWarnings(
+    as.numeric(params$dm_bootstrap_min_success_fraction)
+  )
+  if (
+    length(bootstrap_min_success_fraction) != 1L ||
+      !is.finite(bootstrap_min_success_fraction) ||
+      bootstrap_min_success_fraction < 0 ||
+      bootstrap_min_success_fraction > 1
+  ) {
+    stop("dm_bootstrap_min_success_fraction must be a finite value in [0, 1].")
+  }
+  list(
+    replicates = as.integer(bootstrap_replicates_value),
+    min_success_fraction = bootstrap_min_success_fraction
+  )
+}
+
+bootstrap_gene_from_fitted <- function(
+  gene_id,
+  gene_counts,
+  sample_rows,
+  design,
+  fitted,
+  precision,
+  control,
+  treatment,
+  params,
+  atlas_checksum,
+  comparison,
+  bootstrap_workers
+) {
+  precision_value <- suppressWarnings(as.numeric(precision)[1])
+  if (!is.finite(precision_value) || precision_value <= 0) {
+    warning(
+      "Skipping bootstrap intervals for gene ", gene_id,
+      " because genewise precision is unavailable."
+    )
+    return(empty_bootstrap_intervals(gene_counts))
+  }
+  settings <- bootstrap_settings(params)
+  if (settings$replicates == 0L) {
+    return(empty_bootstrap_intervals(gene_counts))
+  }
+  sample_ids <- sample_rows$sample_id
+  control_ids <- sample_rows$sample_id[sample_rows$condition == control]
+  treatment_ids <- sample_rows$sample_id[sample_rows$condition == treatment]
+  sample_totals <- vapply(
+    sample_ids,
+    function(sample_id) bootstrap_total(
+      gene_counts[[sample_id]],
+      gene_id,
+      sample_id
+    ),
+    integer(1)
+  )
+  if (!all(sample_ids %in% colnames(fitted))) {
+    missing_samples <- setdiff(sample_ids, colnames(fitted))
+    stop(
+      "Bootstrap fitted proportions are missing samples for gene ", gene_id,
+      ": ", paste(missing_samples, collapse = ", "), "."
+    )
+  }
+  if (
+    nrow(fitted) != nrow(gene_counts) ||
+      !identical(as.character(fitted$feature_id), as.character(gene_counts$pac_id))
+  ) {
+    stop("Bootstrap fitted proportions do not match PAC ordering for gene ", gene_id, ".")
+  }
+  bootstrap_shapes <- setNames(lapply(sample_ids, function(sample_id) {
+    expected <- as.numeric(fitted[[sample_id]])
+    if (
+      length(expected) != nrow(gene_counts) ||
+      any(!is.finite(expected)) ||
+      any(expected < 0)
+    ) {
+      stop(
+        "Invalid bootstrap fitted proportions for gene ", gene_id,
+        ", sample ", sample_id,
+        ". Expected ", nrow(gene_counts),
+        " finite non-negative values."
+      )
+    }
+    shapes <- pmax(expected, 1e-10) * precision_value
+    if (any(!is.finite(shapes)) || any(shapes <= 0)) {
+      stop(
+        "Invalid bootstrap gamma shapes for gene ", gene_id,
+        ", sample ", sample_id, "."
+      )
+    }
+    shapes
+  }), sample_ids)
+  bootstrap_run <- function(repeat_number) {
+    tryCatch({
+      set.seed(stable_seed(
+        params$random_seed,
+        atlas_checksum,
+        comparison,
+        gene_id,
+        "bootstrap",
+        repeat_number
+      ))
+      simulated <- gene_counts
+      for (sample_id in sample_ids) {
+        total <- sample_totals[[sample_id]]
+        shapes <- bootstrap_shapes[[sample_id]]
+        draw <- rgamma(length(shapes), shape = shapes, rate = 1)
+        draw_total <- sum(draw)
+        if (!is.finite(draw_total) || draw_total <= 0) {
+          stop(
+            "Invalid bootstrap gamma draw for gene ", gene_id,
+            ", sample ", sample_id, "."
+          )
+        }
+        if (total == 0L) {
+          simulated[[sample_id]] <- integer(length(draw))
+        } else {
+          draw <- draw / draw_total
+          simulated[[sample_id]] <- as.integer(rmultinom(1, total, draw)[, 1])
+        }
+      }
+      dm_counts <- simulated
+      colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
+      dm_samples <- sample_rows[, c(
+        "sample_id", "condition", unlist(params$model_covariates)
+      ), drop = FALSE]
+      value <- dmDSdata(counts = dm_counts, samples = dm_samples)
+      value <- dmPrecision(value, design = design, verbose = 0)
+      value <- dmFit(value, design = design, verbose = 0)
+      fitted_run <- proportions(value)
+      data.frame(
+        feature_id = fitted_run$feature_id,
+        delta_pau =
+          rowMeans(fitted_run[, treatment_ids, drop = FALSE]) -
+          rowMeans(fitted_run[, control_ids, drop = FALSE])
+      )
+    }, error = bootstrap_failure)
+  }
+  runs <- bootstrap_apply(
+    seq_len(settings$replicates),
+    bootstrap_workers,
+    bootstrap_run
+  )
+  successful_runs <- vapply(
+    runs,
+    bootstrap_result_is_valid,
+    logical(1),
+    feature_ids = gene_counts$pac_id
+  )
+  failed_runs <- runs[
+    !successful_runs & !vapply(runs, is.null, logical(1))
+  ]
+  if (length(failed_runs)) {
+    messages <- unique(vapply(
+      failed_runs,
+      bootstrap_failure_message,
+      character(1)
+    ))
+    if (length(messages) > 3L) {
+      messages <- c(
+        messages[seq_len(3L)],
+        paste0(length(messages) - 3L, " additional distinct error(s)")
+      )
+    }
+    warning(
+      "Ignoring ", length(failed_runs),
+      " invalid bootstrap result(s) for gene ", gene_id,
+      ": ", paste(messages, collapse = "; ")
+    )
+  }
+  runs <- runs[successful_runs]
+  minimum_successes <- ceiling(
+    settings$replicates * settings$min_success_fraction
+  )
+  if (length(runs) < minimum_successes) {
+    return(empty_bootstrap_intervals(gene_counts, length(runs)))
+  }
+  long <- do.call(rbind, runs)
+  output <- lapply(gene_counts$pac_id, function(feature_id) {
+    values <- long$delta_pau[long$feature_id == feature_id]
+    data.frame(
+      feature_id = feature_id,
+      delta_pau_ci_low = unname(quantile(values, 0.025)),
+      delta_pau_ci_high = unname(quantile(values, 0.975)),
+      bootstrap_successes = length(values)
+    )
+  })
+  do.call(rbind, output)
 }
 
 stabilize_boundary_gene <- function(
@@ -284,12 +547,11 @@ stabilize_boundary_gene <- function(
   dm_samples <- sample_rows[, c(
     "sample_id", "condition", unlist(params$model_covariates)
   ), drop = FALSE]
-  runs <- list()
-  for (repeat_number in seq_len(params$dm_zero_sensitivity_repeats)) {
-    set.seed(stable_seed(
-      params$random_seed, atlas_checksum, comparison, gene_id, repeat_number
-    ))
-    run <- tryCatch({
+  sensitivity_run <- function(repeat_number) {
+    tryCatch({
+      set.seed(stable_seed(
+        params$random_seed, atlas_checksum, comparison, gene_id, repeat_number
+      ))
       value <- dmDSdata(counts = dm_counts, samples = dm_samples)
       value <- dmPrecision(value, design = design, verbose = 0)
       value <- dmFit(value, design = design, add_uniform = TRUE, verbose = 0)
@@ -307,8 +569,13 @@ stabilize_boundary_gene <- function(
         treatment_pau = rowMeans(fitted[, treatment_ids, drop = FALSE])
       )
     }, error = function(error) NULL)
-    if (!is.null(run)) runs[[length(runs) + 1]] <- run
   }
+  runs <- bootstrap_apply(
+    seq_len(params$dm_zero_sensitivity_repeats),
+    bootstrap_workers,
+    sensitivity_run
+  )
+  runs <- Filter(Negate(is.null), runs)
   if (!length(runs)) {
     return(data.frame(
       feature_id = gene_counts$pac_id,
@@ -369,118 +636,207 @@ bootstrap_gene <- function(
     )
     return(empty_bootstrap_intervals(gene_counts))
   }
+  if (bootstrap_settings(params)$replicates == 0L) {
+    return(empty_bootstrap_intervals(gene_counts))
+  }
   fitted <- proportions(fitted_model)
   fitted <- fitted[fitted$gene_id == gene_id, , drop = FALSE]
   fitted <- fitted[match(gene_counts$pac_id, fitted$feature_id), , drop = FALSE]
-  sample_ids <- sample_rows$sample_id
-  control_ids <- sample_rows$sample_id[sample_rows$condition == control]
-  treatment_ids <- sample_rows$sample_id[sample_rows$condition == treatment]
-  sample_totals <- vapply(
-    sample_ids,
-    function(sample_id) bootstrap_total(
-      gene_counts[[sample_id]],
-      gene_id,
-      sample_id
-    ),
-    integer(1)
+  bootstrap_gene_from_fitted(
+    gene_id,
+    gene_counts,
+    sample_rows,
+    design,
+    fitted,
+    precision,
+    control,
+    treatment,
+    params,
+    atlas_checksum,
+    comparison,
+    bootstrap_workers
   )
-  if (!all(sample_ids %in% colnames(fitted))) {
-    missing_samples <- setdiff(sample_ids, colnames(fitted))
-    stop(
-      "Bootstrap fitted proportions are missing samples for gene ", gene_id,
-      ": ", paste(missing_samples, collapse = ", "), "."
-    )
-  }
-  bootstrap_run <- function(repeat_number) {
-    set.seed(stable_seed(
-      params$random_seed,
-      atlas_checksum,
-      comparison,
-      gene_id,
-      "bootstrap",
-      repeat_number
-    ))
-    simulated <- gene_counts
-    for (sample_id in sample_ids) {
-      total <- sample_totals[[sample_id]]
-      expected <- as.numeric(fitted[[sample_id]])
-      if (
-        length(expected) != nrow(gene_counts) ||
-        any(!is.finite(expected)) ||
-        any(expected < 0)
-      ) {
-        stop(
-          "Invalid bootstrap fitted proportions for gene ", gene_id,
-          ", sample ", sample_id,
-          ". Expected ", nrow(gene_counts),
-          " finite non-negative values."
-        )
-      }
-      expected <- pmax(expected, 1e-10)
-      shapes <- expected * precision_value
-      if (any(!is.finite(shapes)) || any(shapes <= 0)) {
-        stop(
-          "Invalid bootstrap gamma shapes for gene ", gene_id,
-          ", sample ", sample_id, "."
-        )
-      }
-      draw <- rgamma(length(shapes), shape = shapes, rate = 1)
-      draw_total <- sum(draw)
-      if (!is.finite(draw_total) || draw_total <= 0) {
-        stop(
-          "Invalid bootstrap gamma draw for gene ", gene_id,
-          ", sample ", sample_id, "."
-        )
-      }
-      if (total == 0L) {
-        simulated[[sample_id]] <- integer(length(draw))
-      } else {
-        draw <- draw / draw_total
-        simulated[[sample_id]] <- as.integer(rmultinom(1, total, draw)[, 1])
-      }
-    }
-    run <- tryCatch({
-      dm_counts <- simulated
-      colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
-      dm_samples <- sample_rows[, c(
-        "sample_id", "condition", unlist(params$model_covariates)
-      ), drop = FALSE]
-      value <- dmDSdata(counts = dm_counts, samples = dm_samples)
-      value <- dmPrecision(value, design = design, verbose = 0)
-      value <- dmFit(value, design = design, verbose = 0)
-      fitted_run <- proportions(value)
-      data.frame(
-        feature_id = fitted_run$feature_id,
-        delta_pau =
-          rowMeans(fitted_run[, treatment_ids, drop = FALSE]) -
-          rowMeans(fitted_run[, control_ids, drop = FALSE])
+}
+
+safe_file_component <- function(value) {
+  value <- gsub("[^A-Za-z0-9._-]+", "_", as.character(value))
+  if (!nzchar(value)) value <- "comparison"
+  value
+}
+
+bootstrap_batches <- function(
+  comparison,
+  bootstrap_genes,
+  counts,
+  fitted,
+  precision,
+  sample_rows,
+  design,
+  control,
+  treatment,
+  params,
+  atlas_checksum,
+  batch_size
+) {
+  gene_batches <- split(
+    bootstrap_genes,
+    ceiling(seq_along(bootstrap_genes) / batch_size)
+  )
+  if (!length(gene_batches)) gene_batches <- list(character())
+  lapply(seq_along(gene_batches), function(batch_index) {
+    gene_ids <- gene_batches[[batch_index]]
+    genes <- lapply(gene_ids, function(gene_id) {
+      gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
+      gene_fitted <- fitted[fitted$gene_id == gene_id, , drop = FALSE]
+      gene_fitted <- gene_fitted[
+        match(gene_counts$pac_id, gene_fitted$feature_id),
+        ,
+        drop = FALSE
+      ]
+      list(
+        gene_id = gene_id,
+        counts = gene_counts,
+        fitted = gene_fitted,
+        precision = precision$precision[match(gene_id, precision$gene_id)]
       )
-    }, error = function(error) NULL)
-    if (!is.null(run) && all(is.finite(run$delta_pau))) run else NULL
-  }
-  runs <- bootstrap_apply(
-    seq_len(params$dm_bootstrap_replicates),
-    bootstrap_workers,
-    bootstrap_run
-  )
-  runs <- Filter(Negate(is.null), runs)
-  minimum_successes <- ceiling(
-    params$dm_bootstrap_replicates * params$dm_bootstrap_min_success_fraction
-  )
-  if (length(runs) < minimum_successes) {
-    return(empty_bootstrap_intervals(gene_counts, length(runs)))
-  }
-  long <- do.call(rbind, runs)
-  output <- lapply(gene_counts$pac_id, function(feature_id) {
-    values <- long$delta_pau[long$feature_id == feature_id]
-    data.frame(
-      feature_id = feature_id,
-      delta_pau_ci_low = unname(quantile(values, 0.025)),
-      delta_pau_ci_high = unname(quantile(values, 0.975)),
-      bootstrap_successes = length(values)
+    })
+    list(
+      batch_id = paste0(
+        safe_file_component(comparison),
+        ".batch-",
+        sprintf("%03d", batch_index)
+      ),
+      comparison = comparison,
+      control = control,
+      treatment = treatment,
+      sample_rows = sample_rows,
+      design = design,
+      params = params,
+      atlas_checksum = atlas_checksum,
+      genes = genes
     )
   })
-  do.call(rbind, output)
+}
+
+write_bootstrap_batches <- function(batches, output_dir) {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  if (!length(batches)) {
+    batches <- list(list(
+      batch_id = "empty.batch-001",
+      empty = TRUE,
+      genes = list()
+    ))
+  }
+  invisible(vapply(batches, function(batch) {
+    path <- file.path(output_dir, paste0(batch$batch_id, ".rds"))
+    saveRDS(batch, path, compress = FALSE)
+    path
+  }, character(1)))
+}
+
+run_bootstrap_batch <- function(batch_path, output_path, bootstrap_workers) {
+  batch <- readRDS(batch_path)
+  if (!is.list(batch)) {
+    stop("Bootstrap batch payload must be a list.")
+  }
+  if (isTRUE(batch$empty)) {
+    write_gzip_tsv(data.frame(
+      comparison = character(),
+      gene_id = character(),
+      feature_id = character(),
+      delta_pau_ci_low = numeric(),
+      delta_pau_ci_high = numeric(),
+      bootstrap_successes = integer(),
+      stringsAsFactors = FALSE
+    ), output_path)
+    return(invisible(NULL))
+  }
+  required <- c(
+    "batch_id", "comparison", "control", "treatment", "sample_rows",
+    "design", "params", "atlas_checksum", "genes"
+  )
+  missing <- required[!required %in% names(batch)]
+  if (length(missing)) {
+    stop(
+      "Bootstrap batch is missing required fields: ",
+      paste(missing, collapse = ", "), "."
+    )
+  }
+  scalar_string <- function(value, field) {
+    if (length(value) != 1L || is.na(value) || !nzchar(as.character(value))) {
+      stop("Bootstrap batch has an invalid ", field, ".")
+    }
+    as.character(value)
+  }
+  batch$batch_id <- scalar_string(batch$batch_id, "batch_id")
+  batch$comparison <- scalar_string(batch$comparison, "comparison")
+  batch$control <- scalar_string(batch$control, "control")
+  batch$treatment <- scalar_string(batch$treatment, "treatment")
+  batch$atlas_checksum <- scalar_string(batch$atlas_checksum, "atlas_checksum")
+  if (!is.data.frame(batch$sample_rows)) {
+    stop("Bootstrap batch ", batch$batch_id, " has invalid sample_rows.")
+  }
+  if (!is.matrix(batch$design)) {
+    stop("Bootstrap batch ", batch$batch_id, " has an invalid design matrix.")
+  }
+  if (!is.list(batch$params) || !is.list(batch$genes)) {
+    stop("Bootstrap batch ", batch$batch_id, " has invalid params or genes.")
+  }
+  rows <- lapply(seq_along(batch$genes), function(index) {
+    gene <- batch$genes[[index]]
+    if (
+      !all(c("gene_id", "counts", "fitted", "precision") %in% names(gene))
+    ) {
+      stop("Bootstrap batch ", batch$batch_id, " has an invalid gene payload.")
+    }
+    if (
+      length(gene$gene_id) != 1L ||
+        is.na(gene$gene_id) ||
+        !nzchar(as.character(gene$gene_id)) ||
+        !is.data.frame(gene$counts) ||
+        !is.data.frame(gene$fitted)
+    ) {
+      stop("Bootstrap batch ", batch$batch_id, " has invalid gene values.")
+    }
+    message(
+      "Bootstrap batch ", batch$batch_id, ": gene ", index, "/",
+      length(batch$genes), " (", gene$gene_id, ")."
+    )
+    intervals <- bootstrap_gene_from_fitted(
+      gene$gene_id,
+      gene$counts,
+      batch$sample_rows,
+      batch$design,
+      gene$fitted,
+      gene$precision,
+      batch$control,
+      batch$treatment,
+      batch$params,
+      batch$atlas_checksum,
+      batch$comparison,
+      bootstrap_workers
+    )
+    data.frame(
+      comparison = batch$comparison,
+      gene_id = gene$gene_id,
+      intervals,
+      stringsAsFactors = FALSE
+    )
+  })
+  output <- if (length(rows)) {
+    do.call(rbind, rows)
+  } else {
+    data.frame(
+      comparison = character(),
+      gene_id = character(),
+      feature_id = character(),
+      delta_pau_ci_low = numeric(),
+      delta_pau_ci_high = numeric(),
+      bootstrap_successes = integer(),
+      stringsAsFactors = FALSE
+    )
+  }
+  write_gzip_tsv(output, output_path)
 }
 
 classify_event <- function(row, params) {
@@ -551,7 +907,8 @@ fit_family <- function(
   params,
   output_dir,
   atlas_checksum,
-  bootstrap_workers
+  model_workers,
+  bootstrap_batch_size
 ) {
   control <- family
   treatments <- sort(unique(sample_rows$condition[
@@ -588,11 +945,30 @@ fit_family <- function(
   dm_counts <- filtered
   colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
   dm_samples <- family_samples[, c("sample_id", "condition", covariates), drop = FALSE]
+  model_bpparam <- drimseq_bpparam(
+    model_workers,
+    stable_seed(params$random_seed, atlas_checksum, family, "family_model")
+  )
   precision_data <- dmDSdata(counts = dm_counts, samples = dm_samples)
-  precision_data <- dmPrecision(precision_data, design = design, verbose = 0)
-  data <- dmFit(precision_data, design = design, verbose = 0)
+  precision_data <- dmPrecision(
+    precision_data,
+    design = design,
+    verbose = 0,
+    BPPARAM = model_bpparam
+  )
+  data <- dmFit(
+    precision_data,
+    design = design,
+    verbose = 0,
+    BPPARAM = model_bpparam
+  )
   condition_coefficients <- grep("^condition", colnames(design))
-  omnibus <- dmTest(data, coef = condition_coefficients, verbose = 0)
+  omnibus <- dmTest(
+    data,
+    coef = condition_coefficients,
+    verbose = 0,
+    BPPARAM = model_bpparam
+  )
   omnibus_results <- results(omnibus, level = "gene")
   omnibus_results$gene_fdr <- bh(omnibus_results$pvalue)
   write_gzip_tsv(
@@ -603,13 +979,19 @@ fit_family <- function(
   precision$family <- family
 
   fitted_list <- list()
+  batch_list <- list()
   for (treatment in treatments) {
     comparison <- paste0(treatment, "_vs_", control)
     coefficient <- match(paste0("condition", treatment), colnames(design))
     if (is.na(coefficient)) {
       stop("No model coefficient found for ", comparison)
     }
-    tested <- dmTest(data, coef = coefficient, verbose = 0)
+    tested <- dmTest(
+      data,
+      coef = coefficient,
+      verbose = 0,
+      BPPARAM = model_bpparam
+    )
     genes <- results(tested, level = "gene")
     features <- results(tested, level = "feature")
     control_pau <- fitted_group_pau(data, filtered, family_samples, control)
@@ -626,7 +1008,24 @@ fit_family <- function(
         is.na(feature_match) |
         !is.finite(features$pvalue[feature_match])
     ])
-    for (gene_id in boundary_genes) {
+    if (length(boundary_genes)) {
+      message(
+        "Comparison ", comparison, ": stabilizing ",
+        length(boundary_genes), " boundary gene(s)."
+      )
+    }
+    for (boundary_index in seq_along(boundary_genes)) {
+      gene_id <- boundary_genes[[boundary_index]]
+      if (
+        boundary_index == 1L ||
+          boundary_index %% 10L == 0L ||
+          boundary_index == length(boundary_genes)
+      ) {
+        message(
+          "Comparison ", comparison, ": boundary gene ",
+          boundary_index, "/", length(boundary_genes), "."
+        )
+      }
       stabilized <- stabilize_boundary_gene(
         gene_id,
         filtered,
@@ -638,7 +1037,7 @@ fit_family <- function(
         params,
         atlas_checksum,
         comparison,
-        bootstrap_workers
+        model_workers
       )
       count_index <- which(filtered$gene_id == gene_id)
       stabilization_match <- match(
@@ -753,31 +1152,28 @@ fit_family <- function(
       params$gene_fdr,
       params$dm_bootstrap_include_candidates
     )
-    for (gene_id in bootstrap_genes) {
-      precision_value <- precision$precision[match(gene_id, precision$gene_id)]
-      intervals <- bootstrap_gene(
-        gene_id,
+    message(
+      "Comparison ", comparison, ": bootstrapping ",
+      length(bootstrap_genes), " gene(s) with ",
+      params$dm_bootstrap_replicates, " replicate(s) each."
+    )
+    batch_list <- c(
+      batch_list,
+      bootstrap_batches(
+        comparison,
+        bootstrap_genes,
         filtered,
+        proportions(data),
+        precision,
         family_samples,
         design,
-        data,
-        precision_value,
         control,
         treatment,
         params,
         atlas_checksum,
-        comparison,
-        bootstrap_workers
+        bootstrap_batch_size
       )
-      output_indices <- which(output$gene_id == gene_id)
-      interval_match <- match(output$feature_id[output_indices], intervals$feature_id)
-      output$delta_pau_ci_low[output_indices] <-
-        intervals$delta_pau_ci_low[interval_match]
-      output$delta_pau_ci_high[output_indices] <-
-        intervals$delta_pau_ci_high[interval_match]
-      output$bootstrap_successes[output_indices] <-
-        intervals$bootstrap_successes[interval_match]
-    }
+    )
     row_groups <- split(seq_len(nrow(output)), output$gene_id)
     dominant_control <- vapply(
       row_groups,
@@ -842,18 +1238,129 @@ fit_family <- function(
     ] <- "complexity_loss"
     gene_path <- file.path(output_dir, paste0(comparison, ".genes.tsv.gz"))
     pac_path <- file.path(output_dir, paste0(comparison, ".pacs.tsv.gz"))
-    event_path <- file.path(output_dir, paste0(comparison, ".events.tsv.gz"))
     write_gzip_tsv(genes, gene_path)
     write_gzip_tsv(output, pac_path)
-    events <- output[output$event_type != "none", , drop = FALSE]
-    write_gzip_tsv(events, event_path)
     fitted_list[[comparison]] <- output[, c(
       "gene_id", "feature_id", "condition", "control_condition",
       "fitted_control_pau", "fitted_treatment_pau", "delta_pau",
       "precision", "alpha_control", "alpha_treatment", "model_status"
     ), drop = FALSE]
   }
-  list(fitted = fitted_list, precision = precision)
+  list(fitted = fitted_list, precision = precision, batches = batch_list)
+}
+
+read_bootstrap_intervals <- function(paths) {
+  if (!length(paths)) {
+    stop("No bootstrap interval files were provided for finalization.")
+  }
+  values <- lapply(paths, read_tsv)
+  required <- c(
+    "comparison", "gene_id", "feature_id", "delta_pau_ci_low",
+    "delta_pau_ci_high", "bootstrap_successes"
+  )
+  invalid <- vapply(
+    values,
+    function(value) !all(required %in% names(value)),
+    logical(1)
+  )
+  if (any(invalid)) {
+    stop("A bootstrap interval file is missing required columns.")
+  }
+  intervals <- do.call(rbind, values)
+  if (!nrow(intervals)) return(intervals)
+  key_columns <- c("comparison", "gene_id", "feature_id")
+  invalid_keys <- vapply(
+    intervals[, key_columns, drop = FALSE],
+    function(value) any(is.na(value) | !nzchar(as.character(value))),
+    logical(1)
+  )
+  if (any(invalid_keys)) {
+    stop("Bootstrap interval rows require non-missing comparison, gene_id, and feature_id.")
+  }
+  interval_columns <- c("delta_pau_ci_low", "delta_pau_ci_high")
+  for (column in interval_columns) {
+    if (is.logical(intervals[[column]]) && all(is.na(intervals[[column]]))) {
+      intervals[[column]] <- as.numeric(intervals[[column]])
+    }
+  }
+  if (!all(vapply(intervals[, interval_columns, drop = FALSE], is.numeric, logical(1)))) {
+    stop("Bootstrap interval bounds must be numeric or missing.")
+  }
+  successes <- suppressWarnings(as.numeric(intervals$bootstrap_successes))
+  if (
+    any(!is.finite(successes)) ||
+      any(successes < 0) ||
+      any(successes != floor(successes))
+  ) {
+    stop("Bootstrap interval successes must be non-negative integers.")
+  }
+  lower <- intervals$delta_pau_ci_low
+  upper <- intervals$delta_pau_ci_high
+  if (any(!is.na(lower) & !is.na(upper) & lower > upper)) {
+    stop("Bootstrap interval lower bounds cannot exceed upper bounds.")
+  }
+  interval_keys <- do.call(paste, c(intervals[, key_columns, drop = FALSE], sep = "\r"))
+  if (anyDuplicated(interval_keys)) {
+    stop("Bootstrap interval files contain duplicate comparison/gene/PAC rows.")
+  }
+  intervals$bootstrap_successes <- as.integer(successes)
+  intervals
+}
+
+apply_bootstrap_intervals <- function(output, comparison, intervals) {
+  if (!nrow(intervals)) return(output)
+  matches <- intervals[intervals$comparison == comparison, , drop = FALSE]
+  if (!nrow(matches)) return(output)
+  interval_keys <- paste(
+    matches$gene_id,
+    matches$feature_id,
+    sep = "\r"
+  )
+  output_keys <- paste(output$gene_id, output$feature_id, sep = "\r")
+  index <- match(output_keys, interval_keys)
+  matched <- !is.na(index)
+  output$delta_pau_ci_low[matched] <- matches$delta_pau_ci_low[index[matched]]
+  output$delta_pau_ci_high[matched] <- matches$delta_pau_ci_high[index[matched]]
+  output$bootstrap_successes[matched] <- matches$bootstrap_successes[index[matched]]
+  output
+}
+
+finalize_preliminary_outputs <- function(preliminary_dir, interval_paths, output_dir) {
+  if (!dir.exists(preliminary_dir)) {
+    stop("Preliminary statistics directory does not exist: ", preliminary_dir)
+  }
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  intervals <- read_bootstrap_intervals(interval_paths)
+  sources <- list.files(
+    preliminary_dir,
+    pattern = "\\.tsv\\.gz$",
+    full.names = TRUE,
+    recursive = FALSE
+  )
+  if (!length(sources)) {
+    warning("No preliminary statistics tables found in ", preliminary_dir)
+    return(invisible(NULL))
+  }
+  for (source in sources) {
+    destination <- file.path(output_dir, basename(source))
+    if (!grepl("\\.pacs\\.tsv\\.gz$", source)) {
+      if (!file.copy(source, destination, overwrite = TRUE)) {
+        stop("Could not copy preliminary statistics file: ", source)
+      }
+      next
+    }
+    comparison <- sub("\\.pacs\\.tsv\\.gz$", "", basename(source))
+    output <- read_tsv(source)
+    output <- apply_bootstrap_intervals(output, comparison, intervals)
+    write_gzip_tsv(output, destination)
+    events <- output[output$event_type != "none", , drop = FALSE]
+    event_path <- file.path(
+      output_dir,
+      paste0(comparison, ".events.tsv.gz")
+    )
+    write_gzip_tsv(events, event_path)
+  }
+  invisible(NULL)
 }
 
 fit_motif_preferences <- function(
@@ -951,77 +1458,104 @@ fit_motif_preferences <- function(
   }
 }
 
-arguments <- parse_args(commandArgs(trailingOnly = TRUE))
-bootstrap_workers <- parse_bootstrap_workers(arguments$bootstrap_workers)
-dir.create(arguments$output_dir, recursive = TRUE, showWarnings = FALSE)
-params <- yaml::read_yaml(arguments$params)
-samples <- read_tsv(arguments$samples)
-counts <- read_tsv(arguments$counts)
-atlas <- read_tsv(arguments$atlas)
+run_fit_mode <- function(arguments) {
+  require_args(arguments, c(
+    "family", "samples", "counts", "atlas", "params", "output_dir"
+  ))
+  model_workers <- parse_model_workers(arguments$model_workers)
+  batch_size <- parse_batch_size(arguments$bootstrap_batch_size)
+  dir.create(arguments$output_dir, recursive = TRUE, showWarnings = FALSE)
+  preliminary_dir <- file.path(arguments$output_dir, "preliminary")
+  batch_dir <- file.path(arguments$output_dir, "bootstrap-batches")
+  dir.create(preliminary_dir, recursive = TRUE, showWarnings = FALSE)
+  params <- yaml::read_yaml(arguments$params)
+  samples <- read_tsv(arguments$samples)
+  counts <- read_tsv(arguments$counts)
+  atlas <- read_tsv(arguments$atlas)
 
-available_families <- unique(samples$control_condition[
-  samples$condition != samples$control_condition
-])
-families <- available_families
-if (!is.null(arguments$family)) {
+  available_families <- unique(samples$control_condition[
+    samples$condition != samples$control_condition
+  ])
   if (!arguments$family %in% available_families) {
     stop(
       "Requested comparison family ", arguments$family,
       " is absent from the normalized sample sheet."
     )
   }
-  families <- arguments$family
-}
-all_precision <- list()
-all_fitted <- list()
-atlas_checksum <- unname(tools::md5sum(arguments$atlas))
-for (family in families) {
+  atlas_checksum <- unname(tools::md5sum(arguments$atlas))
   fitted <- fit_family(
-    family,
+    arguments$family,
     samples,
     counts,
     atlas,
     params,
-    arguments$output_dir,
+    preliminary_dir,
     atlas_checksum,
-    bootstrap_workers
+    model_workers,
+    batch_size
   )
   if (!is.null(fitted)) {
-    all_precision[[family]] <- fitted$precision
-    all_fitted <- c(all_fitted, fitted$fitted)
+    write_gzip_tsv(
+      fitted$precision,
+      file.path(preliminary_dir, "gene_precision.tsv.gz")
+    )
+    if (length(fitted$fitted)) {
+      write_gzip_tsv(
+        do.call(rbind, fitted$fitted),
+        file.path(preliminary_dir, "fitted_pau.tsv.gz")
+      )
+    }
+    write_bootstrap_batches(fitted$batches, batch_dir)
+  } else {
+    write_bootstrap_batches(list(), batch_dir)
+  }
+
+  if (!is.null(arguments$motif_scores) && file.exists(arguments$motif_scores)) {
+    fit_motif_preferences(
+      read_tsv(arguments$motif_scores),
+      samples,
+      params,
+      preliminary_dir,
+      "preference",
+      arguments$family
+    )
+  }
+  if (!is.null(arguments$motif_sensitivity) && file.exists(arguments$motif_sensitivity)) {
+    fit_motif_preferences(
+      read_tsv(arguments$motif_sensitivity),
+      samples,
+      params,
+      preliminary_dir,
+      "preference_known_rescue_sensitivity",
+      arguments$family
+    )
   }
 }
-if (length(all_precision)) {
-  write_gzip_tsv(
-    do.call(rbind, all_precision),
-    file.path(arguments$output_dir, "gene_precision.tsv.gz")
-  )
-}
-if (length(all_fitted)) {
-  fitted_rows <- do.call(rbind, all_fitted)
-  write_gzip_tsv(
-    fitted_rows,
-    file.path(arguments$output_dir, "fitted_pau.tsv.gz")
+
+run_bootstrap_mode <- function(arguments) {
+  require_args(arguments, c("batch", "output"))
+  run_bootstrap_batch(
+    arguments$batch,
+    arguments$output,
+    parse_bootstrap_workers(arguments$bootstrap_workers)
   )
 }
 
-if (!is.null(arguments$motif_scores) && file.exists(arguments$motif_scores)) {
-  fit_motif_preferences(
-    read_tsv(arguments$motif_scores),
-    samples,
-    params,
-    arguments$output_dir,
-    "preference",
-    arguments$family
+run_finalize_mode <- function(arguments) {
+  require_args(arguments, c("preliminary_dir", "intervals", "output_dir"))
+  interval_paths <- strsplit(arguments$intervals, ",", fixed = TRUE)[[1]]
+  finalize_preliminary_outputs(
+    arguments$preliminary_dir,
+    interval_paths,
+    arguments$output_dir
   )
 }
-if (!is.null(arguments$motif_sensitivity) && file.exists(arguments$motif_sensitivity)) {
-  fit_motif_preferences(
-    read_tsv(arguments$motif_sensitivity),
-    samples,
-    params,
-    arguments$output_dir,
-    "preference_known_rescue_sensitivity",
-    arguments$family
-  )
-}
+
+arguments <- parse_args(commandArgs(trailingOnly = TRUE))
+switch(
+  arguments$mode,
+  fit = run_fit_mode(arguments),
+  bootstrap = run_bootstrap_mode(arguments),
+  finalize = run_finalize_mode(arguments),
+  stop("Unknown --mode: ", arguments$mode)
+)

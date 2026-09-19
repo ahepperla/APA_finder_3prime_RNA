@@ -67,14 +67,21 @@ nextflow run /path/to/pacusage \
 The Slurm profile separates CPU-parallel BAM work from serial, memory-heavy
 steps. Low, medium, and high-memory jobs automatically retry up to twice after
 an OOM-style exit, increasing their requested memory on each attempt. Completed
-tasks remain reusable with `-resume`. Differential usage modeling runs as one
-independent Slurm job per direct comparison family, followed by a lightweight
-merge before k-mer analysis and report generation.
+tasks remain reusable with `-resume`. Each direct comparison family first runs
+its whole-family DRIMSeq fit, then scatters selected bootstrap genes into
+independent batches before a deterministic family-level merge.
 
 `FIT_USAGE_MODEL` receives eight CPUs by default. Increase only that process
-with `--statistics_cpus 16`; the requested cores are also passed to its
-bootstrap workers. To reduce bootstrap cost for an exploratory run, set
-`--dm_bootstrap_replicates 100`. Setting
+with `--statistics_cpus 16`; those cores parallelize DRIMSeq's family-wide
+fit/test and the independent zero-boundary sensitivity repeats. Bootstrap work
+uses separate four-core jobs by default; tune their allocation with
+`--statistics_bootstrap_cpus 4` and genes per job with
+`--statistics_bootstrap_batch_size 20`. At most eight batch jobs are submitted
+at once by default; tune that cap with `--statistics_bootstrap_max_forks 8`.
+This avoids nested worker pools while
+preserving the same deterministic bootstrap draws and 200-replicate default.
+Each statistics attempt requests three days of walltime. To reduce bootstrap
+cost for an exploratory run, set `--dm_bootstrap_replicates 100`. Setting
 `--dm_bootstrap_include_candidates false` leaves p-values and event calls
 unchanged, but omits bootstrap intervals for non-significant candidate genes.
 

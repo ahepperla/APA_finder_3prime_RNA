@@ -12,7 +12,8 @@ process FIT_USAGE_MODEL {
     path motif_sensitivity
 
     output:
-    tuple val(family), path('family-*'), emit: statistics
+    tuple val(family), path('family-*'), emit: preliminary
+    tuple val(family), path('family-*/bootstrap-batches/*.rds'), emit: bootstrap_batches
 
     script:
     def outputDirectory = "family-${task.index}"
@@ -22,6 +23,7 @@ process FIT_USAGE_MODEL {
     export OPENBLAS_NUM_THREADS=1
     export MKL_NUM_THREADS=1
     Rscript '${projectDir}/scripts/fit_usage_model.R' \
+        --mode fit \
         --family '${family}' \
         --samples '${normalized_samples}' \
         --counts '${testable_counts}' \
@@ -29,7 +31,8 @@ process FIT_USAGE_MODEL {
         --params '${resolved_params}' \
         --motif-scores '${motif_scores}' \
         --motif-sensitivity '${motif_sensitivity}' \
-        --bootstrap-workers '${task.cpus}' \
+        --model-workers '${task.cpus}' \
+        --bootstrap-batch-size '${params.statistics_bootstrap_batch_size}' \
         --output-dir '${outputDirectory}'
     """
 }

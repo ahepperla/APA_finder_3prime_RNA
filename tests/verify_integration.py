@@ -21,7 +21,11 @@ def main() -> None:
     )
     gained = treatment[treatment["pac_id"].astype(str).str.endswith(".350")].iloc[0]
     assert gained["delta_pau"] > 0.2
-    assert gained["event_type"] in {"gained", "gained_candidate"}
+    assert gained["event_type"] in {
+        "gained",
+        "gained_candidate",
+        "dominant_switch",
+    }
     assert gained["bootstrap_successes"] > 0
     assert len(second_family) >= 2
     assert len(nested_family) >= 2
@@ -56,6 +60,8 @@ def main() -> None:
     latest_trace = max(traces, key=lambda path: path.stat().st_mtime)
     trace_text = latest_trace.read_text()
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
+    assert trace_text.count("PACUSAGE:STATISTICS:BOOTSTRAP_USAGE_INTERVALS") >= 3
+    assert trace_text.count("PACUSAGE:STATISTICS:FINALIZE_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:MERGE_USAGE_MODELS") == 1
 
 

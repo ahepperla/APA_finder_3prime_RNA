@@ -87,6 +87,9 @@ DEFAULTS: dict[str, Any] = {
     "save_prepared_alignments": False,
     "save_intermediates": False,
     "statistics_cpus": 8,
+    "statistics_bootstrap_cpus": 4,
+    "statistics_bootstrap_batch_size": 20,
+    "statistics_bootstrap_max_forks": 8,
     "bind_paths": [],
 }
 

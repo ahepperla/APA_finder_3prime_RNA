@@ -25,6 +25,9 @@ def test_command_values_override_defaults() -> None:
     assert params["constitutive_readthrough_min_replicate_support"] == "all"
     assert params["dm_bootstrap_include_candidates"] is True
     assert params["statistics_cpus"] == 8
+    assert params["statistics_bootstrap_cpus"] == 4
+    assert params["statistics_bootstrap_batch_size"] == 20
+    assert params["statistics_bootstrap_max_forks"] == 8
     assert params["bind_paths"] == []
 
 
