@@ -4,6 +4,17 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${project_dir}"
 
+channel_test_root="$(mktemp -d)"
+trap 'rm -rf "${channel_test_root}"' EXIT
+touch "${channel_test_root}/batch-001.rds"
+touch "${channel_test_root}/batch-002.rds"
+touch "${channel_test_root}/batch-003.rds"
+nextflow run tests/test_bootstrap_batch_channel.nf \
+  --batch_root "${channel_test_root}" \
+  -work-dir "${channel_test_root}/work" \
+  -with-trace "${channel_test_root}/trace.txt"
+test "$(grep -c "ASSERT_SINGLE_BOOTSTRAP_BATCH" "${channel_test_root}/trace.txt")" -eq 3
+
 Rscript tests/test_bootstrap_total.R scripts/fit_usage_model.R
 python tests/fixtures/build_fixture.py
 nextflow run . -profile test,local -resume

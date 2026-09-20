@@ -30,7 +30,12 @@ workflow STATISTICS {
         MOTIF_SCORES.out.primary,
         MOTIF_SCORES.out.sensitivity
     )
-    BOOTSTRAP_USAGE_INTERVALS(FIT_USAGE_MODEL.out.bootstrap_batches)
+    bootstrap_batches = FIT_USAGE_MODEL.out.bootstrap_batches
+        .flatMap { family, batch_files ->
+            def files = batch_files instanceof List ? batch_files : [batch_files]
+            files.collect { batch -> tuple(family, batch) }
+        }
+    BOOTSTRAP_USAGE_INTERVALS(bootstrap_batches)
     bootstrap_intervals = BOOTSTRAP_USAGE_INTERVALS.out.intervals
         .groupTuple()
     finalization_inputs = FIT_USAGE_MODEL.out.preliminary
