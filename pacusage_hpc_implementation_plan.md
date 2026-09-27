@@ -98,10 +98,12 @@ Validation rules:
 2. Every condition has one consistent `control` value across all its samples.
 3. A blank `control` marks that row's condition as a control condition.
 4. Every nonblank `control` exactly matches a condition in the sample sheet.
-5. Every referenced condition is a control condition with blank values on all
-   its rows.
-6. Every control condition is referenced by at least one non-control condition.
-7. A condition cannot reference itself or another treatment condition.
+5. A referenced condition may itself have a control, so comparisons can be
+   nested, for example `WT -> disease_vehicle -> disease_drug`.
+6. Every root control condition (blank `control`) is referenced by at least
+   one other condition.
+7. A condition cannot reference itself, and control relationships must be
+   acyclic.
 8. Every modeled control and treatment condition has at least two biological
    replicates by default.
 
@@ -112,7 +114,9 @@ Create a normalized `control_condition` field:
 
 Conditions sharing a `control_condition` form a comparison family. For example,
 `DMSO`, `TreatmentA`, and `TreatmentB` form the `DMSO` family. Multiple
-comparison families are allowed.
+comparison families are allowed. A condition that is both a treatment and a
+control belongs to two families: it is a treatment in its control's family and
+the control of its own family.
 
 The control mapping is condition-level. It does not imply paired samples.
 
@@ -847,33 +851,54 @@ new PAC delta PAU      = +0.50
 ```
 
 Never alter the stored raw counts or observed PAU. Fit the unmodified count
-matrix first. When an otherwise testable PAC is all zero in one group and
-DRIMSeq returns a boundary or non-finite fit, use DRIMSeq's documented
-`add_uniform` behavior only as a model-fitting fallback:
+matrix first. A gene is a boundary gene when its unmodified fit is non-finite
+anywhere, or when a PAC has no counts across a condition or covariate level.
+Stabilize boundary genes as a model-fitting fallback, once per comparison
+family:
 
-1. Derive a deterministic seed from `random_seed`, atlas checksum, comparison,
-   gene ID, and repeat number.
-2. Keep PAC ordering deterministic by genomic coordinate.
-3. Record that stabilization was used; never write the perturbed values to a
-   count or PAU output.
-4. Repeat the stabilized fit `dm_zero_sensitivity_repeats` times.
-5. Flag the PAC as `zero_boundary_unstable` when effect direction changes,
-   fewer than 80 percent of fits converge, or fitted delta PAU spans more than
-   `dm_zero_max_delta_pau_spread`.
-6. Do not assign a PAC-level p-value when stable finite fits cannot be obtained.
+1. In each repeat, replace the boundary genes' zero counts with draws from
+   U(0, 0.1), DRIMSeq's `addUniform` rule. Seed each gene's draws from
+   `random_seed`, atlas checksum, family, gene ID, and repeat number.
+2. Fit precision, the full model, and every null model to the same perturbed
+   counts. DRIMSeq's own `add_uniform` flag is not used, because `dmTest`
+   refits the null model to the original counts.
+3. Estimate precision across the whole family with the unmodified fit's common
+   precision, so the moderation matches the unmodified fit.
+4. Keep PAC ordering deterministic by genomic coordinate.
+5. Repeat the stabilized fit `dm_zero_sensitivity_repeats` times. Write back
+   medians of the repeats: proportions, precision, and likelihood ratios, with
+   p-values from the median likelihood ratio. A gene needs at least 80 percent
+   of repeats to succeed.
+6. Record that stabilization was used (`model_status` `drimseq_add_uniform`).
+   Never write the perturbed values to a count or PAU output.
+7. Flag the PAC as `zero_boundary_unstable`, with a reason, when any of these
+   holds:
+   - the effect direction changes beyond ±0.001;
+   - fewer than 80 percent of fits converge;
+   - fitted delta PAU spans more than `dm_zero_max_delta_pau_spread`.
+8. Do not assign a PAC-level p-value when stable finite fits cannot be obtained.
    Keep the detection evidence and label the inferential result unavailable
    rather than inventing a value.
+9. When a condition has no counts for a gene, leave every comparison using
+   that condition untested (`group_without_counts`).
 
 For PACs in genes that pass the contrast-specific screen or satisfy the
 pre-statistical gained/lost event criteria, estimate delta-PAU uncertainty with
-a parametric bootstrap:
+a parametric bootstrap conditional on the family-fit precision:
 
 1. Simulate sample count vectors from the fitted Dirichlet-multinomial model at
    each sample's observed gene total and design row.
-2. Refit the identical model and recompute fitted treatment-control delta PAU.
-3. Use `dm_bootstrap_replicates` successful replicates and deterministic
-   per-gene seeds.
-4. Report percentile 95 percent intervals and bootstrap success counts.
+2. Refit the proportions with each gene's precision held at the family-fit
+   estimate. Perturb zero groups exactly as in the family fit. Recompute fitted
+   treatment-control delta PAU for every selected comparison of the family from
+   the same draw.
+3. Run `dm_bootstrap_replicates` replicates with deterministic seeds per gene
+   and replicate, so results do not depend on batching or worker count.
+4. Report percentile 95 percent intervals, bootstrap success counts, and a
+   `bootstrap_status`. The intervals do not include uncertainty in the
+   precision. In simulations with four replicates per group, nominal 95
+   percent intervals covered the true change 80-93 percent of the time (about
+   88 percent on average).
 5. Leave the interval unavailable and flag the reason when the success
    fraction is below `dm_bootstrap_min_success_fraction`.
 6. `dm_bootstrap_include_candidates` defaults to `true`; setting it to `false`

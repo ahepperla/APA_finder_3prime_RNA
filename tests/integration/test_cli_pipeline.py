@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from pacusage.annotation import annotate_candidates
 from pacusage.cli import main
 from pacusage.clustering import cluster_exact_boundaries
@@ -365,3 +367,115 @@ def test_kmer_enrichment_tolerates_unavailable_model_statistics(tmp_path: Path) 
         {"comparison": "treatment_vs_control", "tested_kmers": "4"}
     ]
     assert (output / "treatment_vs_control.kmer_enrichment.tsv.gz").is_file()
+
+
+def test_merge_statistics_concatenates_precision_shards_with_model_status(tmp_path: Path) -> None:
+    family_a = tmp_path / "family-A"
+    family_b = tmp_path / "family-B"
+    family_a.mkdir()
+    family_b.mkdir()
+    write_tsv(
+        [
+            {
+                "gene_id": "g1",
+                "precision": "10.5",
+                "family": "A",
+                "model_status": "drimseq",
+            },
+            {
+                "gene_id": "g2",
+                "precision": "20",
+                "family": "A",
+                "model_status": "drimseq_add_uniform",
+            },
+        ],
+        family_a / "gene_precision.tsv.gz",
+    )
+    write_tsv(
+        [
+            {
+                "gene_id": "g3",
+                "precision": "30",
+                "family": "B",
+                "model_status": "fit_unavailable",
+            },
+        ],
+        family_b / "gene_precision.tsv.gz",
+    )
+
+    output = tmp_path / "merged"
+    assert (
+        main(
+            [
+                "merge-statistics",
+                "--inputs",
+                str(family_a),
+                str(family_b),
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    merged = read_tsv(output / "gene_precision.tsv.gz")
+    assert len(merged) == 3
+    assert merged[0]["gene_id"] == "g1"
+    assert merged[0]["precision"] == "10.5"
+    assert merged[0]["family"] == "A"
+    assert merged[0]["model_status"] == "drimseq"
+    assert merged[1]["gene_id"] == "g2"
+    assert merged[1]["precision"] == "20"
+    assert merged[1]["family"] == "A"
+    assert merged[1]["model_status"] == "drimseq_add_uniform"
+    assert merged[2]["gene_id"] == "g3"
+    assert merged[2]["precision"] == "30"
+    assert merged[2]["family"] == "B"
+    assert merged[2]["model_status"] == "fit_unavailable"
+
+
+def test_merge_statistics_rejects_mismatched_precision_headers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    family_a = tmp_path / "family-A"
+    family_b = tmp_path / "family-B"
+    family_a.mkdir()
+    family_b.mkdir()
+    write_tsv(
+        [
+            {
+                "gene_id": "g1",
+                "precision": "10.5",
+                "family": "A",
+                "model_status": "drimseq",
+            },
+            {
+                "gene_id": "g2",
+                "precision": "20",
+                "family": "A",
+                "model_status": "drimseq_add_uniform",
+            },
+        ],
+        family_a / "gene_precision.tsv.gz",
+    )
+    # Family B lacks the model_status column
+    write_tsv(
+        [
+            {"gene_id": "g3", "precision": "30", "family": "B"},
+        ],
+        family_b / "gene_precision.tsv.gz",
+    )
+
+    output = tmp_path / "merged"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "merge-statistics",
+                "--inputs",
+                str(family_a),
+                str(family_b),
+                "--output-dir",
+                str(output),
+            ]
+        )
+    assert exc_info.value.code == 2
+    assert "TSV headers differ between families" in capsys.readouterr().err

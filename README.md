@@ -65,25 +65,49 @@ nextflow run /path/to/pacusage \
 ```
 
 The Slurm profile separates CPU-parallel BAM work from serial, memory-heavy
-steps. Low, medium, and high-memory jobs automatically retry up to twice after
-an OOM-style exit, increasing their requested memory on each attempt. Completed
-tasks remain reusable with `-resume`. Each direct comparison family first runs
-its whole-family DRIMSeq fit, then scatters selected bootstrap genes into
-independent batches before a deterministic family-level merge.
+steps. A job that runs out of memory or time is retried up to twice, with more
+memory and more time on each attempt. Completed tasks remain reusable with
+`-resume`; the statistics steps rerun when `scripts/fit_usage_model.R` changes.
+Each direct comparison family first runs its whole-family DRIMSeq fit, then
+scatters selected bootstrap genes into independent batches before a
+deterministic family-level merge.
 
 `FIT_USAGE_MODEL` receives eight CPUs by default. Increase only that process
 with `--statistics_cpus 16`; those cores parallelize DRIMSeq's family-wide
-fit/test and the independent zero-boundary sensitivity repeats. Bootstrap work
-uses separate four-core jobs by default; tune their allocation with
-`--statistics_bootstrap_cpus 4` and genes per job with
-`--statistics_bootstrap_batch_size 20`. At most eight batch jobs are submitted
+fits and tests.
+
+Genes with a PAC that has no reads in some condition cannot be fitted as they
+are. For those genes, the family is refitted `dm_zero_sensitivity_repeats`
+times (5 by default). Each refit replaces their zero counts with small seeded
+values between 0 and 0.1, following DRIMSeq's `addUniform` rule. The reported
+result is the median of the refits. PACs whose effect changes direction or
+spreads by more than `dm_zero_max_delta_pau_spread`, or that fewer than 80%
+of the refits can fit, are flagged `zero_boundary_unstable` and left untested. These perturbed values are used
+only for fitting and never appear in output tables. A condition with no reads
+at all for a gene leaves that gene untested in the comparisons that use the
+condition (`model_status` is `group_without_counts`).
+
+Bootstrap intervals hold each gene's precision at the family-fit estimate, so
+every replicate needs one refit of the proportions, or two when a simulated
+zero group needs the same perturbation. One draw gives every
+comparison in the family its interval. In simulations with four replicates per
+group, nominal 95% intervals covered the true change in PAU 80-93% of the
+time (about 88% on average), because they do not include uncertainty in the
+precision.
+`bootstrap_status` records why an interval is missing.
+
+Bootstrap work uses separate four-core jobs by default; tune their allocation
+with `--statistics_bootstrap_cpus 4` and genes per job with
+`--statistics_bootstrap_batch_size 500`. At most eight batch jobs are submitted
 at once by default; tune that cap with `--statistics_bootstrap_max_forks 8`.
-This avoids nested worker pools while
-preserving the same deterministic bootstrap draws and 200-replicate default.
-Each statistics attempt requests three days of walltime. To reduce bootstrap
-cost for an exploratory run, set `--dm_bootstrap_replicates 100`. Setting
+Each statistics attempt requests 12 hours of walltime and each bootstrap
+attempt 6 hours, multiplied by the attempt number on retry. To skip intervals
+in an exploratory run, set `--dm_bootstrap_replicates 0`. Setting
 `--dm_bootstrap_include_candidates false` leaves p-values and event calls
 unchanged, but omits bootstrap intervals for non-significant candidate genes.
+
+stageR's stage-wise procedure confirms both PACs of a two-PAC gene together.
+When such a gene passes the screen, both PACs report a `pac_fdr` of 0.
 
 Build the default Apptainer image once on a networked system:
 
@@ -252,6 +276,15 @@ pip install -e '.[dev]'
 pytest
 ```
 
+The statistics tests need the pipeline's R packages (DRIMSeq, stageR, limma,
+and yaml). Point `R_LIBS` at a local library if they are not installed
+globally:
+
+```bash
+Rscript tests/test_usage_model.R scripts/fit_usage_model.R
+Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R
+```
+
 The integration fixture can be generated with:
 
 ```bash
@@ -260,7 +293,8 @@ nextflow run . -profile test,conda -resume
 ```
 
 The statistical process requires DRIMSeq, stageR, and limma. The supplied
-Conda files install them from Bioconda. Runs are network-independent after the
+Conda files install them from Bioconda and pin DRIMSeq to 1.38.0, the version
+the statistics were validated with. Runs are network-independent after the
 environment or container has been prepared.
 
 ## Reproducibility

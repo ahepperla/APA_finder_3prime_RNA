@@ -14,6 +14,12 @@ workflow STATISTICS {
     resolved_params
 
     main:
+    // Staged as an input so that -resume reruns the statistics whenever the
+    // script changes; a path inside the command alone is not part of the
+    // task hash.
+    statistics_script = Channel.value(
+        file("${projectDir}/scripts/fit_usage_model.R", checkIfExists: true)
+    )
     MOTIF_SCORES(observed_pau, atlas)
     comparison_families = normalized_samples
         .splitCsv(header: true, sep: '\t')
@@ -28,19 +34,20 @@ workflow STATISTICS {
         atlas,
         resolved_params,
         MOTIF_SCORES.out.primary,
-        MOTIF_SCORES.out.sensitivity
+        MOTIF_SCORES.out.sensitivity,
+        statistics_script
     )
     bootstrap_batches = FIT_USAGE_MODEL.out.bootstrap_batches
         .flatMap { family, batch_files ->
             def files = batch_files instanceof List ? batch_files : [batch_files]
             files.collect { batch -> tuple(family, batch) }
         }
-    BOOTSTRAP_USAGE_INTERVALS(bootstrap_batches)
+    BOOTSTRAP_USAGE_INTERVALS(bootstrap_batches, statistics_script)
     bootstrap_intervals = BOOTSTRAP_USAGE_INTERVALS.out.intervals
         .groupTuple()
     finalization_inputs = FIT_USAGE_MODEL.out.preliminary
         .join(bootstrap_intervals)
-    FINALIZE_USAGE_MODEL(finalization_inputs)
+    FINALIZE_USAGE_MODEL(finalization_inputs, statistics_script)
     family_directories = FINALIZE_USAGE_MODEL.out.statistics
         .map { family, directory -> directory }
         .collect()

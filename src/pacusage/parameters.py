@@ -88,7 +88,7 @@ DEFAULTS: dict[str, Any] = {
     "save_intermediates": False,
     "statistics_cpus": 8,
     "statistics_bootstrap_cpus": 4,
-    "statistics_bootstrap_batch_size": 20,
+    "statistics_bootstrap_batch_size": 500,
     "statistics_bootstrap_max_forks": 8,
     "bind_paths": [],
 }
@@ -162,7 +162,10 @@ def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
         )
     params["constitutive_readthrough_min_junction_count"] = int(junction_count)
     raw_readthrough_support = params["constitutive_readthrough_min_replicate_support"]
-    if isinstance(raw_readthrough_support, str) and raw_readthrough_support.strip().lower() == "all":
+    if (
+        isinstance(raw_readthrough_support, str)
+        and raw_readthrough_support.strip().lower() == "all"
+    ):
         params["constitutive_readthrough_min_replicate_support"] = "all"
     else:
         try:

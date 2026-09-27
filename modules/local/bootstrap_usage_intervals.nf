@@ -5,6 +5,7 @@ process BOOTSTRAP_USAGE_INTERVALS {
 
     input:
     tuple val(family), path(batch)
+    path statistics_script
 
     output:
     tuple val(family), path('*.intervals.tsv.gz'), emit: intervals
@@ -15,7 +16,7 @@ process BOOTSTRAP_USAGE_INTERVALS {
     export OMP_NUM_THREADS=1
     export OPENBLAS_NUM_THREADS=1
     export MKL_NUM_THREADS=1
-    Rscript '${projectDir}/scripts/fit_usage_model.R' \
+    Rscript '${statistics_script}' \
         --mode bootstrap \
         --batch '${batch}' \
         --bootstrap-workers '${task.cpus}' \

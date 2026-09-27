@@ -160,7 +160,7 @@
         "save_intermediates": {"type": "boolean", "default": false},
         "statistics_cpus": {"type": "integer", "minimum": 1, "default": 8, "description": "CPU cores allocated to each family-wide DRIMSeq fit and zero-boundary sensitivity pass."},
         "statistics_bootstrap_cpus": {"type": "integer", "minimum": 1, "default": 4, "description": "CPU cores per scattered bootstrap batch. Each batch keeps bootstrap replicate parallelism within this allocation."},
-        "statistics_bootstrap_batch_size": {"type": "integer", "minimum": 1, "default": 20, "description": "Number of genes per scattered bootstrap batch."},
+        "statistics_bootstrap_batch_size": {"type": "integer", "minimum": 1, "default": 500, "description": "Number of genes per scattered bootstrap batch."},
         "statistics_bootstrap_max_forks": {"type": "integer", "minimum": 1, "default": 8, "description": "Maximum concurrent scattered bootstrap batches across the workflow."},
         "slurm_account": {"type": ["string", "null"], "default": null},
         "slurm_partition": {"type": ["string", "null"], "default": null},

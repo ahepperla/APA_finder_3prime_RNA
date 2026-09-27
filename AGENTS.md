@@ -66,10 +66,12 @@ ruff check src tests
 ```
 
 ```bash
+Rscript tests/test_usage_model.R scripts/fit_usage_model.R
+Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R
 tests/run_nextflow.sh
 ```
 
-The integration script runs the R bootstrap test, rebuilds fixtures, executes
+The integration script runs the R statistics tests, rebuilds fixtures, executes
 the test Nextflow profile, checks required result artifacts, and validates
 their contents. When running the fixture manually with Conda:
 

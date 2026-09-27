@@ -10,6 +10,7 @@ process FIT_USAGE_MODEL {
     path resolved_params
     path motif_scores
     path motif_sensitivity
+    path statistics_script
 
     output:
     tuple val(family), path('family-*'), emit: preliminary
@@ -22,7 +23,7 @@ process FIT_USAGE_MODEL {
     export OMP_NUM_THREADS=1
     export OPENBLAS_NUM_THREADS=1
     export MKL_NUM_THREADS=1
-    Rscript '${projectDir}/scripts/fit_usage_model.R' \
+    Rscript '${statistics_script}' \
         --mode fit \
         --family '${family}' \
         --samples '${normalized_samples}' \

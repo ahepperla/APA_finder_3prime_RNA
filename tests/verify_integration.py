@@ -3,49 +3,162 @@
 
 from __future__ import annotations
 
+import math
+import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
-ROOT = Path(__file__).resolve().parents[1] / "results-test"
+REPOSITORY = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY / "results-test"
+FIXTURES = REPOSITORY / "tests" / "fixtures"
+COMPARISONS = ("TreatmentA_vs_DMSO", "TreatmentB_vs_Vehicle", "Rescue_vs_TreatmentA")
+FAMILIES = ("DMSO", "Vehicle", "TreatmentA")
+
+
+def pac(contig: str, strand: str, coordinate: int) -> str:
+    return f"PACv1.synthetic.{contig}.{strand}.{coordinate}"
+
+
+def statistics_table(name: str) -> pd.DataFrame:
+    return pd.read_csv(ROOT / "statistics" / name, sep="\t")
+
+
+def one_row(table: pd.DataFrame, pac_id: str) -> pd.Series:
+    rows = table[table["pac_id"].astype(str) == pac_id]
+    assert len(rows) == 1, f"expected one row for {pac_id}, found {len(rows)}"
+    return rows.iloc[0]
+
+
+def number(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def check_event(table: pd.DataFrame, pac_id: str, expected: str, label: str) -> pd.Series:
+    row = one_row(table, pac_id)
+    observed = row["event_type"]
+    assert observed == expected, f"{label}: {pac_id} is {observed}, not {expected}"
+    return row
+
+
+def check_confirmed(row: pd.Series, params: dict, label: str) -> None:
+    assert number(row["pac_fdr"]) <= params["site_fdr"], f"{label}: pac_fdr {row['pac_fdr']}"
+    assert number(row["gene_fdr"]) <= params["gene_fdr"], f"{label}: gene_fdr {row['gene_fdr']}"
+
+
+def check_interval(row: pd.Series, params: dict, label: str) -> None:
+    low = number(row["delta_pau_ci_low"])
+    high = number(row["delta_pau_ci_high"])
+    delta = number(row["delta_pau"])
+    fraction = params["dm_bootstrap_min_success_fraction"]
+    minimum = math.ceil(fraction * params["dm_bootstrap_replicates"])
+    assert row["bootstrap_status"] == "ok", f"{label}: bootstrap_status {row['bootstrap_status']}"
+    assert np.isfinite(low) and np.isfinite(high), f"{label}: no interval"
+    assert low <= delta <= high, f"{label}: interval [{low}, {high}] excludes {delta}"
+    successes = number(row["bootstrap_successes"])
+    assert successes >= minimum, f"{label}: {successes} bootstrap successes"
 
 
 def main() -> None:
-    counts = pd.read_csv(ROOT / "counts" / "pac_counts.tsv.gz", sep="\t")
-    pau = pd.read_csv(ROOT / "counts" / "observed_pau.tsv.gz", sep="\t")
-    treatment = pd.read_csv(ROOT / "statistics" / "TreatmentA_vs_DMSO.pacs.tsv.gz", sep="\t")
-    second_family = pd.read_csv(ROOT / "statistics" / "TreatmentB_vs_Vehicle.pacs.tsv.gz", sep="\t")
-    nested_family = pd.read_csv(
-        ROOT / "statistics" / "Rescue_vs_TreatmentA.pacs.tsv.gz", sep="\t"
+    params = yaml.safe_load((ROOT / "manifest" / "resolved_params.yaml").read_text())
+    tables = {name: statistics_table(f"{name}.pacs.tsv.gz") for name in COMPARISONS}
+    events = {name: statistics_table(f"{name}.events.tsv.gz") for name in COMPARISONS}
+    treatment = tables["TreatmentA_vs_DMSO"]
+
+    # chr1 PAC 350 has no reads in DMSO and is used in TreatmentA.
+    gained = check_event(treatment, pac("chr1", "+", 350), "gained", "gene_plus")
+    check_confirmed(gained, params, "gene_plus")
+    check_interval(gained, params, "gene_plus")
+    assert number(gained["delta_pau"]) >= 0.3
+    assert gained["delta_pau_ci_low"] > 0
+    assert gained["raw_control_counts"] == "DMSO_1=0,DMSO_2=0"
+    assert gained["model_status"] == "drimseq_add_uniform"
+    gained_events = events["TreatmentA_vs_DMSO"]
+    is_gained = (gained_events["pac_id"] == pac("chr1", "+", 350)) & (
+        gained_events["event_type"] == "gained"
     )
-    gained = treatment[treatment["pac_id"].astype(str).str.endswith(".350")].iloc[0]
-    assert gained["delta_pau"] > 0.2
-    assert gained["event_type"] in {
-        "gained",
-        "gained_candidate",
-        "dominant_switch",
+    assert int(is_gained.sum()) == 1
+
+    # bg01's middle PAC is silent only in TreatmentA: lost against DMSO and
+    # gained again in the nested Rescue comparison.
+    lost = check_event(treatment, pac("chr2", "+", 1350), "lost", "bg01")
+    check_confirmed(lost, params, "bg01 lost")
+    regained = check_event(tables["Rescue_vs_TreatmentA"], pac("chr2", "+", 1350), "gained", "bg01")
+    check_confirmed(regained, params, "bg01 regained")
+    # bg02's middle PAC is used only in TreatmentB.
+    check_confirmed(
+        check_event(tables["TreatmentB_vs_Vehicle"], pac("chr2", "-", 2050), "gained", "bg02"),
+        params,
+        "bg02",
+    )
+    # bg09 gains an internal-priming-like PAC: detected but not confirmed.
+    primed = check_event(treatment, pac("chr2", "+", 9350), "gained_candidate", "bg09")
+    assert primed["confidence"] == "low"
+    assert str(primed["internal_priming_flag"]).lower() == "true"
+    # bg03-bg06 shift usage from the first toward the last PAC in TreatmentA.
+    for index in range(3, 7):
+        origin = 1000 * index
+        strand = "+" if index % 2 else "-"
+        first, last = (origin + 300, origin + 400) if strand == "+" else (origin, origin + 100)
+        label = f"bg{index:02d}"
+        for coordinate, expected in ((first, "decreased_usage"), (last, "increased_usage")):
+            row = check_event(treatment, pac("chr2", strand, coordinate), expected, label)
+            check_confirmed(row, params, label)
+
+    # Exact nulls: bg07 (TreatmentB is three times Vehicle) and bg08 (3:2 in
+    # every sample) show no change.
+    null_checks = [("TreatmentB_vs_Vehicle", "bg07")] + [(name, "bg08") for name in COMPARISONS]
+    for name, gene_id in null_checks:
+        rows = tables[name][tables[name]["gene_id"] == gene_id]
+        assert len(rows) >= 2, f"{name}: {gene_id} is missing"
+        assert set(rows["event_type"]) == {"none"}, f"{name}: {gene_id} has events"
+        smallest = rows["pvalue_gene"].min()
+        assert (rows["pvalue_gene"] > 0.5).all(), f"{name}: {gene_id} gene p is {smallest}"
+        assert (rows["delta_pau"].abs() < 0.01).all(), f"{name}: {gene_id} delta is not zero"
+
+    # PAC-level FDRs exist wherever stageR confirms genes.
+    designed = {
+        "TreatmentA_vs_DMSO": ["gene_plus", "bg01", "bg03", "bg04", "bg05", "bg06", "bg09"],
+        "TreatmentB_vs_Vehicle": ["bg02"],
+        "Rescue_vs_TreatmentA": ["bg01"],
     }
-    assert gained["bootstrap_successes"] > 0
-    assert len(second_family) >= 2
-    assert len(nested_family) >= 2
+    for name, table in tables.items():
+        rows = table[table["gene_id"].isin(designed[name])]
+        assert set(rows["gene_id"]) == set(designed[name]), f"{name}: designed genes are missing"
+        assert rows["pac_fdr"].notna().all(), f"{name}: designed genes lack pac_fdr"
+        screened = table[table["gene_fdr"] <= params["site_fdr"] / 2]
+        assert screened["pac_fdr"].notna().all(), f"{name}: screened genes lack pac_fdr"
+        assert table["pvalue_pac"].notna().mean() >= 0.95, f"{name}: too many PAC tests are missing"
+        assert "gene_minus" not in set(table["gene_id"]), f"{name}: gene_minus was tested"
+        assert len(table) >= 2
     assert "primary_pas_motif_rna" in treatment
     assert "AAUAAA" in set(treatment["primary_pas_motif_rna"].dropna())
 
+    precision = statistics_table("gene_precision.tsv.gz")
+    for family in FAMILIES:
+        values = precision.loc[precision["family"] == family, "precision"]
+        assert len(values) >= 25, f"{family}: only {len(values)} genes have a precision"
+        assert ((values > 0) & np.isfinite(values)).mean() >= 0.95, f"{family}: precision missing"
+
+    # Raw counts equal the reads written into the fixture, PAC by PAC.
+    counts = pd.read_csv(ROOT / "counts" / "pac_counts.tsv.gz", sep="\t")
+    expected = pd.read_csv(FIXTURES / "expected_pac_counts.tsv", sep="\t")
+    samples = [column for column in expected if column not in {"gene_id", "pac_id"}]
+    observed = counts.set_index("pac_id").sort_index()
+    wanted = expected.set_index("pac_id").sort_index()
+    assert list(observed.index) == list(wanted.index), "atlas PACs differ from the fixture"
+    assert (observed[samples].astype(int) == wanted[samples].astype(int)).all().all()
+    assert (observed["gene_id"] == wanted["gene_id"]).all()
+
+    pau = pd.read_csv(ROOT / "counts" / "observed_pau.tsv.gz", sep="\t")
     positive = pau[pau["gene_total"] > 0]
     sums = positive.groupby(["gene_id", "sample_id"])["pau"].sum().to_numpy()
     assert np.allclose(sums, 1)
-
-    sample_columns = [column for column in counts if column not in {"gene_id", "pac_id"}]
-    scaled = counts.copy()
-    scaled[sample_columns] *= 3
-    original_usage = counts[sample_columns].div(
-        counts.groupby("gene_id")[sample_columns].transform("sum")
-    )
-    scaled_usage = scaled[sample_columns].div(
-        scaled.groupby("gene_id")[sample_columns].transform("sum")
-    )
-    assert np.allclose(original_usage.fillna(0), scaled_usage.fillna(0))
 
     report = ROOT / "report" / "index.html"
     assert report.stat().st_size > 10000
@@ -54,15 +167,22 @@ def main() -> None:
     assert "PAC-level p-value distribution" in report_text
     assert "primary_pas_motif_rna" in report_text
     assert "AAUAAA" in report_text
+    finite_intervals = sum(
+        int((table["delta_pau_ci_low"].notna() & table["delta_pau_ci_high"].notna()).sum())
+        for table in tables.values()
+    )
+    assert f"<strong>{finite_intervals:,}</strong>Bootstrap intervals" in report_text
 
-    traces = list(ROOT.parent.glob("trace-*.txt"))
+    traces = list(REPOSITORY.glob("trace-*.txt"))
     assert traces
-    latest_trace = max(traces, key=lambda path: path.stat().st_mtime)
-    trace_text = latest_trace.read_text()
+    trace_text = max(traces, key=lambda path: path.stat().st_mtime).read_text()
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
-    assert trace_text.count("PACUSAGE:STATISTICS:BOOTSTRAP_USAGE_INTERVALS") >= 3
     assert trace_text.count("PACUSAGE:STATISTICS:FINALIZE_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:MERGE_USAGE_MODELS") == 1
+    tags = re.findall(r"BOOTSTRAP_USAGE_INTERVALS \(([^:)]+):", trace_text)
+    for family in FAMILIES:
+        assert tags.count(family) >= 1, f"{family} has no bootstrap task"
+    assert tags.count("DMSO") >= 2, "the DMSO family was not scattered into several batches"
 
 
 if __name__ == "__main__":

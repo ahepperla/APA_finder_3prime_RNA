@@ -242,7 +242,8 @@ def _model_diagnostic_sections(root: Path) -> str:
         "pvalue_pac",
         "model_status",
         "zero_boundary_unstable",
-        "bootstrap_successes",
+        "delta_pau_ci_low",
+        "delta_pau_ci_high",
     }
     tests = finite_pvalues = stabilized = unstable = intervals = 0
     pvalue_parts: list[np.ndarray] = []
@@ -274,15 +275,15 @@ def _model_diagnostic_sections(root: Path) -> str:
                     .isin(["true", "t", "1"])
                     .sum()
                 )
-                intervals += int(
-                    pd.to_numeric(
-                        frame.get("bootstrap_successes", pd.Series(dtype=float)),
-                        errors="coerce",
-                    )
-                    .fillna(0)
-                    .gt(0)
-                    .sum()
+                low = pd.to_numeric(
+                    frame.get("delta_pau_ci_low", pd.Series(np.nan, index=frame.index)),
+                    errors="coerce",
                 )
+                high = pd.to_numeric(
+                    frame.get("delta_pau_ci_high", pd.Series(np.nan, index=frame.index)),
+                    errors="coerce",
+                )
+                intervals += int((np.isfinite(low) & np.isfinite(high)).sum())
         except (pd.errors.EmptyDataError, OSError):
             continue
     if not tests:

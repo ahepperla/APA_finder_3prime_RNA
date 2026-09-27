@@ -1,6 +1,73 @@
 #!/usr/bin/env Rscript
 
-suppressPackageStartupMessages({
+# Differential PAC usage within one comparison family, fitted with DRIMSeq and
+# adjusted with stageR. The pipeline runs this file in three modes:
+#   fit        family model, zero-count stabilization, preliminary tables, and
+#              bootstrap batches;
+#   bootstrap  percentile intervals for one batch of genes;
+#   finalize   intervals merged into the preliminary tables, then event tables.
+
+# DRIMSeq's addUniform rule: each zero count becomes a draw from U(0, 0.1).
+ZERO_PERTURBATION_MAX <- 0.1
+# Plan section 9: a stabilized fit needs at least 80 percent of its repeats.
+ZERO_MIN_SUCCESS_FRACTION <- 0.8
+# Changes in fitted PAU smaller than this count as zero when checking whether
+# the direction of an effect flips between stabilization repeats.
+DIRECTION_TOLERANCE <- 0.001
+BOOTSTRAP_BATCH_SCHEMA <- 2L
+DEFAULT_BOOTSTRAP_BATCH_SIZE <- 500L
+REQUIRED_PRECISION_SLOTS <- c(
+  "mean_expression", "common_precision", "genewise_precision",
+  "design_precision", "counts", "samples"
+)
+TEXT_COLUMNS <- c(
+  "gene_id", "pac_id", "feature_id", "sample_id", "condition", "control",
+  "control_condition", "comparison", "bootstrap_status", "model_status"
+)
+BOOTSTRAP_STATUSES <- c(
+  "ok", "insufficient_successes", "fit_unavailable", "not_selected", "disabled"
+)
+INTERVAL_COLUMNS <- c(
+  "comparison", "gene_id", "feature_id", "delta_pau_ci_low", "delta_pau_ci_high",
+  "bootstrap_successes", "bootstrap_perturbed", "bootstrap_status"
+)
+GENE_PRECISION_COLUMNS <- c("gene_id", "precision", "family", "model_status")
+FITTED_PAU_COLUMNS <- c(
+  "gene_id", "feature_id", "condition", "control_condition", "fitted_control_pau",
+  "fitted_treatment_pau", "delta_pau", "precision", "alpha_control",
+  "alpha_treatment", "model_status"
+)
+OMNIBUS_COLUMNS <- c(
+  "gene_id", "lr", "df", "pvalue", "gene_fdr", "model_status",
+  "stabilization_successes", "family", "exploratory_insufficient_replicates"
+)
+GENE_COLUMNS <- c(
+  "gene_id", "lr", "df", "pvalue", "gene_fdr", "model_status",
+  "stabilization_successes", "condition", "control_condition",
+  "exploratory_insufficient_replicates"
+)
+ATLAS_ANNOTATION_COLUMNS <- c(
+  "assignment_class", "known_pac", "known_rescue_only", "confidence",
+  "internal_priming_flag", "primary_pas_motif", "primary_pas_motif_rna",
+  "primary_motif_class"
+)
+PAC_COLUMNS <- c(
+  "feature_id", "gene_id", "lr", "df", "pvalue_pac", "pac_fdr", "pvalue_gene",
+  "gene_fdr", "fitted_control_pau", "fitted_treatment_pau", "delta_pau",
+  "control_supporting_samples", "treatment_supporting_samples",
+  "control_gene_total", "treatment_gene_total", "raw_control_counts",
+  "raw_treatment_counts", "observed_control_pau", "observed_treatment_pau",
+  "model_status", "stabilization_successes", "stabilization_delta_pau_spread",
+  "zero_boundary_unstable", "zero_boundary_reason", "precision", "family",
+  "alpha_control", "alpha_treatment", ATLAS_ANNOTATION_COLUMNS, "pac_id",
+  "site_class", "condition", "control_condition",
+  "exploratory_insufficient_replicates", "delta_pau_ci_low", "delta_pau_ci_high",
+  "bootstrap_successes", "bootstrap_perturbed", "bootstrap_status",
+  "effect_exceeds_threshold", "dominant_pac_control", "dominant_pac_treatment",
+  "control_detected_complexity", "treatment_detected_complexity", "event_type"
+)
+
+load_statistics_packages <- function() {
   required <- c("BiocParallel", "DRIMSeq", "stageR", "limma", "yaml")
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) {
@@ -9,10 +76,32 @@ suppressPackageStartupMessages({
       ". Use the PACusage Conda environment or Apptainer image."
     )
   }
-  library(DRIMSeq)
-  library(stageR)
-  library(limma)
-})
+  suppressPackageStartupMessages({
+    library(DRIMSeq)
+    library(stageR)
+    library(limma)
+  })
+  # Fixed-precision refits build DRIMSeq precision objects directly, so a
+  # DRIMSeq release with different slots must stop here, not mid-run.
+  absent <- setdiff(REQUIRED_PRECISION_SLOTS, methods::slotNames("dmDSprecision"))
+  if (length(absent)) {
+    stop(
+      "DRIMSeq ", as.character(utils::packageVersion("DRIMSeq")),
+      " lacks dmDSprecision slots: ", paste(absent, collapse = ", "),
+      ". PACusage was validated with DRIMSeq 1.38."
+    )
+  }
+  versions <- vapply(
+    c("DRIMSeq", "stageR", "limma", "BiocParallel"),
+    function(package) as.character(utils::packageVersion(package)),
+    character(1)
+  )
+  message(
+    "PACusage statistics with ",
+    paste(names(versions), versions, collapse = ", ")
+  )
+  invisible(versions)
+}
 
 parse_args <- function(arguments) {
   result <- list()
@@ -59,7 +148,7 @@ parse_model_workers <- function(value) {
 }
 
 parse_batch_size <- function(value) {
-  if (is.null(value)) return(20L)
+  if (is.null(value)) return(DEFAULT_BOOTSTRAP_BATCH_SIZE)
   size <- suppressWarnings(as.numeric(value))
   if (
     length(size) != 1L ||
@@ -84,8 +173,25 @@ drimseq_bpparam <- function(workers, seed) {
   )
 }
 
+read_header <- function(path) {
+  connection <- file(path, "rt")
+  on.exit(close(connection), add = TRUE)
+  line <- readLines(connection, n = 1L, warn = FALSE)
+  if (!length(line)) return(character())
+  strsplit(line, "\t", fixed = TRUE)[[1]]
+}
+
+# Identifiers stay text: numeric-looking gene or sample IDs would otherwise
+# become integers, which DRIMSeq rejects.
 read_tsv <- function(path) {
-  read.delim(path, check.names = FALSE, stringsAsFactors = FALSE)
+  text_columns <- intersect(TEXT_COLUMNS, read_header(path))
+  utils::read.delim(
+    path,
+    check.names = FALSE,
+    stringsAsFactors = FALSE,
+    na.strings = c("", "NA"),
+    colClasses = stats::setNames(rep("character", length(text_columns)), text_columns)
+  )
 }
 
 write_gzip_tsv <- function(value, path) {
@@ -94,10 +200,33 @@ write_gzip_tsv <- function(value, path) {
   write.table(value, connection, sep = "\t", quote = FALSE, row.names = FALSE, na = "")
 }
 
+select_columns <- function(table, columns, label) {
+  missing <- setdiff(columns, names(table))
+  if (length(missing)) {
+    stop(label, " lacks columns: ", paste(missing, collapse = ", "), ".")
+  }
+  table[, columns, drop = FALSE]
+}
+
+empty_table <- function(columns) {
+  as.data.frame(
+    stats::setNames(replicate(length(columns), character(), simplify = FALSE), columns),
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+}
+
 bh <- function(values) {
   result <- rep(NA_real_, length(values))
   finite <- is.finite(values)
   result[finite] <- p.adjust(values[finite], method = "BH")
+  result
+}
+
+chi_square_p <- function(lr, df) {
+  result <- rep(NA_real_, length(lr))
+  finite <- is.finite(lr) & is.finite(df)
+  result[finite] <- stats::pchisq(lr[finite], df[finite], lower.tail = FALSE)
   result
 }
 
@@ -115,13 +244,6 @@ family_filter <- function(counts, sample_ids, params) {
   counts[site_ok & gene_ok, c("gene_id", "pac_id", sample_ids), drop = FALSE]
 }
 
-observed_group_pau <- function(counts, sample_rows, group_name) {
-  ids <- sample_rows$sample_id[sample_rows$condition == group_name]
-  values <- rowSums(counts[, ids, drop = FALSE])
-  totals <- ave(values, counts$gene_id, FUN = sum)
-  ifelse(totals > 0, values / totals, NA_real_)
-}
-
 supporting_samples <- function(counts, sample_rows, group_name) {
   ids <- sample_rows$sample_id[sample_rows$condition == group_name]
   rowSums(counts[, ids, drop = FALSE] > 0)
@@ -131,69 +253,6 @@ group_gene_totals <- function(counts, sample_rows, group_name) {
   ids <- sample_rows$sample_id[sample_rows$condition == group_name]
   values <- rowSums(counts[, ids, drop = FALSE])
   as.numeric(ave(values, counts$gene_id, FUN = sum))
-}
-
-stage_adjust <- function(gene_results, feature_results, alpha) {
-  screen <- gene_results$pvalue
-  names(screen) <- gene_results$gene_id
-  missing_screen <- !is.finite(screen)
-  screen[missing_screen] <- 1
-  confirmation <- matrix(feature_results$pvalue, ncol = 1)
-  missing_confirmation <- !is.finite(confirmation[, 1])
-  confirmation[missing_confirmation, 1] <- 1
-  rownames(confirmation) <- feature_results$feature_id
-  colnames(confirmation) <- "contrast"
-  tx2gene <- data.frame(
-    txID = feature_results$feature_id,
-    geneID = feature_results$gene_id,
-    stringsAsFactors = FALSE
-  )
-  object <- stageRTx(
-    pScreen = screen,
-    pConfirmation = confirmation,
-    pScreenAdjusted = FALSE,
-    tx2gene = tx2gene
-  )
-  object <- stageWiseAdjustment(object, method = "dtu", alpha = alpha, allowNA = TRUE)
-  adjusted <- getAdjustedPValues(
-    object,
-    order = FALSE,
-    onlySignificantGenes = FALSE
-  )
-  match_index <- match(feature_results$feature_id, rownames(adjusted))
-  result <- as.numeric(adjusted[match_index, ncol(adjusted)])
-  result[missing_confirmation] <- NA_real_
-  result
-}
-
-safe_precision <- function(fit, genes) {
-  value <- tryCatch(DRIMSeq::genewise_precision(fit), error = function(error) NULL)
-  if (is.null(value)) {
-    return(data.frame(gene_id = genes, precision = NA_real_))
-  }
-  if (is.data.frame(value)) {
-    gene_column <- intersect(c("gene_id", "gene"), colnames(value))[1]
-    precision_column <- intersect(
-      c("genewise_precision", "precision", "common_precision"),
-      colnames(value)
-    )[1]
-    if (!is.na(gene_column) && !is.na(precision_column)) {
-      return(data.frame(
-        gene_id = value[[gene_column]],
-        precision = value[[precision_column]]
-      ))
-    }
-  }
-  data.frame(gene_id = genes, precision = as.numeric(value)[seq_along(genes)])
-}
-
-fitted_group_pau <- function(fit, counts, sample_rows, group_name) {
-  fitted <- proportions(fit)
-  sample_ids <- sample_rows$sample_id[sample_rows$condition == group_name]
-  values <- rowMeans(fitted[, sample_ids, drop = FALSE])
-  names(values) <- paste(fitted$gene_id, fitted$feature_id, sep = "\r")
-  keys <- paste(counts$gene_id, counts$pac_id, sep = "\r")
-  as.numeric(values[keys])
 }
 
 raw_count_text <- function(counts, sample_rows, group_name) {
@@ -224,20 +283,28 @@ observed_pau_text <- function(counts, sample_rows, group_name) {
   )
 }
 
-stable_seed <- function(base_seed, ...) {
-  text <- paste(..., collapse = "|")
-  values <- utf8ToInt(text)
-  offset <- sum(values * seq_along(values)) %% 1000000000
-  as.integer((as.numeric(base_seed) + offset) %% .Machine$integer.max)
-}
+# Deterministic seeds from a polynomial hash of the text modulo the prime
+# 2^31 - 1. A position-weighted character sum would give, for example,
+# bootstrap replicates 120 and 201 of a gene the same seed. The fields are
+# joined with spaces, paste's default separator.
+SEED_MODULUS <- 2147483647
+SEED_POWERS <- local({
+  powers <- numeric(4096L)
+  value <- 1
+  for (index in seq_along(powers)) {
+    powers[[index]] <- value
+    value <- (value * 131) %% SEED_MODULUS
+  }
+  powers
+})
 
-empty_bootstrap_intervals <- function(gene_counts, successes = 0L) {
-  data.frame(
-    feature_id = gene_counts$pac_id,
-    delta_pau_ci_low = NA_real_,
-    delta_pau_ci_high = NA_real_,
-    bootstrap_successes = successes
-  )
+stable_seed <- function(base_seed, ...) {
+  values <- utf8ToInt(paste(..., collapse = "|"))
+  if (length(values) > length(SEED_POWERS)) stop("Seed text is too long.")
+  # Horner's hash, sum(value_i * 131^(n - i)), with every product below 2^53.
+  terms <- (values * SEED_POWERS[rev(seq_along(values))]) %% SEED_MODULUS
+  offset <- sum(terms) %% SEED_MODULUS
+  as.integer((as.numeric(base_seed) + offset) %% .Machine$integer.max)
 }
 
 bootstrap_total <- function(values, gene_id, sample_id) {
@@ -293,40 +360,6 @@ bootstrap_apply <- function(repeat_numbers, workers, worker) {
   )
 }
 
-bootstrap_result_is_valid <- function(value, feature_ids) {
-  is.data.frame(value) &&
-    identical(names(value), c("feature_id", "delta_pau")) &&
-    nrow(value) == length(feature_ids) &&
-    identical(as.character(value$feature_id), as.character(feature_ids)) &&
-    is.numeric(value$delta_pau) &&
-    all(is.finite(value$delta_pau))
-}
-
-bootstrap_failure_message <- function(value) {
-  condition <- attr(value, "condition")
-  if (!is.null(condition)) return(conditionMessage(condition))
-  if (inherits(value, "bootstrap_failure")) return(value$message)
-  if (inherits(value, "try-error")) return(as.character(value)[[1]])
-  "worker returned an invalid result"
-}
-
-bootstrap_failure <- function(error) {
-  structure(list(message = conditionMessage(error)), class = "bootstrap_failure")
-}
-
-dominant_pac <- function(feature_ids, fitted_pau) {
-  finite_indices <- which(is.finite(fitted_pau))
-  if (!length(finite_indices)) return(NA_character_)
-  feature_ids[finite_indices[[which.max(fitted_pau[finite_indices])]]]
-}
-
-stable_feature_matches <- function(feature_index, stabilization_match, unstable) {
-  !is.na(feature_index) &
-    !is.na(stabilization_match) &
-    !is.na(unstable) &
-    !unstable
-}
-
 bootstrap_settings <- function(params) {
   bootstrap_replicates_value <- suppressWarnings(
     as.numeric(params$dm_bootstrap_replicates)
@@ -350,312 +383,37 @@ bootstrap_settings <- function(params) {
   ) {
     stop("dm_bootstrap_min_success_fraction must be a finite value in [0, 1].")
   }
+  replicates <- as.integer(bootstrap_replicates_value)
   list(
-    replicates = as.integer(bootstrap_replicates_value),
-    min_success_fraction = bootstrap_min_success_fraction
+    replicates = replicates,
+    min_success_fraction = bootstrap_min_success_fraction,
+    min_successes = max(1L, as.integer(ceiling(
+      replicates * bootstrap_min_success_fraction - 1e-9
+    )))
   )
 }
 
-bootstrap_gene_from_fitted <- function(
-  gene_id,
-  gene_counts,
-  sample_rows,
-  design,
-  fitted,
-  precision,
-  control,
-  treatment,
-  params,
-  atlas_checksum,
-  comparison,
-  bootstrap_workers
-) {
-  precision_value <- suppressWarnings(as.numeric(precision)[1])
-  if (!is.finite(precision_value) || precision_value <= 0) {
-    warning(
-      "Skipping bootstrap intervals for gene ", gene_id,
-      " because genewise precision is unavailable."
-    )
-    return(empty_bootstrap_intervals(gene_counts))
+zero_sensitivity_settings <- function(params) {
+  repeats <- suppressWarnings(as.numeric(params$dm_zero_sensitivity_repeats))
+  if (length(repeats) != 1L || !is.finite(repeats) || repeats < 1 || repeats != floor(repeats)) {
+    stop("dm_zero_sensitivity_repeats must be a positive integer.")
   }
-  settings <- bootstrap_settings(params)
-  if (settings$replicates == 0L) {
-    return(empty_bootstrap_intervals(gene_counts))
+  spread <- suppressWarnings(as.numeric(params$dm_zero_max_delta_pau_spread))
+  if (length(spread) != 1L || !is.finite(spread) || spread < 0) {
+    stop("dm_zero_max_delta_pau_spread must be a finite non-negative value.")
   }
-  sample_ids <- sample_rows$sample_id
-  control_ids <- sample_rows$sample_id[sample_rows$condition == control]
-  treatment_ids <- sample_rows$sample_id[sample_rows$condition == treatment]
-  sample_totals <- vapply(
-    sample_ids,
-    function(sample_id) bootstrap_total(
-      gene_counts[[sample_id]],
-      gene_id,
-      sample_id
-    ),
-    integer(1)
+  repeats <- as.integer(repeats)
+  list(
+    repeats = repeats,
+    max_spread = spread,
+    min_successes = as.integer(ceiling(ZERO_MIN_SUCCESS_FRACTION * repeats - 1e-9))
   )
-  if (!all(sample_ids %in% colnames(fitted))) {
-    missing_samples <- setdiff(sample_ids, colnames(fitted))
-    stop(
-      "Bootstrap fitted proportions are missing samples for gene ", gene_id,
-      ": ", paste(missing_samples, collapse = ", "), "."
-    )
-  }
-  if (
-    nrow(fitted) != nrow(gene_counts) ||
-      !identical(as.character(fitted$feature_id), as.character(gene_counts$pac_id))
-  ) {
-    stop("Bootstrap fitted proportions do not match PAC ordering for gene ", gene_id, ".")
-  }
-  bootstrap_shapes <- setNames(lapply(sample_ids, function(sample_id) {
-    expected <- as.numeric(fitted[[sample_id]])
-    if (
-      length(expected) != nrow(gene_counts) ||
-      any(!is.finite(expected)) ||
-      any(expected < 0)
-    ) {
-      stop(
-        "Invalid bootstrap fitted proportions for gene ", gene_id,
-        ", sample ", sample_id,
-        ". Expected ", nrow(gene_counts),
-        " finite non-negative values."
-      )
-    }
-    shapes <- pmax(expected, 1e-10) * precision_value
-    if (any(!is.finite(shapes)) || any(shapes <= 0)) {
-      stop(
-        "Invalid bootstrap gamma shapes for gene ", gene_id,
-        ", sample ", sample_id, "."
-      )
-    }
-    shapes
-  }), sample_ids)
-  bootstrap_run <- function(repeat_number) {
-    tryCatch({
-      set.seed(stable_seed(
-        params$random_seed,
-        atlas_checksum,
-        comparison,
-        gene_id,
-        "bootstrap",
-        repeat_number
-      ))
-      simulated <- gene_counts
-      for (sample_id in sample_ids) {
-        total <- sample_totals[[sample_id]]
-        shapes <- bootstrap_shapes[[sample_id]]
-        draw <- rgamma(length(shapes), shape = shapes, rate = 1)
-        draw_total <- sum(draw)
-        if (!is.finite(draw_total) || draw_total <= 0) {
-          stop(
-            "Invalid bootstrap gamma draw for gene ", gene_id,
-            ", sample ", sample_id, "."
-          )
-        }
-        if (total == 0L) {
-          simulated[[sample_id]] <- integer(length(draw))
-        } else {
-          draw <- draw / draw_total
-          simulated[[sample_id]] <- as.integer(rmultinom(1, total, draw)[, 1])
-        }
-      }
-      dm_counts <- simulated
-      colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
-      dm_samples <- sample_rows[, c(
-        "sample_id", "condition", unlist(params$model_covariates)
-      ), drop = FALSE]
-      value <- dmDSdata(counts = dm_counts, samples = dm_samples)
-      value <- dmPrecision(value, design = design, verbose = 0)
-      value <- dmFit(value, design = design, verbose = 0)
-      fitted_run <- proportions(value)
-      data.frame(
-        feature_id = fitted_run$feature_id,
-        delta_pau =
-          rowMeans(fitted_run[, treatment_ids, drop = FALSE]) -
-          rowMeans(fitted_run[, control_ids, drop = FALSE])
-      )
-    }, error = bootstrap_failure)
-  }
-  runs <- bootstrap_apply(
-    seq_len(settings$replicates),
-    bootstrap_workers,
-    bootstrap_run
-  )
-  successful_runs <- vapply(
-    runs,
-    bootstrap_result_is_valid,
-    logical(1),
-    feature_ids = gene_counts$pac_id
-  )
-  failed_runs <- runs[
-    !successful_runs & !vapply(runs, is.null, logical(1))
-  ]
-  if (length(failed_runs)) {
-    messages <- unique(vapply(
-      failed_runs,
-      bootstrap_failure_message,
-      character(1)
-    ))
-    if (length(messages) > 3L) {
-      messages <- c(
-        messages[seq_len(3L)],
-        paste0(length(messages) - 3L, " additional distinct error(s)")
-      )
-    }
-    warning(
-      "Ignoring ", length(failed_runs),
-      " invalid bootstrap result(s) for gene ", gene_id,
-      ": ", paste(messages, collapse = "; ")
-    )
-  }
-  runs <- runs[successful_runs]
-  minimum_successes <- ceiling(
-    settings$replicates * settings$min_success_fraction
-  )
-  if (length(runs) < minimum_successes) {
-    return(empty_bootstrap_intervals(gene_counts, length(runs)))
-  }
-  long <- do.call(rbind, runs)
-  output <- lapply(gene_counts$pac_id, function(feature_id) {
-    values <- long$delta_pau[long$feature_id == feature_id]
-    data.frame(
-      feature_id = feature_id,
-      delta_pau_ci_low = unname(quantile(values, 0.025)),
-      delta_pau_ci_high = unname(quantile(values, 0.975)),
-      bootstrap_successes = length(values)
-    )
-  })
-  do.call(rbind, output)
 }
 
-stabilize_boundary_gene <- function(
-  gene_id,
-  counts,
-  sample_rows,
-  design,
-  coefficient,
-  control,
-  treatment,
-  params,
-  atlas_checksum,
-  comparison,
-  bootstrap_workers
-) {
-  gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
-  dm_counts <- gene_counts
-  colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
-  dm_samples <- sample_rows[, c(
-    "sample_id", "condition", unlist(params$model_covariates)
-  ), drop = FALSE]
-  sensitivity_run <- function(repeat_number) {
-    tryCatch({
-      set.seed(stable_seed(
-        params$random_seed, atlas_checksum, comparison, gene_id, repeat_number
-      ))
-      value <- dmDSdata(counts = dm_counts, samples = dm_samples)
-      value <- dmPrecision(value, design = design, verbose = 0)
-      value <- dmFit(value, design = design, add_uniform = TRUE, verbose = 0)
-      tested <- dmTest(value, coef = coefficient, verbose = 0)
-      feature_results <- results(tested, level = "feature")
-      fitted <- proportions(value)
-      control_ids <- sample_rows$sample_id[sample_rows$condition == control]
-      treatment_ids <- sample_rows$sample_id[sample_rows$condition == treatment]
-      data.frame(
-        feature_id = fitted$feature_id,
-        p_value = feature_results$pvalue[
-          match(fitted$feature_id, feature_results$feature_id)
-        ],
-        control_pau = rowMeans(fitted[, control_ids, drop = FALSE]),
-        treatment_pau = rowMeans(fitted[, treatment_ids, drop = FALSE])
-      )
-    }, error = function(error) NULL)
-  }
-  runs <- bootstrap_apply(
-    seq_len(params$dm_zero_sensitivity_repeats),
-    bootstrap_workers,
-    sensitivity_run
-  )
-  runs <- Filter(Negate(is.null), runs)
-  if (!length(runs)) {
-    return(data.frame(
-      feature_id = gene_counts$pac_id,
-      stabilized_p_value = NA_real_,
-      stabilized_control_pau = NA_real_,
-      stabilized_treatment_pau = NA_real_,
-      stabilization_successes = 0L,
-      zero_boundary_unstable = TRUE
-    ))
-  }
-  long <- do.call(rbind, runs)
-  output <- lapply(gene_counts$pac_id, function(feature_id) {
-    values <- long[long$feature_id == feature_id, , drop = FALSE]
-    finite <- is.finite(values$p_value) &
-      is.finite(values$control_pau) &
-      is.finite(values$treatment_pau)
-    values <- values[finite, , drop = FALSE]
-    deltas <- values$treatment_pau - values$control_pau
-    enough <- nrow(values) >= ceiling(
-      params$dm_zero_sensitivity_repeats * params$dm_bootstrap_min_success_fraction
-    )
-    direction_stable <- !length(deltas) ||
-      length(unique(sign(deltas[abs(deltas) > .Machine$double.eps]))) <= 1
-    spread <- if (length(deltas)) diff(range(deltas)) else Inf
-    data.frame(
-      feature_id = feature_id,
-      stabilized_p_value = if (enough) median(values$p_value) else NA_real_,
-      stabilized_control_pau = if (enough) median(values$control_pau) else NA_real_,
-      stabilized_treatment_pau = if (enough) median(values$treatment_pau) else NA_real_,
-      stabilization_successes = nrow(values),
-      zero_boundary_unstable = !enough || !direction_stable ||
-        spread > params$dm_zero_max_delta_pau_spread
-    )
-  })
-  do.call(rbind, output)
-}
-
-bootstrap_gene <- function(
-  gene_id,
-  counts,
-  sample_rows,
-  design,
-  fitted_model,
-  precision,
-  control,
-  treatment,
-  params,
-  atlas_checksum,
-  comparison,
-  bootstrap_workers
-) {
-  gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
-  precision_value <- suppressWarnings(as.numeric(precision)[1])
-  if (!is.finite(precision_value) || precision_value <= 0) {
-    warning(
-      "Skipping bootstrap intervals for gene ", gene_id,
-      " because genewise precision is unavailable."
-    )
-    return(empty_bootstrap_intervals(gene_counts))
-  }
-  if (bootstrap_settings(params)$replicates == 0L) {
-    return(empty_bootstrap_intervals(gene_counts))
-  }
-  fitted <- proportions(fitted_model)
-  fitted <- fitted[fitted$gene_id == gene_id, , drop = FALSE]
-  fitted <- fitted[match(gene_counts$pac_id, fitted$feature_id), , drop = FALSE]
-  bootstrap_gene_from_fitted(
-    gene_id,
-    gene_counts,
-    sample_rows,
-    design,
-    fitted,
-    precision,
-    control,
-    treatment,
-    params,
-    atlas_checksum,
-    comparison,
-    bootstrap_workers
-  )
+dominant_pac <- function(feature_ids, fitted_pau) {
+  finite_indices <- which(is.finite(fitted_pau))
+  if (!length(finite_indices)) return(NA_character_)
+  feature_ids[finite_indices[[which.max(fitted_pau[finite_indices])]]]
 }
 
 safe_file_component <- function(value) {
@@ -664,180 +422,641 @@ safe_file_component <- function(value) {
   value
 }
 
-bootstrap_batches <- function(
-  comparison,
-  bootstrap_genes,
-  counts,
-  fitted,
-  precision,
-  sample_rows,
-  design,
-  control,
-  treatment,
-  params,
-  atlas_checksum,
-  batch_size
-) {
-  gene_batches <- split(
-    bootstrap_genes,
-    ceiling(seq_along(bootstrap_genes) / batch_size)
+# ---- Family layout and counts --------------------------------------------
+
+family_layout <- function(family, sample_rows, params) {
+  treatments <- sort(
+    unique(sample_rows$condition[
+      sample_rows$control_condition == family & sample_rows$condition != family
+    ]),
+    method = "radix"
   )
-  if (!length(gene_batches)) gene_batches <- list(character())
-  lapply(seq_along(gene_batches), function(batch_index) {
-    gene_ids <- gene_batches[[batch_index]]
-    genes <- lapply(gene_ids, function(gene_id) {
-      gene_counts <- counts[counts$gene_id == gene_id, , drop = FALSE]
-      gene_fitted <- fitted[fitted$gene_id == gene_id, , drop = FALSE]
-      gene_fitted <- gene_fitted[
-        match(gene_counts$pac_id, gene_fitted$feature_id),
-        ,
-        drop = FALSE
-      ]
+  if (!length(treatments)) return(NULL)
+  samples <- sample_rows[sample_rows$condition %in% c(family, treatments), , drop = FALSE]
+  rownames(samples) <- NULL
+  samples$condition <- factor(samples$condition, levels = c(family, treatments))
+  covariates <- as.character(unlist(params$model_covariates))
+  for (covariate in covariates) {
+    if (!covariate %in% names(samples)) {
+      stop("Model covariate ", covariate, " is missing from the sample sheet.")
+    }
+    values <- as.character(samples[[covariate]])
+    if (anyNA(values) || any(values == "")) {
+      stop("Model covariate ", covariate, " is incomplete in comparison family ", family, ".")
+    }
+    # Covariates are categorical, as the Python design validation assumes.
+    samples[[covariate]] <- factor(values)
+  }
+  formula_text <- paste("~", paste(c(covariates, "condition"), collapse = " + "))
+  design <- model.matrix(as.formula(formula_text), data = samples)
+  if (qr(design)$rank < ncol(design)) {
+    stop(
+      "Comparison family ", family,
+      " has a rank-deficient design. Check condition/covariate confounding."
+    )
+  }
+  coefficients <- match(paste0("condition", treatments), colnames(design))
+  if (anyNA(coefficients)) {
+    stop(
+      "No model coefficient found for ",
+      paste0(treatments[is.na(coefficients)], "_vs_", family, collapse = ", ")
+    )
+  }
+  conditions <- c(family, treatments)
+  groups <- lapply(conditions, function(condition) {
+    samples$sample_id[samples$condition == condition]
+  })
+  names(groups) <- conditions
+  zero_levels <- c(
+    list(condition = samples$condition),
+    stats::setNames(lapply(covariates, function(covariate) samples[[covariate]]), covariates)
+  )
+  list(
+    family = family,
+    control = family,
+    treatments = treatments,
+    comparisons = data.frame(
+      comparison = paste0(treatments, "_vs_", family),
+      treatment = treatments,
+      coefficient = coefficients,
+      stringsAsFactors = FALSE
+    ),
+    samples = samples,
+    sample_ids = samples$sample_id,
+    dm_samples = samples[, c("sample_id", "condition", covariates), drop = FALSE],
+    design = design,
+    covariates = covariates,
+    condition_coefficients = coefficients,
+    groups = groups,
+    zero_levels = zero_levels,
+    exploratory = any(table(samples$condition) < params$min_replicates_per_condition)
+  )
+}
+
+# DRIMSeq treats the last PAC of a gene as the reference, so the order must
+# be deterministic: genomic coordinate within each gene (plan section 9).
+order_family_counts <- function(counts, atlas) {
+  coordinate <- suppressWarnings(as.numeric(atlas$coordinate[match(counts$pac_id, atlas$pac_id)]))
+  if (anyNA(coordinate)) {
+    stop(
+      "The atlas lacks coordinates for PACs: ",
+      paste(utils::head(counts$pac_id[is.na(coordinate)], 5L), collapse = ", "), "."
+    )
+  }
+  ordered <- counts[order(counts$gene_id, coordinate, counts$pac_id, method = "radix"), , drop = FALSE]
+  rownames(ordered) <- NULL
+  per_gene <- table(ordered$gene_id)
+  if (any(per_gene < 2L)) {
+    stop(
+      "Genes with fewer than 2 testable PACs reached the model: ",
+      paste(utils::head(names(per_gene)[per_gene < 2L], 5L), collapse = ", "), "."
+    )
+  }
+  ordered
+}
+
+count_matrix <- function(counts, sample_ids) {
+  values <- as.matrix(counts[, sample_ids, drop = FALSE])
+  storage.mode(values) <- "double"
+  values
+}
+
+# Genes with a PAC that has no counts in any sample of a condition level or a
+# covariate level. DRIMSeq's fit for such genes is at a boundary, even when it
+# silently returns a fitted proportion of zero.
+zero_group_genes <- function(counts, layout) {
+  values <- count_matrix(counts, layout$sample_ids)
+  flagged <- rep(FALSE, nrow(values))
+  for (levels in layout$zero_levels) {
+    labels <- as.character(levels)
+    for (level in unique(labels)) {
+      flagged <- flagged | rowSums(values[, labels == level, drop = FALSE]) == 0
+    }
+  }
+  unique(counts$gene_id[flagged])
+}
+
+# Gene by condition: TRUE when a gene has no counts at all in that condition.
+empty_condition_groups <- function(counts, layout) {
+  totals <- rowsum(count_matrix(counts, layout$sample_ids), counts$gene_id, reorder = FALSE)
+  empty <- vapply(
+    layout$groups,
+    function(sample_ids) rowSums(totals[, sample_ids, drop = FALSE]) == 0,
+    logical(nrow(totals))
+  )
+  if (is.null(dim(empty))) empty <- matrix(empty, nrow = 1L, dimnames = list(rownames(totals), names(layout$groups)))
+  rownames(empty) <- rownames(totals)
+  empty
+}
+
+perturb_zero_cells <- function(values, seed) {
+  set.seed(seed)
+  zeros <- values == 0
+  values[zeros] <- stats::runif(sum(zeros), 0, ZERO_PERTURBATION_MAX)
+  values
+}
+
+# Returns a copy in which each listed gene's zero counts are perturbed with a
+# seed specific to that gene. The input table is never modified.
+perturb_gene_rows <- function(counts, gene_ids, sample_ids, seed_for_gene) {
+  values <- count_matrix(counts, sample_ids)
+  rows_by_gene <- split(seq_len(nrow(counts)), counts$gene_id)
+  for (gene_id in gene_ids) {
+    rows <- rows_by_gene[[gene_id]]
+    values[rows, ] <- perturb_zero_cells(values[rows, , drop = FALSE], seed_for_gene(gene_id))
+  }
+  perturbed <- counts
+  for (index in seq_along(sample_ids)) perturbed[[sample_ids[[index]]]] <- values[, index]
+  perturbed
+}
+
+# ---- DRIMSeq wrappers -----------------------------------------------------
+
+dm_data <- function(counts, sample_ids, dm_samples) {
+  table <- counts[, c("gene_id", "pac_id", sample_ids), drop = FALSE]
+  names(table)[names(table) == "pac_id"] <- "feature_id"
+  DRIMSeq::dmDSdata(counts = table, samples = dm_samples)
+}
+
+estimate_family_precision <- function(counts, layout, bpparam, prec_init = NULL) {
+  data <- dm_data(counts, layout$sample_ids, layout$dm_samples)
+  if (is.null(prec_init)) {
+    return(DRIMSeq::dmPrecision(data, design = layout$design, verbose = 0, BPPARAM = bpparam))
+  }
+  # With the common precision fixed, the precision grid matches the
+  # unmodified fit exactly and no random subset of genes is drawn.
+  DRIMSeq::dmPrecision(
+    data,
+    design = layout$design,
+    common_precision = FALSE,
+    prec_init = prec_init,
+    verbose = 0,
+    BPPARAM = bpparam
+  )
+}
+
+fixed_precision_object <- function(data, design, precision, common_precision, mean_expression) {
+  genes <- names(data@counts)
+  values <- precision[genes]
+  if (anyNA(values) || any(!is.finite(values)) || any(values <= 0)) {
+    stop("Fixed precision is missing or invalid for genes: ", paste(utils::head(genes, 5L), collapse = ", "))
+  }
+  names(values) <- genes
+  expression <- mean_expression[genes]
+  names(expression) <- genes
+  methods::new(
+    "dmDSprecision",
+    mean_expression = as.numeric(expression),
+    common_precision = as.numeric(common_precision),
+    genewise_precision = values,
+    design_precision = design,
+    counts = data@counts,
+    samples = data@samples
+  )
+}
+
+gene_test_table <- function(result, gene_ids) {
+  index <- match(gene_ids, as.character(result$gene_id))
+  data.frame(
+    gene_id = gene_ids,
+    lr = as.numeric(result$lr[index]),
+    df = as.numeric(result$df[index]),
+    pvalue = as.numeric(result$pvalue[index]),
+    stringsAsFactors = FALSE
+  )
+}
+
+feature_test_table <- function(result, features) {
+  index <- match(
+    paste(features$gene_id, features$feature_id, sep = "\r"),
+    paste(result$gene_id, result$feature_id, sep = "\r")
+  )
+  data.frame(
+    gene_id = features$gene_id,
+    feature_id = features$feature_id,
+    lr = as.numeric(result$lr[index]),
+    df = as.numeric(result$df[index]),
+    pvalue = as.numeric(result$pvalue[index]),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Fit and test one precision object, then return plain tables in the order of
+# `features`, so later steps never depend on DRIMSeq's internal ordering. With
+# allow_missing, features absent from the object are returned as NA.
+fit_and_test <- function(precision_object, layout, bpparam, features, allow_missing = FALSE) {
+  fit <- DRIMSeq::dmFit(precision_object, design = layout$design, verbose = 0, BPPARAM = bpparam)
+  omnibus <- DRIMSeq::dmTest(
+    fit,
+    coef = layout$condition_coefficients,
+    bb_model = FALSE,
+    verbose = 0,
+    BPPARAM = bpparam
+  )
+  contrasts <- lapply(layout$comparisons$coefficient, function(coefficient) {
+    DRIMSeq::dmTest(fit, coef = coefficient, verbose = 0, BPPARAM = bpparam)
+  })
+  names(contrasts) <- layout$comparisons$comparison
+  proportions_table <- DRIMSeq::proportions(fit)
+  index <- match(
+    paste(features$gene_id, features$feature_id, sep = "\r"),
+    paste(proportions_table$gene_id, proportions_table$feature_id, sep = "\r")
+  )
+  if (anyNA(index) && !allow_missing) {
+    stop("DRIMSeq returned proportions for a different set of PACs.")
+  }
+  proportions <- matrix(
+    NA_real_, nrow(features), length(layout$sample_ids),
+    dimnames = list(features$feature_id, layout$sample_ids)
+  )
+  found <- !is.na(index)
+  proportions[found, ] <- as.matrix(proportions_table[index[found], layout$sample_ids, drop = FALSE])
+  gene_ids <- unique(features$gene_id)
+  precision_table <- DRIMSeq::genewise_precision(fit)
+  precision <- as.numeric(precision_table$genewise_precision[match(gene_ids, precision_table$gene_id)])
+  names(precision) <- gene_ids
+  list(
+    gene_ids = gene_ids,
+    features = features,
+    proportions = proportions,
+    precision = precision,
+    omnibus = gene_test_table(DRIMSeq::results(omnibus, level = "gene"), gene_ids),
+    contrasts = lapply(contrasts, function(test) {
       list(
-        gene_id = gene_id,
-        counts = gene_counts,
-        fitted = gene_fitted,
-        precision = precision$precision[match(gene_id, precision$gene_id)]
+        genes = gene_test_table(DRIMSeq::results(test, level = "gene"), gene_ids),
+        features = feature_test_table(DRIMSeq::results(test, level = "feature"), features)
       )
     })
-    list(
-      batch_id = paste0(
-        safe_file_component(comparison),
-        ".batch-",
-        sprintf("%03d", batch_index)
-      ),
-      comparison = comparison,
-      control = control,
-      treatment = treatment,
-      sample_rows = sample_rows,
-      design = design,
-      params = params,
-      atlas_checksum = atlas_checksum,
-      genes = genes
-    )
-  })
-}
-
-write_bootstrap_batches <- function(batches, output_dir) {
-  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-  if (!length(batches)) {
-    batches <- list(list(
-      batch_id = "empty.batch-001",
-      empty = TRUE,
-      genes = list()
-    ))
-  }
-  invisible(vapply(batches, function(batch) {
-    path <- file.path(output_dir, paste0(batch$batch_id, ".rds"))
-    saveRDS(batch, path, compress = FALSE)
-    path
-  }, character(1)))
-}
-
-run_bootstrap_batch <- function(batch_path, output_path, bootstrap_workers) {
-  batch <- readRDS(batch_path)
-  if (!is.list(batch)) {
-    stop("Bootstrap batch payload must be a list.")
-  }
-  if (isTRUE(batch$empty)) {
-    write_gzip_tsv(data.frame(
-      comparison = character(),
-      gene_id = character(),
-      feature_id = character(),
-      delta_pau_ci_low = numeric(),
-      delta_pau_ci_high = numeric(),
-      bootstrap_successes = integer(),
-      stringsAsFactors = FALSE
-    ), output_path)
-    return(invisible(NULL))
-  }
-  required <- c(
-    "batch_id", "comparison", "control", "treatment", "sample_rows",
-    "design", "params", "atlas_checksum", "genes"
   )
-  missing <- required[!required %in% names(batch)]
-  if (length(missing)) {
-    stop(
-      "Bootstrap batch is missing required fields: ",
-      paste(missing, collapse = ", "), "."
+}
+
+# ---- Zero-count stabilization ---------------------------------------------
+
+boundary_gene_sets <- function(fit, counts, layout) {
+  gene_ids <- fit$gene_ids
+  rows <- split(seq_len(nrow(fit$features)), factor(fit$features$gene_id, levels = gene_ids))
+  nonfinite_rows <- rowSums(!is.finite(fit$proportions)) > 0
+  for (contrast in fit$contrasts) {
+    nonfinite_rows <- nonfinite_rows | !is.finite(contrast$features$pvalue)
+  }
+  nonfinite <- vapply(rows, function(index) any(nonfinite_rows[index]), logical(1))
+  nonfinite <- nonfinite | !(is.finite(fit$precision) & fit$precision > 0) |
+    !is.finite(fit$omnibus$pvalue)
+  for (contrast in fit$contrasts) nonfinite <- nonfinite | !is.finite(contrast$genes$pvalue)
+  boundary <- gene_ids[nonfinite | gene_ids %in% zero_group_genes(counts, layout)]
+  values <- count_matrix(counts, layout$sample_ids)
+  has_zero <- unique(counts$gene_id[rowSums(values == 0) > 0])
+  perturbable <- boundary[boundary %in% has_zero]
+  list(
+    boundary = boundary,
+    perturbable = perturbable,
+    unavailable = setdiff(boundary, perturbable)
+  )
+}
+
+run_zero_sensitivity <- function(counts, genes, layout, common_precision, params, atlas_checksum, bpparam) {
+  settings <- zero_sensitivity_settings(params)
+  rows <- counts$gene_id %in% genes
+  features <- data.frame(
+    gene_id = counts$gene_id[rows],
+    feature_id = counts$pac_id[rows],
+    stringsAsFactors = FALSE
+  )
+  lapply(seq_len(settings$repeats), function(repeat_number) {
+    perturbed <- perturb_gene_rows(
+      counts,
+      genes,
+      layout$sample_ids,
+      function(gene_id) {
+        stable_seed(
+          params$random_seed, atlas_checksum, layout$family, gene_id,
+          "zero_sensitivity", repeat_number
+        )
+      }
     )
-  }
-  scalar_string <- function(value, field) {
-    if (length(value) != 1L || is.na(value) || !nzchar(as.character(value))) {
-      stop("Bootstrap batch has an invalid ", field, ".")
-    }
-    as.character(value)
-  }
-  batch$batch_id <- scalar_string(batch$batch_id, "batch_id")
-  batch$comparison <- scalar_string(batch$comparison, "comparison")
-  batch$control <- scalar_string(batch$control, "control")
-  batch$treatment <- scalar_string(batch$treatment, "treatment")
-  batch$atlas_checksum <- scalar_string(batch$atlas_checksum, "atlas_checksum")
-  if (!is.data.frame(batch$sample_rows)) {
-    stop("Bootstrap batch ", batch$batch_id, " has invalid sample_rows.")
-  }
-  if (!is.matrix(batch$design)) {
-    stop("Bootstrap batch ", batch$batch_id, " has an invalid design matrix.")
-  }
-  if (!is.list(batch$params) || !is.list(batch$genes)) {
-    stop("Bootstrap batch ", batch$batch_id, " has invalid params or genes.")
-  }
-  rows <- lapply(seq_along(batch$genes), function(index) {
-    gene <- batch$genes[[index]]
-    if (
-      !all(c("gene_id", "counts", "fitted", "precision") %in% names(gene))
-    ) {
-      stop("Bootstrap batch ", batch$batch_id, " has an invalid gene payload.")
-    }
-    if (
-      length(gene$gene_id) != 1L ||
-        is.na(gene$gene_id) ||
-        !nzchar(as.character(gene$gene_id)) ||
-        !is.data.frame(gene$counts) ||
-        !is.data.frame(gene$fitted)
-    ) {
-      stop("Bootstrap batch ", batch$batch_id, " has invalid gene values.")
-    }
-    message(
-      "Bootstrap batch ", batch$batch_id, ": gene ", index, "/",
-      length(batch$genes), " (", gene$gene_id, ")."
-    )
-    intervals <- bootstrap_gene_from_fitted(
-      gene$gene_id,
-      gene$counts,
-      batch$sample_rows,
-      batch$design,
-      gene$fitted,
-      gene$precision,
-      batch$control,
-      batch$treatment,
-      batch$params,
-      batch$atlas_checksum,
-      batch$comparison,
-      bootstrap_workers
-    )
-    data.frame(
-      comparison = batch$comparison,
-      gene_id = gene$gene_id,
-      intervals,
-      stringsAsFactors = FALSE
+    tryCatch(
+      {
+        # Whole-family precision keeps the trended moderation of the unmodified
+        # fit; the fits and tests then only need the boundary genes.
+        precision <- estimate_family_precision(perturbed, layout, bpparam, common_precision)
+        values <- precision@genewise_precision[genes]
+        # A gene without a usable precision fails only its own repeat.
+        fitted_genes <- genes[is.finite(values) & values > 0]
+        if (!length(fitted_genes)) stop("No stabilized gene has a finite precision.")
+        data <- dm_data(
+          perturbed[perturbed$gene_id %in% fitted_genes, , drop = FALSE],
+          layout$sample_ids,
+          layout$dm_samples
+        )
+        object <- fixed_precision_object(
+          data,
+          layout$design,
+          precision@genewise_precision,
+          common_precision,
+          precision@mean_expression
+        )
+        fit_and_test(object, layout, bpparam, features, allow_missing = TRUE)
+      },
+      error = function(error) error
     )
   })
-  output <- if (length(rows)) {
-    do.call(rbind, rows)
-  } else {
+}
+
+first_finite_by_row <- function(values, rows) {
+  if (is.null(dim(values))) values <- matrix(values, nrow = rows)
+  apply(values, 1, function(row) {
+    finite <- row[is.finite(row)]
+    if (length(finite)) finite[[1]] else NA_real_
+  })
+}
+
+median_or_na <- function(values) {
+  values <- values[is.finite(values)]
+  if (!length(values)) return(NA_real_)
+  stats::median(values)
+}
+
+# Combine the stabilization repeats of each boundary gene into one set of
+# values: medians of proportions, precision, and likelihood ratios, with the
+# stability rules of plan section 9 applied per PAC and comparison.
+summarize_zero_sensitivity <- function(repeats, genes, layout, params) {
+  settings <- zero_sensitivity_settings(params)
+  failed <- vapply(repeats, inherits, logical(1), what = "error")
+  if (all(failed)) {
+    stop("Every zero-count stabilization repeat failed: ", conditionMessage(repeats[[1]]))
+  }
+  if (any(failed)) {
+    warning(
+      sum(failed), " of ", length(repeats), " zero-count stabilization repeats failed: ",
+      conditionMessage(repeats[[which(failed)[[1]]]])
+    )
+  }
+  fits <- repeats[!failed]
+  features <- fits[[1]]$features
+  rows_by_gene <- split(seq_len(nrow(features)), factor(features$gene_id, levels = genes))
+  control_ids <- layout$groups[[layout$control]]
+  gene_success <- vapply(fits, function(fit) {
+    vapply(genes, function(gene_id) {
+      precision <- fit$precision[[gene_id]]
+      is.finite(precision) && precision > 0 &&
+        all(is.finite(fit$proportions[rows_by_gene[[gene_id]], , drop = FALSE]))
+    }, logical(1))
+  }, logical(length(genes)))
+  if (is.null(dim(gene_success))) {
+    gene_success <- matrix(gene_success, nrow = length(genes), dimnames = list(genes, NULL))
+  }
+  rownames(gene_success) <- genes
+  enough <- rowSums(gene_success) >= settings$min_successes
+
+  precision <- stats::setNames(rep(NA_real_, length(genes)), genes)
+  proportions <- matrix(
+    NA_real_, nrow(features), length(layout$sample_ids),
+    dimnames = list(features$feature_id, layout$sample_ids)
+  )
+  for (gene_id in genes[enough]) {
+    successful <- fits[gene_success[gene_id, ]]
+    precision[[gene_id]] <- stats::median(vapply(successful, function(fit) fit$precision[[gene_id]], numeric(1)))
+    rows <- rows_by_gene[[gene_id]]
+    draws <- simplify2array(lapply(successful, function(fit) fit$proportions[rows, , drop = FALSE]))
+    median_values <- apply(draws, c(1, 2), stats::median)
+    if (is.null(dim(median_values))) median_values <- matrix(median_values, nrow = length(rows))
+    proportions[rows, ] <- sweep(median_values, 2, colSums(median_values), "/")
+  }
+
+  gene_summary <- function(table_of) {
+    lr <- vapply(fits, function(fit) {
+      table <- table_of(fit)
+      table$lr[match(genes, table$gene_id)]
+    }, numeric(length(genes)))
+    if (is.null(dim(lr))) lr <- matrix(lr, nrow = length(genes))
+    # df is constant per gene and test; take it from any repeat that has it.
+    df <- first_finite_by_row(vapply(fits, function(fit) {
+      table <- table_of(fit)
+      table$df[match(genes, table$gene_id)]
+    }, numeric(length(genes))), length(genes))
+    usable <- is.finite(lr) & gene_success
+    successes <- rowSums(usable)
+    median_lr <- vapply(seq_along(genes), function(index) {
+      if (successes[[index]] < settings$min_successes) return(NA_real_)
+      stats::median(lr[index, usable[index, ]])
+    }, numeric(1))
     data.frame(
-      comparison = character(),
-      gene_id = character(),
-      feature_id = character(),
-      delta_pau_ci_low = numeric(),
-      delta_pau_ci_high = numeric(),
-      bootstrap_successes = integer(),
+      gene_id = genes,
+      lr = median_lr,
+      df = df,
+      pvalue = chi_square_p(median_lr, df),
+      stabilization_successes = as.integer(successes),
       stringsAsFactors = FALSE
     )
   }
-  write_gzip_tsv(output, output_path)
+
+  omnibus <- gene_summary(function(fit) fit$omnibus)
+  contrasts <- lapply(seq_len(nrow(layout$comparisons)), function(index) {
+    comparison <- layout$comparisons$comparison[[index]]
+    treatment_ids <- layout$groups[[layout$comparisons$treatment[[index]]]]
+    genes_table <- gene_summary(function(fit) fit$contrasts[[comparison]]$genes)
+    lr <- vapply(fits, function(fit) fit$contrasts[[comparison]]$features$lr, numeric(nrow(features)))
+    delta <- vapply(fits, function(fit) {
+      rowMeans(fit$proportions[, treatment_ids, drop = FALSE]) -
+        rowMeans(fit$proportions[, control_ids, drop = FALSE])
+    }, numeric(nrow(features)))
+    if (is.null(dim(lr))) {
+      lr <- matrix(lr, nrow = nrow(features))
+      delta <- matrix(delta, nrow = nrow(features))
+    }
+    feature_gene_success <- gene_success[features$gene_id, , drop = FALSE]
+    usable <- is.finite(lr) & is.finite(delta) & feature_gene_success
+    successes <- rowSums(usable)
+    reasons <- character(nrow(features))
+    median_lr <- rep(NA_real_, nrow(features))
+    spread <- rep(NA_real_, nrow(features))
+    for (row in seq_len(nrow(features))) {
+      values <- delta[row, usable[row, ]]
+      if (length(values)) spread[[row]] <- max(values) - min(values)
+      problems <- character()
+      if (successes[[row]] < settings$min_successes) problems <- c(problems, "insufficient_successes")
+      if (any(values > DIRECTION_TOLERANCE) && any(values < -DIRECTION_TOLERANCE)) {
+        problems <- c(problems, "direction_change")
+      }
+      if (length(values) && spread[[row]] > settings$max_spread) problems <- c(problems, "delta_spread")
+      reasons[[row]] <- paste(problems, collapse = ";")
+      if (!length(problems)) median_lr[[row]] <- stats::median(lr[row, usable[row, ]])
+    }
+    df <- first_finite_by_row(vapply(fits, function(fit) {
+      fit$contrasts[[comparison]]$features$df
+    }, numeric(nrow(features))), nrow(features))
+    list(
+      genes = genes_table,
+      features = data.frame(
+        gene_id = features$gene_id,
+        feature_id = features$feature_id,
+        lr = median_lr,
+        df = df,
+        pvalue = chi_square_p(median_lr, df),
+        stabilization_successes = as.integer(successes),
+        stabilization_delta_pau_spread = spread,
+        zero_boundary_unstable = nzchar(reasons),
+        zero_boundary_reason = reasons,
+        stringsAsFactors = FALSE
+      )
+    )
+  })
+  names(contrasts) <- layout$comparisons$comparison
+  list(precision = precision, proportions = proportions, omnibus = omnibus, contrasts = contrasts)
 }
+
+initialize_status_columns <- function(fit) {
+  fit$omnibus$stabilization_successes <- 0L
+  fit$omnibus$model_status <- "drimseq"
+  for (comparison in names(fit$contrasts)) {
+    genes <- fit$contrasts[[comparison]]$genes
+    genes$stabilization_successes <- 0L
+    genes$model_status <- "drimseq"
+    features <- fit$contrasts[[comparison]]$features
+    features$stabilization_successes <- 0L
+    features$stabilization_delta_pau_spread <- NA_real_
+    features$zero_boundary_unstable <- FALSE
+    features$zero_boundary_reason <- ""
+    features$model_status <- "drimseq"
+    fit$contrasts[[comparison]] <- list(genes = genes, features = features)
+  }
+  fit$gene_status <- stats::setNames(rep("drimseq", length(fit$gene_ids)), fit$gene_ids)
+  fit
+}
+
+replace_rows <- function(target, source, key_columns, value_columns) {
+  target_keys <- do.call(paste, c(target[key_columns], sep = "\r"))
+  source_keys <- do.call(paste, c(source[key_columns], sep = "\r"))
+  index <- match(source_keys, target_keys)
+  if (anyNA(index)) stop("Stabilized results refer to rows absent from the family fit.")
+  for (column in value_columns) target[[column]][index] <- source[[column]]
+  target
+}
+
+# Stabilized genes take every value from the repeats, so each gene has one
+# consistent source; perturbed counts themselves never reach an output.
+write_back_boundary <- function(fit, summary, sets) {
+  genes <- sets$perturbable
+  if (length(genes)) {
+    rows <- fit$features$gene_id %in% genes
+    fit$proportions[rows, ] <- summary$proportions[fit$features$feature_id[rows], , drop = FALSE]
+    fit$precision[genes] <- summary$precision[genes]
+    gene_columns <- c("lr", "df", "pvalue", "stabilization_successes")
+    summary$omnibus$model_status <- "drimseq_add_uniform"
+    fit$omnibus <- replace_rows(fit$omnibus, summary$omnibus, "gene_id", c(gene_columns, "model_status"))
+    for (comparison in names(fit$contrasts)) {
+      stabilized <- summary$contrasts[[comparison]]
+      stabilized$genes$model_status <- "drimseq_add_uniform"
+      stabilized$features$model_status <- "drimseq_add_uniform"
+      fit$contrasts[[comparison]]$genes <- replace_rows(
+        fit$contrasts[[comparison]]$genes, stabilized$genes, "gene_id",
+        c(gene_columns, "model_status")
+      )
+      fit$contrasts[[comparison]]$features <- replace_rows(
+        fit$contrasts[[comparison]]$features, stabilized$features, c("gene_id", "feature_id"),
+        c(
+          "lr", "df", "pvalue", "stabilization_successes", "stabilization_delta_pau_spread",
+          "zero_boundary_unstable", "zero_boundary_reason", "model_status"
+        )
+      )
+    }
+    fit$gene_status[genes] <- "drimseq_add_uniform"
+  }
+  unavailable <- sets$unavailable
+  if (length(unavailable)) {
+    fit$omnibus$model_status[fit$omnibus$gene_id %in% unavailable] <- "fit_unavailable"
+    for (comparison in names(fit$contrasts)) {
+      contrast <- fit$contrasts[[comparison]]
+      contrast$genes$model_status[contrast$genes$gene_id %in% unavailable] <- "fit_unavailable"
+      contrast$features$model_status[contrast$features$gene_id %in% unavailable] <- "fit_unavailable"
+      fit$contrasts[[comparison]] <- contrast
+    }
+    fit$gene_status[unavailable] <- "fit_unavailable"
+  }
+  fit
+}
+
+# A condition with no counts for a gene has no usage to estimate, so every
+# comparison involving it is left untested instead of fitted to noise.
+mask_groups_without_counts <- function(fit, empty, layout) {
+  empty <- empty[fit$gene_ids, , drop = FALSE]
+  any_empty <- fit$gene_ids[rowSums(empty) > 0]
+  if (!length(any_empty)) return(fit)
+  omnibus_rows <- fit$omnibus$gene_id %in% any_empty
+  fit$omnibus[omnibus_rows, c("lr", "pvalue")] <- NA_real_
+  fit$omnibus$model_status[omnibus_rows] <- "group_without_counts"
+  for (index in seq_len(nrow(layout$comparisons))) {
+    comparison <- layout$comparisons$comparison[[index]]
+    treatment <- layout$comparisons$treatment[[index]]
+    masked <- fit$gene_ids[empty[, layout$control] | empty[, treatment]]
+    if (!length(masked)) next
+    contrast <- fit$contrasts[[comparison]]
+    gene_rows <- contrast$genes$gene_id %in% masked
+    contrast$genes[gene_rows, c("lr", "pvalue")] <- NA_real_
+    contrast$genes$model_status[gene_rows] <- "group_without_counts"
+    feature_rows <- contrast$features$gene_id %in% masked
+    contrast$features[feature_rows, c("lr", "pvalue")] <- NA_real_
+    contrast$features$model_status[feature_rows] <- "group_without_counts"
+    fit$contrasts[[comparison]] <- contrast
+  }
+  fit$gene_status[any_empty] <- "group_without_counts"
+  fit
+}
+
+# ---- Multiple testing -------------------------------------------------------
+
+# Stage-wise adjustment within one comparison (plan section 9). stageR joins
+# gene and PAC IDs with ":" and splits them again, so it receives simple keys
+# and the results are mapped back by key.
+stage_adjust <- function(gene_results, feature_results, alpha) {
+  if (!nrow(feature_results)) return(numeric())
+  if (anyDuplicated(gene_results$gene_id)) stop("stageR input has duplicate genes.")
+  gene_index <- match(feature_results$gene_id, gene_results$gene_id)
+  if (anyNA(gene_index)) stop("stageR input has PACs without a gene-level result.")
+  if (any(table(feature_results$gene_id) < 2L)) {
+    stop("stageR input has genes with fewer than 2 PACs.")
+  }
+  screen <- as.numeric(gene_results$pvalue)
+  screen[!is.finite(screen)] <- NA_real_
+  if (!any(is.finite(screen))) return(rep(NA_real_, nrow(feature_results)))
+  gene_keys <- paste0("g", seq_len(nrow(gene_results)))
+  names(screen) <- gene_keys
+  feature_keys <- paste0("t", seq_len(nrow(feature_results)))
+  confirmation <- as.numeric(feature_results$pvalue)
+  missing <- !is.finite(confirmation)
+  confirmation[missing] <- 1
+  confirmation <- matrix(confirmation, ncol = 1L, dimnames = list(feature_keys, "contrast"))
+  tx2gene <- data.frame(
+    txID = feature_keys,
+    geneID = gene_keys[gene_index],
+    stringsAsFactors = FALSE
+  )
+  object <- stageRTx(
+    pScreen = screen,
+    pConfirmation = confirmation,
+    pScreenAdjusted = FALSE,
+    tx2gene = tx2gene
+  )
+  object <- stageWiseAdjustment(object, method = "dtu", alpha = alpha, allowNA = TRUE)
+  adjusted <- suppressMessages(getAdjustedPValues(
+    object,
+    order = FALSE,
+    onlySignificantGenes = FALSE
+  ))
+  if (!"transcript" %in% names(adjusted)) {
+    stop("stageR did not return transcript-level adjusted p-values.")
+  }
+  ids <- if ("txID" %in% names(adjusted)) as.character(adjusted$txID) else rownames(adjusted)
+  index <- match(feature_keys, ids)
+  if (any(is.na(index) & is.finite(screen[gene_index]))) {
+    stop("stageR returned no adjusted p-value for PACs of screened genes.")
+  }
+  result <- as.numeric(adjusted$transcript[index])
+  result[missing] <- NA_real_
+  result
+}
+
+# ---- Events -----------------------------------------------------------------
 
 classify_event <- function(row, params) {
   number <- function(value) suppressWarnings(as.numeric(value))
@@ -854,7 +1073,7 @@ classify_event <- function(row, params) {
     length(value) == 1L && is.finite(value) && value <= threshold
   }
   truth <- function(value) {
-    value <- tolower(as.character(value))
+    value <- tolower(trimws(as.character(value)))
     length(value) == 1L && !is.na(value) && value %in% c("true", "t", "1")
   }
   control_detected <- at_least(
@@ -899,6 +1118,238 @@ classify_event <- function(row, params) {
   }
 }
 
+# Classify each row from typed column values rather than a character matrix.
+classify_table_events <- function(table, params) {
+  fields <- c(
+    "control_supporting_samples", "treatment_supporting_samples", "delta_pau",
+    "gene_fdr", "pac_fdr", "zero_boundary_unstable", "confidence",
+    "internal_priming_flag", "exploratory_insufficient_replicates",
+    "fitted_control_pau", "fitted_treatment_pau"
+  )
+  columns <- lapply(stats::setNames(fields, fields), function(field) table[[field]])
+  vapply(
+    seq_len(nrow(table)),
+    function(index) classify_event(lapply(columns, `[[`, index), params),
+    character(1)
+  )
+}
+
+detection_candidates <- function(pacs, params) {
+  gained <- pacs$fitted_control_pau <= params$event_max_control_pau &
+    pacs$fitted_treatment_pau >= params$event_min_treatment_pau &
+    pacs$treatment_supporting_samples >= params$event_min_supporting_samples &
+    pacs$delta_pau >= params$min_abs_delta_pau
+  lost <- pacs$fitted_treatment_pau <= params$event_max_control_pau &
+    pacs$fitted_control_pau >= params$event_min_treatment_pau &
+    pacs$control_supporting_samples >= params$event_min_supporting_samples &
+    pacs$delta_pau <= -params$min_abs_delta_pau
+  gained | lost
+}
+
+assign_events <- function(pacs, params) {
+  row_groups <- split(seq_len(nrow(pacs)), pacs$gene_id)
+  dominant_control <- vapply(row_groups, function(indices) {
+    dominant_pac(pacs$feature_id[indices], pacs$fitted_control_pau[indices])
+  }, character(1))
+  dominant_treatment <- vapply(row_groups, function(indices) {
+    dominant_pac(pacs$feature_id[indices], pacs$fitted_treatment_pau[indices])
+  }, character(1))
+  pacs$dominant_pac_control <- unname(dominant_control[pacs$gene_id])
+  pacs$dominant_pac_treatment <- unname(dominant_treatment[pacs$gene_id])
+  pacs$control_detected_complexity <- ave(
+    pacs$fitted_control_pau >= params$event_min_treatment_pau,
+    pacs$gene_id,
+    FUN = function(values) sum(values, na.rm = TRUE)
+  )
+  pacs$treatment_detected_complexity <- ave(
+    pacs$fitted_treatment_pau >= params$event_min_treatment_pau,
+    pacs$gene_id,
+    FUN = function(values) sum(values, na.rm = TRUE)
+  )
+  events <- classify_table_events(pacs, params)
+  exploratory <- as.logical(pacs$exploratory_insufficient_replicates)
+  events[exploratory & events == "gained"] <- "gained_candidate"
+  events[exploratory & events == "lost"] <- "lost_candidate"
+  dominant_switch <- !is.na(pacs$dominant_pac_control) &
+    !is.na(pacs$dominant_pac_treatment) &
+    pacs$dominant_pac_control != pacs$dominant_pac_treatment
+  events[events == "none" & dominant_switch & pacs$feature_id == pacs$dominant_pac_treatment] <-
+    "dominant_switch"
+  complexity_delta <- pacs$treatment_detected_complexity - pacs$control_detected_complexity
+  # A gene without fitted usage in either group (a condition with no counts)
+  # has no usage pattern to compare, so it gets no descriptive event.
+  unfitted <- ave(
+    !is.finite(pacs$fitted_control_pau) | !is.finite(pacs$fitted_treatment_pau),
+    pacs$gene_id,
+    FUN = any
+  )
+  complexity_delta[as.logical(unfitted)] <- 0
+  events[events == "none" & complexity_delta > 0] <- "complexity_gain"
+  events[events == "none" & complexity_delta < 0] <- "complexity_loss"
+  pacs$event_type <- events
+  pacs
+}
+
+# ---- Per-comparison tables --------------------------------------------------
+
+comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params) {
+  comparison <- comparison_row$comparison
+  treatment <- comparison_row$treatment
+  control <- layout$control
+  contrast <- fit$contrasts[[comparison]]
+  genes <- contrast$genes
+  genes$gene_fdr <- bh(genes$pvalue)
+  features <- contrast$features
+  features$pac_fdr <- stage_adjust(genes, features, params$site_fdr)
+  gene_index <- match(features$gene_id, genes$gene_id)
+  control_pau <- rowMeans(fit$proportions[, layout$groups[[control]], drop = FALSE])
+  treatment_pau <- rowMeans(fit$proportions[, layout$groups[[treatment]], drop = FALSE])
+  masked <- empty[features$gene_id, control] | empty[features$gene_id, treatment]
+  control_pau[masked] <- NA_real_
+  treatment_pau[masked] <- NA_real_
+  precision <- unname(fit$precision[features$gene_id])
+  annotation_index <- match(features$feature_id, atlas$pac_id)
+  if (anyNA(annotation_index)) stop("The atlas lacks annotation for tested PACs in ", comparison, ".")
+  annotation <- select_columns(atlas, ATLAS_ANNOTATION_COLUMNS, "The atlas")[annotation_index, , drop = FALSE]
+  rownames(annotation) <- NULL
+  pacs <- data.frame(
+    feature_id = features$feature_id,
+    gene_id = features$gene_id,
+    lr = features$lr,
+    df = features$df,
+    pvalue_pac = features$pvalue,
+    pac_fdr = features$pac_fdr,
+    pvalue_gene = genes$pvalue[gene_index],
+    gene_fdr = genes$gene_fdr[gene_index],
+    fitted_control_pau = unname(control_pau),
+    fitted_treatment_pau = unname(treatment_pau),
+    delta_pau = unname(treatment_pau - control_pau),
+    control_supporting_samples = unname(supporting_samples(counts, layout$samples, control)),
+    treatment_supporting_samples = unname(supporting_samples(counts, layout$samples, treatment)),
+    control_gene_total = group_gene_totals(counts, layout$samples, control),
+    treatment_gene_total = group_gene_totals(counts, layout$samples, treatment),
+    raw_control_counts = unname(raw_count_text(counts, layout$samples, control)),
+    raw_treatment_counts = unname(raw_count_text(counts, layout$samples, treatment)),
+    observed_control_pau = unname(observed_pau_text(counts, layout$samples, control)),
+    observed_treatment_pau = unname(observed_pau_text(counts, layout$samples, treatment)),
+    model_status = features$model_status,
+    stabilization_successes = features$stabilization_successes,
+    stabilization_delta_pau_spread = features$stabilization_delta_pau_spread,
+    zero_boundary_unstable = features$zero_boundary_unstable,
+    zero_boundary_reason = features$zero_boundary_reason,
+    precision = precision,
+    family = layout$family,
+    alpha_control = unname(control_pau) * precision,
+    alpha_treatment = unname(treatment_pau) * precision,
+    annotation,
+    pac_id = features$feature_id,
+    site_class = annotation$assignment_class,
+    condition = treatment,
+    control_condition = control,
+    exploratory_insufficient_replicates = layout$exploratory,
+    delta_pau_ci_low = NA_real_,
+    delta_pau_ci_high = NA_real_,
+    bootstrap_successes = 0L,
+    bootstrap_perturbed = 0L,
+    bootstrap_status = "not_selected",
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  pacs$effect_exceeds_threshold <- abs(pacs$delta_pau) >= params$min_abs_delta_pau
+  pacs <- assign_events(pacs, params)
+  genes$condition <- treatment
+  genes$control_condition <- control
+  genes$exploratory_insufficient_replicates <- layout$exploratory
+  list(
+    comparison = comparison,
+    genes = genes,
+    pacs = pacs,
+    selected = bootstrap_gene_ids(
+      pacs$gene_id,
+      pacs$gene_fdr,
+      detection_candidates(pacs, params),
+      params$gene_fdr,
+      params$dm_bootstrap_include_candidates
+    )
+  )
+}
+
+bootstrap_eligible_genes <- function(fit) {
+  rows <- split(seq_len(nrow(fit$features)), factor(fit$features$gene_id, levels = fit$gene_ids))
+  finite <- vapply(rows, function(index) all(is.finite(fit$proportions[index, , drop = FALSE])), logical(1))
+  fit$gene_ids[finite & is.finite(fit$precision) & fit$precision > 0]
+}
+
+family_bootstrap_batches <- function(selections, counts, fit, layout, params, atlas_checksum, batch_size) {
+  genes <- fit$gene_ids[fit$gene_ids %in% selections$gene_id]
+  if (!length(genes)) return(list())
+  chunks <- split(genes, ceiling(seq_along(genes) / batch_size))
+  lapply(seq_along(chunks), function(index) {
+    gene_ids <- chunks[[index]]
+    rows <- counts$gene_id %in% gene_ids
+    fitted <- data.frame(
+      gene_id = counts$gene_id[rows],
+      pac_id = counts$pac_id[rows],
+      fit$proportions[rows, , drop = FALSE],
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    rownames(fitted) <- NULL
+    batch_counts <- counts[rows, c("gene_id", "pac_id", layout$sample_ids), drop = FALSE]
+    rownames(batch_counts) <- NULL
+    list(
+      schema_version = BOOTSTRAP_BATCH_SCHEMA,
+      empty = FALSE,
+      batch_id = sprintf("%s.batch-%03d", safe_file_component(layout$family), index),
+      family = layout$family,
+      control = layout$control,
+      comparisons = layout$comparisons[, c("comparison", "treatment")],
+      samples = layout$samples[, c("sample_id", "condition", layout$covariates), drop = FALSE],
+      design = layout$design,
+      params = params,
+      atlas_checksum = atlas_checksum,
+      counts = batch_counts,
+      fitted = fitted,
+      genes = data.frame(
+        gene_id = gene_ids,
+        precision = unname(fit$precision[gene_ids]),
+        model_status = unname(fit$gene_status[gene_ids]),
+        stringsAsFactors = FALSE
+      ),
+      selections = selections[selections$gene_id %in% gene_ids, , drop = FALSE]
+    )
+  })
+}
+
+empty_bootstrap_batch <- function(family) {
+  list(
+    schema_version = BOOTSTRAP_BATCH_SCHEMA,
+    empty = TRUE,
+    batch_id = paste0(safe_file_component(family), ".batch-000"),
+    family = family
+  )
+}
+
+write_bootstrap_batches <- function(batches, output_dir, family) {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  if (!length(batches)) batches <- list(empty_bootstrap_batch(family))
+  invisible(vapply(batches, function(batch) {
+    path <- file.path(output_dir, paste0(batch$batch_id, ".rds"))
+    saveRDS(batch, path, compress = FALSE)
+    path
+  }, character(1)))
+}
+
+write_empty_family_outputs <- function(layout, output_dir) {
+  write_gzip_tsv(empty_table(OMNIBUS_COLUMNS), file.path(output_dir, paste0(layout$family, ".gene_omnibus.tsv.gz")))
+  for (comparison in layout$comparisons$comparison) {
+    write_gzip_tsv(empty_table(GENE_COLUMNS), file.path(output_dir, paste0(comparison, ".genes.tsv.gz")))
+    write_gzip_tsv(empty_table(PAC_COLUMNS), file.path(output_dir, paste0(comparison, ".pacs.tsv.gz")))
+  }
+}
+
+# ---- Fit mode ---------------------------------------------------------------
+
 fit_family <- function(
   family,
   sample_rows,
@@ -910,457 +1361,118 @@ fit_family <- function(
   model_workers,
   bootstrap_batch_size
 ) {
-  control <- family
-  treatments <- sort(unique(sample_rows$condition[
-    sample_rows$control_condition == family &
-      sample_rows$condition != family
-  ]))
-  if (!length(treatments)) return(NULL)
-  family_samples <- sample_rows[
-    sample_rows$condition %in% c(control, treatments),
-    ,
-    drop = FALSE
-  ]
-  family_samples$condition <- factor(
-    family_samples$condition,
-    levels = c(control, treatments)
+  layout <- family_layout(family, sample_rows, params)
+  if (is.null(layout)) return(NULL)
+  empty_result <- list(
+    precision = empty_table(GENE_PRECISION_COLUMNS),
+    fitted_pau = empty_table(FITTED_PAU_COLUMNS),
+    batches = list()
   )
-  covariates <- unlist(params$model_covariates)
-  formula_text <- paste(
-    "~",
-    paste(c(covariates, "condition"), collapse = " + ")
-  )
-  design <- model.matrix(as.formula(formula_text), data = family_samples)
-  if (qr(design)$rank < ncol(design)) {
-    stop(
-      "Comparison family ", family,
-      " has a rank-deficient design. Check condition/covariate confounding."
-    )
-  }
-  filtered <- family_filter(counts, family_samples$sample_id, params)
+  filtered <- family_filter(counts, layout$sample_ids, params)
   if (!nrow(filtered)) {
     warning("No testable genes in comparison family ", family)
-    return(NULL)
+    write_empty_family_outputs(layout, output_dir)
+    return(empty_result)
   }
-  dm_counts <- filtered
-  colnames(dm_counts)[colnames(dm_counts) == "pac_id"] <- "feature_id"
-  dm_samples <- family_samples[, c("sample_id", "condition", covariates), drop = FALSE]
-  model_bpparam <- drimseq_bpparam(
+  filtered <- order_family_counts(filtered, atlas)
+  features <- data.frame(
+    gene_id = filtered$gene_id,
+    feature_id = filtered$pac_id,
+    stringsAsFactors = FALSE
+  )
+  bpparam <- drimseq_bpparam(
     model_workers,
     stable_seed(params$random_seed, atlas_checksum, family, "family_model")
   )
-  precision_data <- dmDSdata(counts = dm_counts, samples = dm_samples)
-  precision_data <- dmPrecision(
-    precision_data,
-    design = design,
-    verbose = 0,
-    BPPARAM = model_bpparam
-  )
-  data <- dmFit(
-    precision_data,
-    design = design,
-    verbose = 0,
-    BPPARAM = model_bpparam
-  )
-  condition_coefficients <- grep("^condition", colnames(design))
-  omnibus <- dmTest(
-    data,
-    coef = condition_coefficients,
-    verbose = 0,
-    BPPARAM = model_bpparam
-  )
-  omnibus_results <- results(omnibus, level = "gene")
-  omnibus_results$gene_fdr <- bh(omnibus_results$pvalue)
+
+  # 1. Unmodified fit. dmPrecision estimates the common precision from a
+  # random subset of genes, so the draw is seeded for reproducibility.
+  set.seed(stable_seed(params$random_seed, atlas_checksum, family, "family_precision"))
+  precision <- estimate_family_precision(filtered, layout, bpparam)
+  fit <- fit_and_test(precision, layout, bpparam, features)
+  fit <- initialize_status_columns(fit)
+
+  # 2. Zero-count stabilization, once for the whole family.
+  sets <- boundary_gene_sets(fit, filtered, layout)
+  if (length(sets$perturbable)) {
+    message(
+      "Comparison family ", family, ": stabilizing ", length(sets$perturbable),
+      " of ", length(fit$gene_ids), " gene(s) with zero-count groups."
+    )
+    repeats <- run_zero_sensitivity(
+      filtered, sets$perturbable, layout, precision@common_precision,
+      params, atlas_checksum, bpparam
+    )
+    summary <- summarize_zero_sensitivity(repeats, sets$perturbable, layout, params)
+    fit <- write_back_boundary(fit, summary, sets)
+  } else if (length(sets$unavailable)) {
+    fit <- write_back_boundary(fit, NULL, sets)
+  }
+  empty <- empty_condition_groups(filtered, layout)
+  fit <- mask_groups_without_counts(fit, empty, layout)
+
+  # 3. Tables.
+  omnibus <- fit$omnibus
+  omnibus$gene_fdr <- bh(omnibus$pvalue)
+  omnibus$family <- family
+  omnibus$exploratory_insufficient_replicates <- layout$exploratory
   write_gzip_tsv(
-    omnibus_results,
+    select_columns(omnibus, OMNIBUS_COLUMNS, "The omnibus table"),
     file.path(output_dir, paste0(family, ".gene_omnibus.tsv.gz"))
   )
-  precision <- safe_precision(data, unique(filtered$gene_id))
-  precision$family <- family
 
-  fitted_list <- list()
-  batch_list <- list()
-  for (treatment in treatments) {
-    comparison <- paste0(treatment, "_vs_", control)
-    coefficient <- match(paste0("condition", treatment), colnames(design))
-    if (is.na(coefficient)) {
-      stop("No model coefficient found for ", comparison)
+  outputs <- lapply(seq_len(nrow(layout$comparisons)), function(index) {
+    comparison_outputs(fit, layout$comparisons[index, , drop = FALSE], filtered, layout, atlas, empty, params)
+  })
+  settings <- bootstrap_settings(params)
+  eligible <- bootstrap_eligible_genes(fit)
+  selection_rows <- lapply(outputs, function(output) {
+    genes <- output$selected[output$selected %in% eligible]
+    if (!length(genes)) return(NULL)
+    data.frame(gene_id = genes, comparison = output$comparison, stringsAsFactors = FALSE)
+  })
+  selections <- do.call(rbind, selection_rows)
+  if (is.null(selections) || settings$replicates == 0L) {
+    selections <- data.frame(gene_id = character(), comparison = character(), stringsAsFactors = FALSE)
+  }
+  fitted_rows <- list()
+  for (output in outputs) {
+    pacs <- output$pacs
+    if (settings$replicates == 0L) {
+      pacs$bootstrap_status <- "disabled"
+    } else {
+      pacs$bootstrap_status[pacs$gene_id %in% output$selected] <- "fit_unavailable"
+      pending <- pacs$gene_id %in% selections$gene_id[selections$comparison == output$comparison]
+      pacs$bootstrap_status[pending] <- "pending"
     }
-    tested <- dmTest(
-      data,
-      coef = coefficient,
-      verbose = 0,
-      BPPARAM = model_bpparam
+    write_gzip_tsv(
+      select_columns(output$genes, GENE_COLUMNS, "The genes table"),
+      file.path(output_dir, paste0(output$comparison, ".genes.tsv.gz"))
     )
-    genes <- results(tested, level = "gene")
-    features <- results(tested, level = "feature")
-    control_pau <- fitted_group_pau(data, filtered, family_samples, control)
-    treatment_pau <- fitted_group_pau(data, filtered, family_samples, treatment)
-    model_status <- rep("drimseq", nrow(filtered))
-    zero_boundary_unstable <- rep(FALSE, nrow(filtered))
-    stabilization_successes <- rep(0L, nrow(filtered))
-    feature_keys <- paste(features$gene_id, features$feature_id, sep = "\r")
-    count_keys <- paste(filtered$gene_id, filtered$pac_id, sep = "\r")
-    feature_match <- match(count_keys, feature_keys)
-    boundary_genes <- unique(filtered$gene_id[
-      !is.finite(control_pau) |
-        !is.finite(treatment_pau) |
-        is.na(feature_match) |
-        !is.finite(features$pvalue[feature_match])
-    ])
-    if (length(boundary_genes)) {
-      message(
-        "Comparison ", comparison, ": stabilizing ",
-        length(boundary_genes), " boundary gene(s)."
-      )
-    }
-    for (boundary_index in seq_along(boundary_genes)) {
-      gene_id <- boundary_genes[[boundary_index]]
-      if (
-        boundary_index == 1L ||
-          boundary_index %% 10L == 0L ||
-          boundary_index == length(boundary_genes)
-      ) {
-        message(
-          "Comparison ", comparison, ": boundary gene ",
-          boundary_index, "/", length(boundary_genes), "."
-        )
-      }
-      stabilized <- stabilize_boundary_gene(
-        gene_id,
-        filtered,
-        family_samples,
-        design,
-        coefficient,
-        control,
-        treatment,
-        params,
-        atlas_checksum,
-        comparison,
-        model_workers
-      )
-      count_index <- which(filtered$gene_id == gene_id)
-      stabilization_match <- match(
-        filtered$pac_id[count_index], stabilized$feature_id
-      )
-      feature_index <- feature_match[count_index]
-      stabilized_unstable <- stabilized$zero_boundary_unstable[stabilization_match]
-      replaceable <- stable_feature_matches(
-        feature_index,
-        stabilization_match,
-        stabilized_unstable
-      )
-      replace_indices <- count_index[replaceable]
-      replace_stabilized <- stabilization_match[replaceable]
-      replace_features <- feature_index[replaceable]
-      if (length(replace_indices)) {
-        control_pau[replace_indices] <-
-          stabilized$stabilized_control_pau[replace_stabilized]
-        treatment_pau[replace_indices] <-
-          stabilized$stabilized_treatment_pau[replace_stabilized]
-        features$pvalue[replace_features] <-
-          stabilized$stabilized_p_value[replace_stabilized]
-      }
-      model_status[count_index] <- "drimseq_add_uniform"
-      zero_boundary_unstable[count_index] <-
-        is.na(stabilized_unstable) | stabilized_unstable
-      stabilization_successes[count_index] <-
-        stabilized$stabilization_successes[stabilization_match]
-      unstable_feature_indices <- feature_index[
-        is.na(stabilized_unstable) | stabilized_unstable
-      ]
-      unstable_feature_indices <- unstable_feature_indices[
-        !is.na(unstable_feature_indices)
-      ]
-      features$pvalue[unstable_feature_indices] <- NA_real_
-    }
-    genes$gene_fdr <- bh(genes$pvalue)
-    features$pac_fdr <- tryCatch(
-      stage_adjust(genes, features, params$site_fdr),
-      error = function(error) {
-        warning("stageR adjustment failed for ", comparison, ": ", conditionMessage(error))
-        rep(NA_real_, nrow(features))
-      }
+    write_gzip_tsv(
+      select_columns(pacs, PAC_COLUMNS, "The PAC table"),
+      file.path(output_dir, paste0(output$comparison, ".pacs.tsv.gz"))
     )
-    output <- merge(
-      features,
-      genes[, c("gene_id", "pvalue", "gene_fdr")],
-      by = "gene_id",
-      suffixes = c("_pac", "_gene"),
-      all.x = TRUE
-    )
-    effect <- data.frame(
-      gene_id = filtered$gene_id,
-      feature_id = filtered$pac_id,
-      fitted_control_pau = control_pau,
-      fitted_treatment_pau = treatment_pau,
-      delta_pau = treatment_pau - control_pau,
-      control_supporting_samples = supporting_samples(filtered, family_samples, control),
-      treatment_supporting_samples = supporting_samples(filtered, family_samples, treatment),
-      control_gene_total = group_gene_totals(filtered, family_samples, control),
-      treatment_gene_total = group_gene_totals(filtered, family_samples, treatment),
-      raw_control_counts = raw_count_text(filtered, family_samples, control),
-      raw_treatment_counts = raw_count_text(filtered, family_samples, treatment),
-      observed_control_pau = observed_pau_text(filtered, family_samples, control),
-      observed_treatment_pau = observed_pau_text(filtered, family_samples, treatment),
-      model_status = model_status,
-      stabilization_successes = stabilization_successes,
-      zero_boundary_unstable = zero_boundary_unstable
-    )
-    effect <- merge(effect, precision, by = "gene_id", all.x = TRUE)
-    effect$alpha_control <- effect$fitted_control_pau * effect$precision
-    effect$alpha_treatment <- effect$fitted_treatment_pau * effect$precision
-    output <- merge(output, effect, by = c("gene_id", "feature_id"), all.x = TRUE)
-    output <- merge(
-      output,
-      atlas[, c(
-        "pac_id", "assignment_class", "known_pac", "known_rescue_only",
-        "confidence", "internal_priming_flag", "primary_pas_motif",
-        "primary_pas_motif_rna", "primary_motif_class"
-      )],
-      by.x = "feature_id",
-      by.y = "pac_id",
-      all.x = TRUE
-    )
-    output$pac_id <- output$feature_id
-    output$site_class <- output$assignment_class
-    output$condition <- treatment
-    output$control_condition <- control
-    condition_counts <- table(family_samples$condition)
-    output$exploratory_insufficient_replicates <- any(
-      condition_counts < params$min_replicates_per_condition
-    )
-    output$delta_pau_ci_low <- NA_real_
-    output$delta_pau_ci_high <- NA_real_
-    output$bootstrap_successes <- 0L
-    output$effect_exceeds_threshold <- abs(output$delta_pau) >= params$min_abs_delta_pau
-    detection_candidate <- (
-      output$fitted_control_pau <= params$event_max_control_pau &
-        output$fitted_treatment_pau >= params$event_min_treatment_pau &
-        output$treatment_supporting_samples >= params$event_min_supporting_samples &
-        output$delta_pau >= params$min_abs_delta_pau
-    ) | (
-      output$fitted_treatment_pau <= params$event_max_control_pau &
-        output$fitted_control_pau >= params$event_min_treatment_pau &
-        output$control_supporting_samples >= params$event_min_supporting_samples &
-        output$delta_pau <= -params$min_abs_delta_pau
-    )
-    bootstrap_genes <- bootstrap_gene_ids(
-      output$gene_id,
-      output$gene_fdr,
-      detection_candidate,
-      params$gene_fdr,
-      params$dm_bootstrap_include_candidates
-    )
-    message(
-      "Comparison ", comparison, ": bootstrapping ",
-      length(bootstrap_genes), " gene(s) with ",
-      params$dm_bootstrap_replicates, " replicate(s) each."
-    )
-    batch_list <- c(
-      batch_list,
-      bootstrap_batches(
-        comparison,
-        bootstrap_genes,
-        filtered,
-        proportions(data),
-        precision,
-        family_samples,
-        design,
-        control,
-        treatment,
-        params,
-        atlas_checksum,
-        bootstrap_batch_size
-      )
-    )
-    row_groups <- split(seq_len(nrow(output)), output$gene_id)
-    dominant_control <- vapply(
-      row_groups,
-      function(indices) {
-        dominant_pac(
-          output$feature_id[indices],
-          output$fitted_control_pau[indices]
-        )
-      },
-      character(1)
-    )
-    dominant_treatment <- vapply(
-      row_groups,
-      function(indices) {
-        dominant_pac(
-          output$feature_id[indices],
-          output$fitted_treatment_pau[indices]
-        )
-      },
-      character(1)
-    )
-    output$dominant_pac_control <- unname(dominant_control[output$gene_id])
-    output$dominant_pac_treatment <- unname(dominant_treatment[output$gene_id])
-    output$control_detected_complexity <- ave(
-      output$fitted_control_pau >= params$event_min_treatment_pau,
-      output$gene_id,
-      FUN = function(values) sum(values, na.rm = TRUE)
-    )
-    output$treatment_detected_complexity <- ave(
-      output$fitted_treatment_pau >= params$event_min_treatment_pau,
-      output$gene_id,
-      FUN = function(values) sum(values, na.rm = TRUE)
-    )
-    output$event_type <- apply(
-      output,
-      1,
-      function(row) classify_event(as.list(row), params)
-    )
-    output$event_type[
-      output$exploratory_insufficient_replicates &
-        output$event_type == "gained"
-    ] <- "gained_candidate"
-    output$event_type[
-      output$exploratory_insufficient_replicates &
-        output$event_type == "lost"
-    ] <- "lost_candidate"
-    dominant_switch <- !is.na(output$dominant_pac_control) &
-      !is.na(output$dominant_pac_treatment) &
-      output$dominant_pac_control != output$dominant_pac_treatment
-    output$event_type[
-      output$event_type == "none" &
-        dominant_switch &
-        output$feature_id == output$dominant_pac_treatment
-    ] <- "dominant_switch"
-    complexity_delta <- output$treatment_detected_complexity -
-      output$control_detected_complexity
-    output$event_type[
-      output$event_type == "none" & complexity_delta > 0
-    ] <- "complexity_gain"
-    output$event_type[
-      output$event_type == "none" & complexity_delta < 0
-    ] <- "complexity_loss"
-    gene_path <- file.path(output_dir, paste0(comparison, ".genes.tsv.gz"))
-    pac_path <- file.path(output_dir, paste0(comparison, ".pacs.tsv.gz"))
-    write_gzip_tsv(genes, gene_path)
-    write_gzip_tsv(output, pac_path)
-    fitted_list[[comparison]] <- output[, c(
-      "gene_id", "feature_id", "condition", "control_condition",
-      "fitted_control_pau", "fitted_treatment_pau", "delta_pau",
-      "precision", "alpha_control", "alpha_treatment", "model_status"
-    ), drop = FALSE]
+    fitted_rows[[output$comparison]] <- select_columns(pacs, FITTED_PAU_COLUMNS, "The fitted PAU table")
   }
-  list(fitted = fitted_list, precision = precision, batches = batch_list)
-}
-
-read_bootstrap_intervals <- function(paths) {
-  if (!length(paths)) {
-    stop("No bootstrap interval files were provided for finalization.")
-  }
-  values <- lapply(paths, read_tsv)
-  required <- c(
-    "comparison", "gene_id", "feature_id", "delta_pau_ci_low",
-    "delta_pau_ci_high", "bootstrap_successes"
+  message(
+    "Comparison family ", family, ": bootstrapping ", length(unique(selections$gene_id)),
+    " gene(s) with ", settings$replicates, " replicate(s) each."
   )
-  invalid <- vapply(
-    values,
-    function(value) !all(required %in% names(value)),
-    logical(1)
+  precision_table <- data.frame(
+    gene_id = fit$gene_ids,
+    precision = unname(fit$precision),
+    family = family,
+    model_status = unname(fit$gene_status),
+    stringsAsFactors = FALSE
   )
-  if (any(invalid)) {
-    stop("A bootstrap interval file is missing required columns.")
-  }
-  intervals <- do.call(rbind, values)
-  if (!nrow(intervals)) return(intervals)
-  key_columns <- c("comparison", "gene_id", "feature_id")
-  invalid_keys <- vapply(
-    intervals[, key_columns, drop = FALSE],
-    function(value) any(is.na(value) | !nzchar(as.character(value))),
-    logical(1)
-  )
-  if (any(invalid_keys)) {
-    stop("Bootstrap interval rows require non-missing comparison, gene_id, and feature_id.")
-  }
-  interval_columns <- c("delta_pau_ci_low", "delta_pau_ci_high")
-  for (column in interval_columns) {
-    if (is.logical(intervals[[column]]) && all(is.na(intervals[[column]]))) {
-      intervals[[column]] <- as.numeric(intervals[[column]])
-    }
-  }
-  if (!all(vapply(intervals[, interval_columns, drop = FALSE], is.numeric, logical(1)))) {
-    stop("Bootstrap interval bounds must be numeric or missing.")
-  }
-  successes <- suppressWarnings(as.numeric(intervals$bootstrap_successes))
-  if (
-    any(!is.finite(successes)) ||
-      any(successes < 0) ||
-      any(successes != floor(successes))
-  ) {
-    stop("Bootstrap interval successes must be non-negative integers.")
-  }
-  lower <- intervals$delta_pau_ci_low
-  upper <- intervals$delta_pau_ci_high
-  if (any(!is.na(lower) & !is.na(upper) & lower > upper)) {
-    stop("Bootstrap interval lower bounds cannot exceed upper bounds.")
-  }
-  interval_keys <- do.call(paste, c(intervals[, key_columns, drop = FALSE], sep = "\r"))
-  if (anyDuplicated(interval_keys)) {
-    stop("Bootstrap interval files contain duplicate comparison/gene/PAC rows.")
-  }
-  intervals$bootstrap_successes <- as.integer(successes)
-  intervals
-}
-
-apply_bootstrap_intervals <- function(output, comparison, intervals) {
-  if (!nrow(intervals)) return(output)
-  matches <- intervals[intervals$comparison == comparison, , drop = FALSE]
-  if (!nrow(matches)) return(output)
-  interval_keys <- paste(
-    matches$gene_id,
-    matches$feature_id,
-    sep = "\r"
-  )
-  output_keys <- paste(output$gene_id, output$feature_id, sep = "\r")
-  index <- match(output_keys, interval_keys)
-  matched <- !is.na(index)
-  output$delta_pau_ci_low[matched] <- matches$delta_pau_ci_low[index[matched]]
-  output$delta_pau_ci_high[matched] <- matches$delta_pau_ci_high[index[matched]]
-  output$bootstrap_successes[matched] <- matches$bootstrap_successes[index[matched]]
-  output
-}
-
-finalize_preliminary_outputs <- function(preliminary_dir, interval_paths, output_dir) {
-  if (!dir.exists(preliminary_dir)) {
-    stop("Preliminary statistics directory does not exist: ", preliminary_dir)
-  }
-  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-  intervals <- read_bootstrap_intervals(interval_paths)
-  sources <- list.files(
-    preliminary_dir,
-    pattern = "\\.tsv\\.gz$",
-    full.names = TRUE,
-    recursive = FALSE
-  )
-  if (!length(sources)) {
-    warning("No preliminary statistics tables found in ", preliminary_dir)
-    return(invisible(NULL))
-  }
-  for (source in sources) {
-    destination <- file.path(output_dir, basename(source))
-    if (!grepl("\\.pacs\\.tsv\\.gz$", source)) {
-      if (!file.copy(source, destination, overwrite = TRUE)) {
-        stop("Could not copy preliminary statistics file: ", source)
-      }
-      next
-    }
-    comparison <- sub("\\.pacs\\.tsv\\.gz$", "", basename(source))
-    output <- read_tsv(source)
-    output <- apply_bootstrap_intervals(output, comparison, intervals)
-    write_gzip_tsv(output, destination)
-    events <- output[output$event_type != "none", , drop = FALSE]
-    event_path <- file.path(
-      output_dir,
-      paste0(comparison, ".events.tsv.gz")
+  list(
+    precision = precision_table,
+    fitted_pau = do.call(rbind, unname(fitted_rows)),
+    batches = family_bootstrap_batches(
+      selections, filtered, fit, layout, params, atlas_checksum, bootstrap_batch_size
     )
-    write_gzip_tsv(events, event_path)
-  }
-  invisible(NULL)
+  )
 }
 
 fit_motif_preferences <- function(
@@ -1494,21 +1606,16 @@ run_fit_mode <- function(arguments) {
     model_workers,
     batch_size
   )
-  if (!is.null(fitted)) {
-    write_gzip_tsv(
-      fitted$precision,
-      file.path(preliminary_dir, "gene_precision.tsv.gz")
-    )
-    if (length(fitted$fitted)) {
-      write_gzip_tsv(
-        do.call(rbind, fitted$fitted),
-        file.path(preliminary_dir, "fitted_pau.tsv.gz")
-      )
-    }
-    write_bootstrap_batches(fitted$batches, batch_dir)
-  } else {
-    write_bootstrap_batches(list(), batch_dir)
-  }
+  if (is.null(fitted)) stop("Comparison family ", arguments$family, " has no treatments.")
+  write_gzip_tsv(
+    select_columns(fitted$precision, GENE_PRECISION_COLUMNS, "The precision table"),
+    file.path(preliminary_dir, "gene_precision.tsv.gz")
+  )
+  write_gzip_tsv(
+    select_columns(fitted$fitted_pau, FITTED_PAU_COLUMNS, "The fitted PAU table"),
+    file.path(preliminary_dir, "fitted_pau.tsv.gz")
+  )
+  write_bootstrap_batches(fitted$batches, batch_dir, arguments$family)
 
   if (!is.null(arguments$motif_scores) && file.exists(arguments$motif_scores)) {
     fit_motif_preferences(
@@ -1532,6 +1639,440 @@ run_fit_mode <- function(arguments) {
   }
 }
 
+# ---- Bootstrap mode ---------------------------------------------------------
+
+validate_bootstrap_batch <- function(batch) {
+  if (!identical(batch$schema_version, BOOTSTRAP_BATCH_SCHEMA)) {
+    stop(
+      "Bootstrap batch schema ", format(batch$schema_version),
+      " is not supported; rerun the fit step with this script."
+    )
+  }
+  required <- c(
+    "batch_id", "family", "control", "comparisons", "samples", "design", "params",
+    "atlas_checksum", "counts", "fitted", "genes", "selections"
+  )
+  missing <- required[!required %in% names(batch)]
+  if (length(missing)) {
+    stop("Bootstrap batch is missing required fields: ", paste(missing, collapse = ", "), ".")
+  }
+  for (field in c("batch_id", "family", "control", "atlas_checksum")) {
+    value <- batch[[field]]
+    if (length(value) != 1L || is.na(value) || !nzchar(as.character(value))) {
+      stop("Bootstrap batch has an invalid ", field, ".")
+    }
+  }
+  label <- paste("Bootstrap batch", batch$batch_id)
+  samples <- batch$samples
+  if (!is.data.frame(samples) || anyDuplicated(samples$sample_id)) {
+    stop(label, " has invalid samples.")
+  }
+  if (!is.matrix(batch$design) || nrow(batch$design) != nrow(samples)) {
+    stop(label, " has an invalid design matrix.")
+  }
+  sample_ids <- as.character(samples$sample_id)
+  for (table_name in c("counts", "fitted")) {
+    table <- batch[[table_name]]
+    if (!is.data.frame(table) || !identical(names(table), c("gene_id", "pac_id", sample_ids))) {
+      stop(label, " has ", table_name, " columns that do not match its samples.")
+    }
+  }
+  if (!identical(batch$counts$gene_id, batch$fitted$gene_id) ||
+    !identical(batch$counts$pac_id, batch$fitted$pac_id)) {
+    stop(label, " has counts and fitted proportions for different PACs.")
+  }
+  genes <- batch$genes
+  if (!is.data.frame(genes) || !identical(as.character(genes$gene_id), unique(batch$counts$gene_id))) {
+    stop(label, " lists genes that do not match its counts.")
+  }
+  if (any(table(batch$counts$gene_id) < 2L)) stop(label, " has genes with fewer than 2 PACs.")
+  conditions <- levels(samples$condition)
+  if (is.null(conditions) || !batch$control %in% conditions ||
+    !all(batch$comparisons$treatment %in% conditions)) {
+    stop(label, " has conditions that do not match its samples.")
+  }
+  selections <- batch$selections
+  if (!is.data.frame(selections) ||
+    !all(selections$gene_id %in% genes$gene_id) ||
+    !all(selections$comparison %in% batch$comparisons$comparison) ||
+    anyDuplicated(paste(selections$gene_id, selections$comparison, sep = "\r")) ||
+    !all(genes$gene_id %in% selections$gene_id)) {
+    stop(label, " has invalid gene selections.")
+  }
+  invisible(TRUE)
+}
+
+bootstrap_state <- function(batch) {
+  samples <- batch$samples
+  sample_ids <- as.character(samples$sample_id)
+  genes <- as.character(batch$genes$gene_id)
+  rows <- split(seq_len(nrow(batch$counts)), factor(batch$counts$gene_id, levels = genes))
+  counts <- count_matrix(batch$counts, sample_ids)
+  fitted <- count_matrix(batch$fitted, sample_ids)
+  precision <- stats::setNames(as.numeric(batch$genes$precision), genes)
+  totals <- lapply(genes, function(gene_id) {
+    vapply(sample_ids, function(sample_id) {
+      bootstrap_total(counts[rows[[gene_id]], sample_id], gene_id, sample_id)
+    }, integer(1))
+  })
+  names(totals) <- genes
+  shapes <- list()
+  available <- stats::setNames(rep(FALSE, length(genes)), genes)
+  for (gene_id in genes) {
+    expected <- fitted[rows[[gene_id]], , drop = FALSE]
+    usable <- is.finite(precision[[gene_id]]) && precision[[gene_id]] > 0 &&
+      all(is.finite(expected)) && all(expected >= 0) &&
+      all(abs(colSums(expected) - 1) <= 1e-6)
+    available[[gene_id]] <- usable
+    if (usable) shapes[[gene_id]] <- pmax(expected, 1e-10) * precision[[gene_id]]
+  }
+  covariates <- setdiff(names(samples), c("sample_id", "condition"))
+  zero_levels <- c(
+    list(condition = samples$condition),
+    stats::setNames(lapply(covariates, function(covariate) samples[[covariate]]), covariates)
+  )
+  groups <- lapply(levels(samples$condition), function(condition) which(samples$condition == condition))
+  names(groups) <- levels(samples$condition)
+  list(
+    batch = batch,
+    genes = genes,
+    rows = rows,
+    feature_ids = as.character(batch$counts$pac_id),
+    sample_ids = sample_ids,
+    totals = totals,
+    shapes = shapes,
+    precision = precision,
+    available = available,
+    zero_levels = zero_levels,
+    groups = groups,
+    dm_samples = samples,
+    design = batch$design,
+    seed_parts = list(batch$params$random_seed, batch$atlas_checksum, batch$family)
+  )
+}
+
+# One Dirichlet-multinomial draw per sample at the observed gene total.
+simulate_gene_counts <- function(shapes, totals) {
+  result <- matrix(0, nrow(shapes), ncol(shapes))
+  for (column in seq_len(ncol(shapes))) {
+    draw <- stats::rgamma(nrow(shapes), shape = shapes[, column], rate = 1)
+    draw_total <- sum(draw)
+    if (!is.finite(draw_total) || draw_total <= 0) return(NULL)
+    if (totals[[column]] > 0L) {
+      result[, column] <- stats::rmultinom(1L, totals[[column]], draw / draw_total)[, 1]
+    }
+  }
+  result
+}
+
+has_zero_group <- function(values, zero_levels) {
+  for (levels in zero_levels) {
+    labels <- as.character(levels)
+    for (level in unique(labels)) {
+      if (any(rowSums(values[, labels == level, drop = FALSE]) == 0)) return(TRUE)
+    }
+  }
+  FALSE
+}
+
+# Refit simulated genes with precision held at the family estimate. dmFit fits
+# genes independently, so fitting them together changes no gene's result.
+fit_fixed_precision_batch <- function(values, state) {
+  gene_ids <- names(values)
+  if (!length(gene_ids)) return(list())
+  fit_genes <- function(ids) {
+    table <- do.call(rbind, lapply(ids, function(gene_id) {
+      matrix_values <- values[[gene_id]]
+      colnames(matrix_values) <- state$sample_ids
+      data.frame(
+        gene_id = gene_id,
+        pac_id = state$feature_ids[state$rows[[gene_id]]],
+        matrix_values,
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+    }))
+    data <- dm_data(table, state$sample_ids, state$dm_samples)
+    expression <- vapply(ids, function(gene_id) mean(colSums(values[[gene_id]])), numeric(1))
+    object <- fixed_precision_object(
+      data, state$design, state$precision, stats::median(state$precision[ids]), expression
+    )
+    fit <- DRIMSeq::dmFit(object, design = state$design, bb_model = FALSE, verbose = 0)
+    proportions_table <- DRIMSeq::proportions(fit)
+    result <- lapply(ids, function(gene_id) {
+      rows <- proportions_table$gene_id == gene_id
+      proportions <- as.matrix(proportions_table[rows, state$sample_ids, drop = FALSE])
+      index <- match(state$feature_ids[state$rows[[gene_id]]], proportions_table$feature_id[rows])
+      proportions[index, , drop = FALSE]
+    })
+    names(result) <- ids
+    result
+  }
+  batched <- tryCatch(fit_genes(gene_ids), error = function(error) error)
+  if (!inherits(batched, "error")) return(batched)
+  # A DRIMSeq error in the joint call is retried gene by gene, so one gene
+  # cannot fail the whole replicate.
+  result <- lapply(gene_ids, function(gene_id) {
+    single <- tryCatch(fit_genes(gene_id), error = function(error) NULL)
+    if (is.null(single)) NULL else single[[gene_id]]
+  })
+  names(result) <- gene_ids
+  result
+}
+
+finite_fit <- function(proportions) !is.null(proportions) && all(is.finite(proportions))
+
+bootstrap_replicate <- function(replicate_number, state) {
+  seed <- function(gene_id, purpose) {
+    do.call(stable_seed, c(state$seed_parts, list(gene_id, purpose, replicate_number)))
+  }
+  genes <- state$genes[state$available]
+  values <- list()
+  for (gene_id in genes) {
+    set.seed(seed(gene_id, "bootstrap"))
+    simulated <- simulate_gene_counts(state$shapes[[gene_id]], state$totals[[gene_id]])
+    if (!is.null(simulated)) values[[gene_id]] <- simulated
+  }
+  # Zero groups are perturbed before fitting, exactly as in the family fit.
+  perturbed <- names(values)[vapply(values, has_zero_group, logical(1), zero_levels = state$zero_levels)]
+  for (gene_id in perturbed) {
+    values[[gene_id]] <- perturb_zero_cells(values[[gene_id]], seed(gene_id, "bootstrap_zero"))
+  }
+  fits <- fit_fixed_precision_batch(values, state)
+  retry <- names(values)[vapply(names(values), function(gene_id) {
+    !finite_fit(fits[[gene_id]]) && !gene_id %in% perturbed && any(values[[gene_id]] == 0)
+  }, logical(1))]
+  if (length(retry)) {
+    for (gene_id in retry) {
+      values[[gene_id]] <- perturb_zero_cells(values[[gene_id]], seed(gene_id, "bootstrap_zero"))
+    }
+    refits <- fit_fixed_precision_batch(values[retry], state)
+    fits[retry] <- refits[retry]
+    perturbed <- c(perturbed, retry)
+  }
+  result <- lapply(state$genes, function(gene_id) {
+    proportions <- fits[[gene_id]]
+    if (!finite_fit(proportions)) return(list(success = FALSE, perturbed = FALSE))
+    means <- vapply(state$groups, function(columns) {
+      rowMeans(proportions[, columns, drop = FALSE])
+    }, numeric(nrow(proportions)))
+    if (is.null(dim(means))) means <- matrix(means, nrow = nrow(proportions))
+    colnames(means) <- names(state$groups)
+    list(success = TRUE, perturbed = gene_id %in% perturbed, means = means)
+  })
+  names(result) <- state$genes
+  result
+}
+
+bootstrap_interval_rows <- function(state, gene_id, comparison, treatment, status, replicate_results, settings) {
+  feature_ids <- state$feature_ids[state$rows[[gene_id]]]
+  rows <- data.frame(
+    comparison = comparison,
+    gene_id = gene_id,
+    feature_id = feature_ids,
+    delta_pau_ci_low = NA_real_,
+    delta_pau_ci_high = NA_real_,
+    bootstrap_successes = 0L,
+    bootstrap_perturbed = 0L,
+    bootstrap_status = status,
+    stringsAsFactors = FALSE
+  )
+  if (!identical(status, "ok")) return(rows)
+  control <- state$batch$control
+  draws <- lapply(replicate_results, `[[`, gene_id)
+  successful <- Filter(function(draw) isTRUE(draw$success), draws)
+  rows$bootstrap_successes <- length(successful)
+  rows$bootstrap_perturbed <- sum(vapply(successful, function(draw) isTRUE(draw$perturbed), logical(1)))
+  if (length(successful) < settings$min_successes) {
+    rows$bootstrap_status <- "insufficient_successes"
+    return(rows)
+  }
+  deltas <- vapply(successful, function(draw) {
+    draw$means[, treatment] - draw$means[, control]
+  }, numeric(length(feature_ids)))
+  if (is.null(dim(deltas))) deltas <- matrix(deltas, nrow = length(feature_ids))
+  rows$delta_pau_ci_low <- apply(deltas, 1, stats::quantile, probs = 0.025, names = FALSE, type = 7)
+  rows$delta_pau_ci_high <- apply(deltas, 1, stats::quantile, probs = 0.975, names = FALSE, type = 7)
+  rows
+}
+
+run_bootstrap_batch <- function(batch_path, output_path, bootstrap_workers) {
+  batch <- readRDS(batch_path)
+  if (!is.list(batch)) {
+    stop("Bootstrap batch payload must be a list.")
+  }
+  if (isTRUE(batch$empty)) {
+    write_gzip_tsv(empty_table(INTERVAL_COLUMNS), output_path)
+    return(invisible(NULL))
+  }
+  validate_bootstrap_batch(batch)
+  settings <- bootstrap_settings(batch$params)
+  state <- bootstrap_state(batch)
+  replicate_results <- list()
+  if (settings$replicates > 0L && any(state$available)) {
+    message(
+      "Bootstrap batch ", batch$batch_id, ": ", sum(state$available), " gene(s), ",
+      settings$replicates, " replicate(s)."
+    )
+    replicate_results <- bootstrap_apply(
+      seq_len(settings$replicates),
+      bootstrap_workers,
+      function(replicate_number) bootstrap_replicate(replicate_number, state)
+    )
+    broken <- vapply(replicate_results, function(result) {
+      is.null(result) || inherits(result, "try-error") || !is.list(result)
+    }, logical(1))
+    if (any(broken)) {
+      detail <- replicate_results[[which(broken)[[1]]]]
+      stop(
+        "A bootstrap worker failed in ", batch$batch_id, ": ",
+        if (inherits(detail, "try-error")) as.character(detail)[[1]] else "no result returned"
+      )
+    }
+  }
+  treatments <- stats::setNames(batch$comparisons$treatment, batch$comparisons$comparison)
+  rows <- lapply(seq_len(nrow(batch$selections)), function(index) {
+    gene_id <- batch$selections$gene_id[[index]]
+    comparison <- batch$selections$comparison[[index]]
+    status <- if (settings$replicates == 0L) {
+      "disabled"
+    } else if (!state$available[[gene_id]]) {
+      "fit_unavailable"
+    } else {
+      "ok"
+    }
+    bootstrap_interval_rows(
+      state, gene_id, comparison, treatments[[comparison]], status, replicate_results, settings
+    )
+  })
+  output <- if (length(rows)) do.call(rbind, rows) else empty_table(INTERVAL_COLUMNS)
+  write_gzip_tsv(select_columns(output, INTERVAL_COLUMNS, "The interval table"), output_path)
+}
+
+# ---- Finalize mode ----------------------------------------------------------
+
+read_bootstrap_intervals <- function(paths) {
+  if (!length(paths)) {
+    stop("No bootstrap interval files were provided for finalization.")
+  }
+  values <- lapply(paths, read_tsv)
+  invalid <- vapply(
+    values,
+    function(value) !all(INTERVAL_COLUMNS %in% names(value)),
+    logical(1)
+  )
+  if (any(invalid)) {
+    stop("A bootstrap interval file is missing required columns.")
+  }
+  intervals <- do.call(rbind, lapply(values, function(value) value[, INTERVAL_COLUMNS, drop = FALSE]))
+  if (!nrow(intervals)) return(intervals)
+  key_columns <- c("comparison", "gene_id", "feature_id")
+  invalid_keys <- vapply(
+    intervals[, key_columns, drop = FALSE],
+    function(value) any(is.na(value) | !nzchar(as.character(value))),
+    logical(1)
+  )
+  if (any(invalid_keys)) {
+    stop("Bootstrap interval rows require non-missing comparison, gene_id, and feature_id.")
+  }
+  for (column in c("delta_pau_ci_low", "delta_pau_ci_high")) {
+    intervals[[column]] <- suppressWarnings(as.numeric(intervals[[column]]))
+  }
+  counts <- lapply(c("bootstrap_successes", "bootstrap_perturbed"), function(column) {
+    suppressWarnings(as.numeric(intervals[[column]]))
+  })
+  if (any(vapply(counts, function(values) {
+    any(!is.finite(values) | values < 0 | values != floor(values))
+  }, logical(1)))) {
+    stop("Bootstrap interval successes must be non-negative integers.")
+  }
+  if (any(counts[[2]] > counts[[1]])) {
+    stop("Bootstrap interval rows report more perturbed replicates than successes.")
+  }
+  if (!all(intervals$bootstrap_status %in% BOOTSTRAP_STATUSES)) {
+    stop("Bootstrap interval rows have an unknown bootstrap_status.")
+  }
+  lower <- intervals$delta_pau_ci_low
+  upper <- intervals$delta_pau_ci_high
+  if (any(!is.na(lower) & !is.na(upper) & lower > upper)) {
+    stop("Bootstrap interval lower bounds cannot exceed upper bounds.")
+  }
+  interval_keys <- do.call(paste, c(intervals[, key_columns, drop = FALSE], sep = "\r"))
+  if (anyDuplicated(interval_keys)) {
+    stop("Bootstrap interval files contain duplicate comparison/gene/PAC rows.")
+  }
+  intervals$bootstrap_successes <- as.integer(counts[[1]])
+  intervals$bootstrap_perturbed <- as.integer(counts[[2]])
+  intervals
+}
+
+apply_bootstrap_intervals <- function(output, comparison, intervals) {
+  matches <- intervals[intervals$comparison == comparison, , drop = FALSE]
+  if (!nrow(matches)) return(output)
+  interval_keys <- paste(matches$gene_id, matches$feature_id, sep = "\r")
+  output_keys <- paste(output$gene_id, output$feature_id, sep = "\r")
+  index <- match(interval_keys, output_keys)
+  if (anyNA(index)) {
+    stop("Bootstrap intervals for ", comparison, " refer to PACs absent from its table.")
+  }
+  if (any(output$bootstrap_status[index] != "pending")) {
+    stop("Bootstrap intervals for ", comparison, " refer to PACs that were not selected.")
+  }
+  for (column in c(
+    "delta_pau_ci_low", "delta_pau_ci_high", "bootstrap_successes",
+    "bootstrap_perturbed", "bootstrap_status"
+  )) {
+    output[[column]][index] <- matches[[column]]
+  }
+  output
+}
+
+finalize_preliminary_outputs <- function(preliminary_dir, interval_paths, output_dir) {
+  if (!dir.exists(preliminary_dir)) {
+    stop("Preliminary statistics directory does not exist: ", preliminary_dir)
+  }
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  intervals <- read_bootstrap_intervals(interval_paths)
+  sources <- list.files(
+    preliminary_dir,
+    pattern = "\\.tsv\\.gz$",
+    full.names = TRUE,
+    recursive = FALSE
+  )
+  if (!length(sources)) {
+    warning("No preliminary statistics tables found in ", preliminary_dir)
+    return(invisible(NULL))
+  }
+  comparisons <- sub("\\.pacs\\.tsv\\.gz$", "", basename(sources[grepl("\\.pacs\\.tsv\\.gz$", sources)]))
+  unknown <- setdiff(unique(intervals$comparison), comparisons)
+  if (length(unknown)) {
+    stop("Bootstrap intervals name unknown comparisons: ", paste(unknown, collapse = ", "), ".")
+  }
+  for (source in sources) {
+    destination <- file.path(output_dir, basename(source))
+    if (!grepl("\\.pacs\\.tsv\\.gz$", source)) {
+      if (!file.copy(source, destination, overwrite = TRUE)) {
+        stop("Could not copy preliminary statistics file: ", source)
+      }
+      next
+    }
+    comparison <- sub("\\.pacs\\.tsv\\.gz$", "", basename(source))
+    output <- read_tsv(source)
+    output <- apply_bootstrap_intervals(output, comparison, intervals)
+    if (any(output$bootstrap_status == "pending", na.rm = TRUE)) {
+      stop("Selected PACs in ", comparison, " received no bootstrap intervals.")
+    }
+    write_gzip_tsv(output, destination)
+    events <- output[output$event_type != "none", , drop = FALSE]
+    event_path <- file.path(
+      output_dir,
+      paste0(comparison, ".events.tsv.gz")
+    )
+    write_gzip_tsv(events, event_path)
+  }
+  invisible(NULL)
+}
+
 run_bootstrap_mode <- function(arguments) {
   require_args(arguments, c("batch", "output"))
   run_bootstrap_batch(
@@ -1551,11 +2092,16 @@ run_finalize_mode <- function(arguments) {
   )
 }
 
-arguments <- parse_args(commandArgs(trailingOnly = TRUE))
-switch(
-  arguments$mode,
-  fit = run_fit_mode(arguments),
-  bootstrap = run_bootstrap_mode(arguments),
-  finalize = run_finalize_mode(arguments),
-  stop("Unknown --mode: ", arguments$mode)
-)
+main <- function(argv) {
+  arguments <- parse_args(argv)
+  load_statistics_packages()
+  switch(
+    arguments$mode,
+    fit = run_fit_mode(arguments),
+    bootstrap = run_bootstrap_mode(arguments),
+    finalize = run_finalize_mode(arguments),
+    stop("Unknown --mode: ", arguments$mode)
+  )
+}
+
+if (sys.nframe() == 0L) main(commandArgs(trailingOnly = TRUE))
