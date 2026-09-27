@@ -17,3 +17,5 @@ dag-*.html
 report-*.html
 timeline-*.html
 trace-*.txt
+.claude/worktrees/
+.claude/scheduled_tasks.lock
