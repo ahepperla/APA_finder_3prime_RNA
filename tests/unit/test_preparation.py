@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 from pathlib import Path
 
+import pysam
 import pytest
 from alignment_builders import aligned_segment, sorted_copy, write_alignment, write_reference
 
@@ -17,6 +19,7 @@ from pacusage.reference import prepare_reference
 from pacusage.tableio import read_tsv, sha256_file, write_tsv
 
 CONTIGS = [("chr1", 2000)]
+SCHEMA = Path(__file__).resolve().parents[2] / "nextflow_schema.json"
 
 
 def directory_state(directory: Path) -> dict[str, tuple[str, int]]:
@@ -43,7 +46,6 @@ def sources(tmp_path: Path) -> dict[str, Path]:
 
 
 def test_sorted_alignment_is_linked_and_hashed_once(tmp_path, sources, monkeypatch) -> None:
-    import pysam
 
     pysam.index(str(sources["sorted"]))
     before = directory_state(sources["directory"])
@@ -98,6 +100,21 @@ def test_unsorted_alignment_is_sorted_into_a_real_file(tmp_path, sources) -> Non
     assert directory_state(sources["directory"]) == before
 
 
+def test_sorted_alignment_pg_header_omits_source_path(tmp_path, sources) -> None:
+
+    before = directory_state(sources["directory"])
+    output = tmp_path / "work" / "S.bam"
+    prepare_alignment(sources["unsorted"], output, sources["reference"])
+    assert output.is_file() and not output.is_symlink()
+    with pysam.AlignmentFile(str(output), "rb") as bam:
+        header = bam.header.to_dict()
+        pg_lines = header.get("PG", [])
+        source_dir_str = str(sources["directory"])
+        for pg_entry in pg_lines:
+            assert source_dir_str not in str(pg_entry)
+    assert directory_state(sources["directory"]) == before
+
+
 def test_staged_input_link_is_replaced_not_written_through(tmp_path, sources) -> None:
     # Nextflow stages the input under the output name as a symlink.
     work = tmp_path / "work"
@@ -122,21 +139,46 @@ def test_reference_is_linked_and_indexed_beside_the_link(tmp_path, sources) -> N
     assert directory_state(sources["directory"]) == before
 
 
-def test_reference_reuses_a_valid_source_index(tmp_path, sources) -> None:
-    import pysam
+def test_reference_ignores_a_valid_source_index(tmp_path, sources) -> None:
 
     pysam.faidx(str(sources["reference"]))
     before = directory_state(sources["directory"])
+    source_fai_before = Path(f"{sources['reference']}.fai").read_bytes()
     output = tmp_path / "work" / "genome.fa"
     metadata = prepare_reference(sources["reference"], output)
-    assert metadata["action"] == "reused_index"
-    assert Path(f"{output}.fai").read_bytes() == Path(f"{sources['reference']}.fai").read_bytes()
+    assert metadata["action"] == "generated_index"
+    assert Path(f"{output}.fai").is_file()
+    assert Path(f"{sources['reference']}.fai").read_bytes() == source_fai_before
     assert directory_state(sources["directory"]) == before
 
 
 def test_reference_refuses_to_replace_its_source(sources) -> None:
     with pytest.raises(PacusageError, match="would replace its source"):
         prepare_reference(sources["reference"], sources["reference"])
+
+
+def test_reference_refuses_gzip_compressed_fasta(tmp_path, sources) -> None:
+
+    compressed = sources["directory"] / "genome.fa.gz"
+    with open(sources["reference"], "rb") as f_in:
+        with gzip.open(compressed, "wb") as f_out:
+            f_out.writelines(f_in)
+    before = directory_state(sources["directory"])
+    output = tmp_path / "work" / "genome.fa"
+    with pytest.raises(PacusageError, match="is compressed"):
+        prepare_reference(compressed, output)
+    assert directory_state(sources["directory"]) == before
+
+
+def test_reference_refuses_bgzf_compressed_fasta(tmp_path, sources) -> None:
+
+    compressed = sources["directory"] / "genome.fa.bgz"
+    pysam.tabix_compress(str(sources["reference"]), str(compressed), force=True)
+    before = directory_state(sources["directory"])
+    output = tmp_path / "work" / "genome.fa"
+    with pytest.raises(PacusageError, match="is compressed"):
+        prepare_reference(compressed, output)
+    assert directory_state(sources["directory"]) == before
 
 
 def _record(tmp_path: Path, metadata: dict) -> Path:
@@ -182,7 +224,6 @@ def test_source_check_ignores_a_sorted_copy(tmp_path, sources) -> None:
 def test_validate_hashes_no_alignment_and_writes_nothing_beside_the_fasta(
     tmp_path, sources, monkeypatch
 ) -> None:
-    import pysam
 
     cram = sources["directory"] / "S.cram"
     pysam.view(
@@ -222,7 +263,8 @@ def test_validate_hashes_no_alignment_and_writes_nothing_beside_the_fasta(
         "pacusage.cli.sha256_file", lambda path: hashed.append(Path(path).name) or real_sha256(path)
     )
     output = tmp_path / "validated"
-    assert main(["validate", "--params", str(params), "--output-dir", str(output)]) == 0
+    arguments = ["validate", "--params", str(params), "--schema", str(SCHEMA)]
+    assert main([*arguments, "--output-dir", str(output)]) == 0
 
     assert directory_state(sources["directory"]) == before
     assert not any(name.endswith((".bam", ".cram")) for name in hashed)

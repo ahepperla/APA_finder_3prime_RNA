@@ -19,7 +19,6 @@ process ANNOTATE_PACS {
     path 'pac_motifs.tsv.gz', emit: motifs
 
     script:
-    def knownArgument = params.known_pacs ? "--known-pacs '${params.known_pacs}'" : ''
     """
     pacusage annotate \
         --candidates '${candidates}' \
@@ -27,7 +26,6 @@ process ANNOTATE_PACS {
         --annotation '${annotation}' \
         --resolution '${run_resolution}' \
         --params '${resolved_params}' \
-        ${knownArgument} \
         --metadata pacs.v1.metadata.tsv.gz \
         --bed pacs.v1.bed.gz \
         --motifs pac_motifs.tsv.gz \

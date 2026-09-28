@@ -11,7 +11,9 @@ import numpy as np
 import pandas as pd
 
 
-def build_report(results_root: str | Path, output_html: str | Path) -> None:
+def build_report(
+    results_root: str | Path, output_html: str | Path, minimum_gene_total: int
+) -> None:
     root = Path(results_root)
     sections = [
         _calibration_warning_section(_locate(root, "calibration_kernel_diagnostics.tsv")),
@@ -26,16 +28,16 @@ def build_report(results_root: str | Path, output_html: str | Path) -> None:
         _combined_table_section("Strandedness", list(root.rglob("*.strandedness.tsv"))),
         _combined_table_section("Fragment filtering", list(root.rglob("*.fragment_filtering.tsv"))),
         _table_section("PAC discovery", _locate(root, "pac_discovery.tsv")),
-        _table_section("Statistical filtering", _locate(root, "statistical_filtering.tsv")),
+        _statistical_filtering_section(list(root.rglob("*.statistical_filtering.tsv.gz"))),
         _combined_table_section("Quantification", list(root.rglob("*.quantification.tsv"))),
         _atlas_summary(_locate(root, "pacs.v1.metadata.tsv.gz")),
-        _pau_qc_sections(root),
+        _pau_qc_sections(root, minimum_gene_total),
         _model_diagnostic_sections(root),
-        _statistics_sections(root / "statistics"),
+        _statistics_sections(root),
         _top_genes_section(root),
         _gene_plot_section(root),
         _table_section("Motif usage by sample", _locate(root, "motif_scores.tsv")),
-        _motif_sections(root / "motifs"),
+        _motif_sections(root),
     ]
     body = "\n".join(section for section in sections if section)
     document = f"""<!doctype html>
@@ -132,7 +134,7 @@ def _read_table(path: Path, **options: object) -> pd.DataFrame | None:
 
 def _calibration_warning_section(path: Path) -> str:
     frame = _read_table(path)
-    if frame is None or not {"status", "reason"} <= set(frame.columns):
+    if frame is None:
         return ""
     reasons = frame.loc[frame["status"] == "warning", "reason"].fillna("")
     if reasons.empty:
@@ -217,20 +219,57 @@ def _atlas_summary(path: Path) -> str:
     )
 
 
-def _pau_qc_sections(root: Path) -> str:
-    columns = {"gene_id", "pac_id", "sample_id", "pau"}
+def _statistical_filtering_section(paths: list[Path], limit: int = 200) -> str:
+    """Per-family counts of tested PACs, then the first untested PACs and why."""
+    frames = [frame for path in sorted(paths) if (frame := _read_table(path)) is not None]
+    if not frames:
+        return ""
+    frame = pd.concat(frames, ignore_index=True)
+    tested = frame["tested"].astype(str).str.lower() == "true"
+    summary = "".join(
+        f"<p>{html.escape(str(family))}: {len(rows):,} PACs, {int(rows.sum()):,} tested, "
+        f"{int((~rows).sum()):,} not tested.</p>"
+        for family, rows in tested.groupby(frame["family"], sort=True)
+    )
+    untested = frame.loc[~tested]
+    table_id = "table-statisticalfiltering"
+    table = untested.head(limit).fillna("").to_html(index=False, escape=True, table_id=table_id)
+    note = (
+        f"<p class='empty'>Showing the first {limit:,} of {len(untested):,} untested PACs.</p>"
+        if len(untested) > limit
+        else ""
+    )
+    return (
+        f"<section><h2>Statistical filtering</h2>{summary}"
+        f"<input type='search' placeholder='Filter rows' data-table-filter='{table_id}'>"
+        f"<div class='table-wrap'>{table}</div>{note}</section>"
+    )
+
+
+def _pau_qc_sections(root: Path, minimum_gene_total: int) -> str:
+    """Sample PAU correlation and PCA on genes covered in every sample.
+
+    A gene without reads in a sample has no PAU there, so only genes with at
+    least ``minimum_gene_total`` reads in every sample take part.
+    """
+    columns = {"gene_id", "pac_id", "sample_id", "pau", "gene_total"}
     frame = _read_table(
         _locate(root, "observed_pau.tsv.gz"),
         usecols=lambda name: name in columns,
     )
     if frame is None or frame.empty:
         return ""
+    covered = frame.groupby("gene_id")["gene_total"].min() >= minimum_gene_total
+    frame = frame[frame["gene_id"].isin(covered.index[covered])]
     matrix = frame.pivot_table(
-        index=["gene_id", "pac_id"], columns="sample_id", values="pau", fill_value=0
-    )
+        index=["gene_id", "pac_id"], columns="sample_id", values="pau"
+    ).dropna()
+    if matrix.empty or matrix.shape[1] < 2:
+        return ""
     correlation = matrix.corr().round(3)
     correlation.insert(0, "sample_id", correlation.index)
     correlation.index = range(len(correlation))
+
     centered = matrix.T.to_numpy(dtype=float, copy=True)
     centered -= centered.mean(axis=0, keepdims=True)
     if centered.shape[0] >= 2 and centered.shape[1] >= 1:
@@ -247,8 +286,16 @@ def _pau_qc_sections(root: Path) -> str:
         )
     else:
         pca = pd.DataFrame(columns=["sample_id", "PC1", "PC2"])
-    return _frame_section("PAU sample correlation", correlation) + _frame_section(
-        "PAU principal components", pca
+
+    genes = matrix.index.get_level_values("gene_id").nunique()
+    note = (
+        f"Genes with at least {minimum_gene_total} reads in every sample "
+        f"({genes:,} genes, {len(matrix):,} PACs)."
+    )
+
+    return (
+        _frame_section("PAU sample correlation", correlation, note=note)
+        + _frame_section("PAU principal components", pca)
     )
 
 
@@ -395,9 +442,8 @@ def _top_genes_section(root: Path) -> str:
     if not frames:
         return ""
     values = pd.concat(frames, ignore_index=True, sort=False)
-    sort_column = "gene_fdr" if "gene_fdr" in values else "pvalue"
-    values[sort_column] = pd.to_numeric(values[sort_column], errors="coerce")
-    return _frame_section("Top genes", values.sort_values(sort_column).head(50))
+    values["gene_fdr"] = pd.to_numeric(values["gene_fdr"], errors="coerce")
+    return _frame_section("Top genes", values.sort_values("gene_fdr").head(50))
 
 
 def _gene_plot_section(root: Path) -> str:
@@ -466,20 +512,20 @@ def _gene_svg(gene_id: str, values: pd.DataFrame) -> str:
     )
 
 
-def _frame_section(title: str, frame: pd.DataFrame, limit: int = 200) -> str:
+def _frame_section(title: str, frame: pd.DataFrame, limit: int = 200, note: str = "") -> str:
     if frame.empty:
         return ""
     table_id = "table-" + "".join(character for character in title.lower() if character.isalnum())
     table = frame.head(limit).fillna("").to_html(index=False, escape=True, table_id=table_id)
+    note_html = f"<p class='empty'>{html.escape(note)}</p>" if note else ""
     return (
-        f"<section><h2>{html.escape(title)}</h2>"
+        f"<section><h2>{html.escape(title)}</h2>{note_html}"
         f"<input type='search' placeholder='Filter rows' data-table-filter='{table_id}'>"
         f"<div class='table-wrap'>{table}</div></section>"
     )
 
 
-def _statistics_sections(directory: Path) -> str:
-    root = directory if directory.is_dir() else directory.parent
+def _statistics_sections(root: Path) -> str:
     return "\n".join(
         _table_section(path.name.replace(".tsv.gz", "").replace("_", " "), path)
         for pattern in ("*.events.tsv.gz", "*.pacs.tsv.gz")
@@ -487,8 +533,7 @@ def _statistics_sections(directory: Path) -> str:
     )
 
 
-def _motif_sections(directory: Path) -> str:
-    root = directory if directory.is_dir() else directory.parent
+def _motif_sections(root: Path) -> str:
     return "\n".join(
         _table_section(path.name.replace(".tsv.gz", "").replace("_", " "), path)
         for path in sorted(root.rglob("*.preference.tsv.gz"))

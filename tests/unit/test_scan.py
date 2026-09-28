@@ -1,16 +1,17 @@
-"""The one-pass alignment scan must reproduce the per-source reference passes."""
+"""The one-pass alignment scan: evidence, splice continuations, and counters."""
 
 from __future__ import annotations
 
+import gzip
 import json
 from itertools import groupby
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pysam
 import pytest
 from alignment_builders import (
     aligned_segment,
-    sorted_copy,
     to_cram,
     write_alignment,
     write_reference,
@@ -18,13 +19,6 @@ from alignment_builders import (
 
 from pacusage.cli import _iter_observation_file, main
 from pacusage.errors import PacusageError
-from pacusage.evidence import (
-    extract_evidence,
-    extract_splice_continuations,
-    write_bedgraphs,
-    write_evidence,
-    write_splice_continuations,
-)
 from pacusage.scan import (
     _scan_paired_end,
     _SourceAccumulator,
@@ -33,12 +27,12 @@ from pacusage.scan import (
     scan_alignment,
     write_scan,
 )
-from pacusage.tableio import write_tsv
+from pacusage.tableio import read_tsv
 
 CONTIGS = [("chr1", 5000), ("chr2", 5000), ("1", 5000), ("MT", 5000), ("chrM", 5000), ("0", 5000)]
 CHR1, CHR2, ONE, MT, CHRM, ZERO = range(len(CONTIGS))
-# "MT" becomes the excluded "chrM" only after the raw-name exclusion check,
-# and "0" becomes "chr3", which sorts differently from its raw name.
+# "MT" aliases to the excluded "chrM", so its reads are excluded too, and "0"
+# becomes "chr3", which sorts differently from its raw name.
 ALIASES = {"1": "chr1", "MT": "chrM", "0": "chr3"}
 FILTER_SETS = {
     "default": {
@@ -173,43 +167,6 @@ def paired_end_records() -> list[pysam.AlignedSegment]:
     return [record for group in groups for record in group]
 
 
-def assert_matches_reference(scan, alignment, reference, layout, strandedness, sources, filters):
-    assert sorted(scan.evidence) == sorted(sources)
-    for source in sources:
-        observations, filtering = extract_evidence(
-            "S", alignment, reference, layout, strandedness, source, **filters
-        )
-        assert list(scan.evidence[source].observations()) == observations, source
-        # The counter order is published in fragment_filtering.tsv.
-        assert list(scan.evidence[source].filtering.items()) == list(filtering.items()), source
-    continuations, splice_filtering = extract_splice_continuations(
-        "S", alignment, reference, layout, strandedness, **filters
-    )
-    assert scan.splice is not None
-    assert scan.splice[0] == continuations
-    assert list(scan.splice[1].items()) == list(splice_filtering.items())
-
-
-@pytest.mark.parametrize("filters", FILTER_SETS.values(), ids=FILTER_SETS)
-@pytest.mark.parametrize("strandedness", ["forward", "reverse"])
-def test_single_end_scan_matches_reference_passes(tmp_path, strandedness, filters) -> None:
-    reference = write_reference(tmp_path / "genome.fa", CONTIGS)
-    bam = write_alignment(tmp_path / "reads.bam", CONTIGS, single_end_records())
-    scan = scan_alignment("S", bam, reference, "SE", strandedness, SE_SOURCES, True, **filters)
-    assert_matches_reference(scan, bam, reference, "SE", strandedness, SE_SOURCES, filters)
-
-
-@pytest.mark.parametrize("filters", FILTER_SETS.values(), ids=FILTER_SETS)
-@pytest.mark.parametrize("strandedness", ["forward", "reverse"])
-def test_paired_end_scan_matches_reference_passes(tmp_path, strandedness, filters) -> None:
-    reference = write_reference(tmp_path / "genome.fa", CONTIGS)
-    # Prepared alignments are coordinate-sorted, so mates arrive in either order.
-    unsorted = write_alignment(tmp_path / "pairs.bam", CONTIGS, paired_end_records())
-    bam = sorted_copy(unsorted, tmp_path / "pairs.sorted.bam")
-    scan = scan_alignment("S", bam, reference, "PE", strandedness, PE_SOURCES, True, **filters)
-    assert_matches_reference(scan, bam, reference, "PE", strandedness, PE_SOURCES, filters)
-
-
 def test_single_end_scan_values_follow_the_documented_rules(tmp_path) -> None:
     reference = write_reference(tmp_path / "genome.fa", CONTIGS)
     bam = write_alignment(tmp_path / "reads.bam", CONTIGS, single_end_records())
@@ -222,13 +179,13 @@ def test_single_end_scan_values_follow_the_documented_rules(tmp_path) -> None:
     }
     # Two chr1 reads and one aliased from "1" end at 130; the duplicate is filtered.
     assert read_3p[("chr1", "+", 130)] == (3, 0)
-    # The raw "MT" contig is not excluded; its alias is "chrM". The raw chrM
-    # read at the same coordinate is excluded, so the count stays 1.
-    assert read_3p[("chrM", "+", 130)] == (1, 0)
+    # "MT" aliases to the excluded "chrM", so its read is excluded along with
+    # the raw chrM read.
+    assert ("chrM", "+", 130) not in read_3p
     # Interbase ends: 30 aligned bases from 300 end at 330, with a poly(A) clip.
     assert read_3p[("chr1", "+", 330)] == (1, 1)
     contigs = [item.contig for item in scan.evidence["read_3p"].observations()]
-    assert contigs[0] == "chr1" and contigs[-1] == "chrM" and "chr3" in contigs
+    assert contigs[0] == "chr1" and contigs[-1] == "chr3" and "chrM" not in contigs
     poly_a = [
         (item.contig, item.strand, item.coordinate)
         for item in scan.evidence["polyA_junction"].observations()
@@ -244,13 +201,13 @@ def test_single_end_scan_values_follow_the_documented_rules(tmp_path) -> None:
         ("chr2", "-", 200),
     ]
     filtering = scan.evidence["polyA_junction"].filtering
-    # 34 records, 8 filtered: 26 pass, 7 with a poly(A)-like clip.
-    assert filtering["no_poly_a_clip"] == 19
+    # 34 records, 9 filtered: 25 pass, 7 with a poly(A)-like clip.
+    assert filtering["no_poly_a_clip"] == 18
     assert filtering["accepted_fragments"] == 7
     for reason in ("low_mapq", "duplicate", "unmapped", "secondary", "supplementary"):
         assert filtering[reason] == 1, reason
     assert filtering["qc_failed"] == 1
-    assert filtering["excluded_contig"] == 1
+    assert filtering["excluded_contig"] == 2
     assert filtering["multimapped"] == 1
     continuations, splice_filtering = scan.splice
     spliced = {
@@ -320,7 +277,7 @@ def test_paired_end_scan_selects_read1_by_flag_not_order(tmp_path) -> None:
     for records in (read1_first, mate2_first):
         accumulators = [_SourceAccumulator(source) for source in PE_SOURCES]
         splice = _SpliceAccumulator()
-        filters = (20, True, True, {"chrM"})
+        filters = (20, True, True, frozenset({CHRM}))
         _scan_paired_end(_CollatedStream(records), "forward", filters, True, accumulators, splice)
         results.append(
             (
@@ -408,26 +365,21 @@ def test_scan_manifest_reports_missing_files(tmp_path) -> None:
         read_scan_manifest(manifest)
 
 
-def _cli_inputs(tmp_path: Path, readthrough: bool, endpoint_model: str) -> dict[str, Path]:
+def _cli_inputs(
+    tmp_path: Path, readthrough: bool, endpoint_model: str, resolved_params
+) -> dict[str, Path]:
     reference = write_reference(tmp_path / "genome.fa", CONTIGS)
     annotation = tmp_path / "genes.gtf"
     annotation.write_text(
         'chr1\ttest\texon\t101\t130\t.\t+\t.\tgene_id "g1"; transcript_id "t1";\n'
     )
-    params = tmp_path / f"params-{readthrough}.json"
-    params.write_text(
-        json.dumps(
-            {
-                "input": str(tmp_path / "samples.tsv"),
-                "assembly": "test",
-                "fasta": str(reference),
-                "gtf": str(annotation),
-                "excluded_contigs": ["chrM"],
-                "constitutive_readthrough_filter": readthrough,
-                "calibration_min_genes": 1,
-                "pac_min_sample_count": 1,
-            }
-        )
+    params = tmp_path / f"resolved_params-{readthrough}.yaml"
+    resolved_params(
+        params,
+        excluded_contigs=["chrM"],
+        constitutive_readthrough_filter=readthrough,
+        calibration_min_genes=1,
+        pac_min_sample_count=1,
     )
     resolution = tmp_path / f"S.{endpoint_model}.resolution.json"
     resolution.write_text(
@@ -525,61 +477,50 @@ def _extract_cli(manifest: Path, run_resolution: Path, params: Path, directory: 
     return arguments
 
 
-def _legacy_extract(inputs, source, endpoint_model, readthrough, directory: Path) -> None:
-    """The extract-evidence command as it read the alignment before the scan."""
-    directory.mkdir()
-    filters = {
-        "min_mapq": 20,
-        "require_unique": True,
-        "require_proper_pair": True,
-        "exclude_duplicates": True,
-        "excluded_contigs": ["chrM"],
-        "contig_aliases": {},
-    }
-    observations, qc = extract_evidence(
-        "S", inputs["bam"], inputs["reference"], "SE", "forward", source, **filters
-    )
-    write_evidence(observations, directory / OUTPUTS["--tsv"], directory / OUTPUTS["--parquet"])
-    write_bedgraphs(
-        observations, directory / OUTPUTS["--plus-track"], directory / OUTPUTS["--minus-track"]
-    )
-    if endpoint_model == "proximal_tag" and readthrough:
-        continuations, splice_qc = extract_splice_continuations(
-            "S", inputs["bam"], inputs["reference"], "SE", "forward", **filters
-        )
-        splice_qc["splice_filter_enabled"] = True
-    else:
-        continuations = []
-        splice_qc = {
-            "splice_filter_enabled": False,
-            "splice_records_examined": 0,
-            "splice_accepted_fragments": 0,
-            "splice_direct_edges": 0,
-            "splice_unique_continuations": 0,
-        }
-    write_splice_continuations(continuations, directory / OUTPUTS["--splice-continuations"])
-    qc.update(splice_qc)
-    write_tsv([qc], directory / OUTPUTS["--qc"])
-
-
 @pytest.mark.parametrize("readthrough", [True, False])
 @pytest.mark.parametrize("endpoint_model", ["proximal_tag", "exact_boundary"])
 @pytest.mark.parametrize("source", SE_SOURCES)
-def test_extract_from_scan_writes_the_legacy_outputs(
-    tmp_path, source, endpoint_model, readthrough
+def test_extract_from_scan_writes_the_run_source_outputs(
+    tmp_path, source, endpoint_model, readthrough, resolved_params
 ) -> None:
-    inputs = _cli_inputs(tmp_path, readthrough, "auto")
+    inputs = _cli_inputs(tmp_path, readthrough, "auto", resolved_params)
     manifest = _scan_cli(inputs, tmp_path / "scan")
     run_resolution = _run_resolution(tmp_path / "run.json", source, endpoint_model, "forward")
-    assert main(_extract_cli(manifest, run_resolution, inputs["params"], tmp_path / "new")) == 0
-    _legacy_extract(inputs, source, endpoint_model, readthrough, tmp_path / "legacy")
-    for name in OUTPUTS.values():
-        new, legacy = tmp_path / "new" / name, tmp_path / "legacy" / name
-        assert new.read_bytes() == legacy.read_bytes(), name
+    output = tmp_path / "output"
+    assert main(_extract_cli(manifest, run_resolution, inputs["params"], output)) == 0
+
+    scan = read_scan_manifest(manifest)
+    parquet, filtering = scan.sources[source]
+    expected = pq.read_table(parquet).to_pylist()
+    assert expected, "the fixture should give this source some evidence"
+    assert pq.read_table(output / OUTPUTS["--parquet"]).to_pylist() == expected
+    assert read_tsv(output / OUTPUTS["--tsv"]) == [
+        {key: str(value) for key, value in row.items()} for row in expected
+    ]
+    for strand, option in (("+", "--plus-track"), ("-", "--minus-track")):
+        with gzip.open(output / OUTPUTS[option], "rt") as handle:
+            lines = handle.read().splitlines()
+        assert lines == [
+            f"{row['contig']}\t{row['coordinate']}\t{row['coordinate'] + 1}\t{row['count']}"
+            for row in expected
+            if row["strand"] == strand
+        ]
+    (qc,) = read_tsv(output / OUTPUTS["--qc"])
+    uses_splice = endpoint_model == "proximal_tag" and readthrough
+    assert {key: qc[key] for key in filtering} == {
+        key: str(value) for key, value in filtering.items()
+    }
+    assert qc["splice_filter_enabled"] == str(uses_splice)
+    splice_rows = read_tsv(output / OUTPUTS["--splice-continuations"])
+    assert splice_rows == (read_tsv(scan.splice[0]) if uses_splice else [])
+    if uses_splice:
+        assert splice_rows, "the fixture should give splice continuations"
 
 
-def test_extract_rejects_a_scan_with_other_strandedness(tmp_path, capsys) -> None:
-    inputs = _cli_inputs(tmp_path, True, "auto")
+def test_extract_rejects_a_scan_with_other_strandedness(
+    tmp_path, capsys, resolved_params
+) -> None:
+    inputs = _cli_inputs(tmp_path, True, "auto", resolved_params)
     manifest = _scan_cli(inputs, tmp_path / "scan")
     run_resolution = _run_resolution(tmp_path / "run.json", "read_3p", "exact_boundary", "reverse")
     with pytest.raises(SystemExit) as error:
@@ -590,9 +531,11 @@ def test_extract_rejects_a_scan_with_other_strandedness(tmp_path, capsys) -> Non
     )
 
 
-def test_extract_rejects_a_scan_without_needed_splice_continuations(tmp_path, capsys) -> None:
+def test_extract_rejects_a_scan_without_needed_splice_continuations(
+    tmp_path, capsys, resolved_params
+) -> None:
     # An exact endpoint model at scan time skips splice continuations.
-    inputs = _cli_inputs(tmp_path, True, "exact_boundary")
+    inputs = _cli_inputs(tmp_path, True, "exact_boundary", resolved_params)
     manifest = _scan_cli(inputs, tmp_path / "scan")
     assert read_scan_manifest(manifest).splice is None
     run_resolution = _run_resolution(tmp_path / "run.json", "read_3p", "proximal_tag", "forward")
@@ -600,3 +543,20 @@ def test_extract_rejects_a_scan_without_needed_splice_continuations(tmp_path, ca
         main(_extract_cli(manifest, run_resolution, inputs["params"], tmp_path / "new"))
     assert error.value.code == 2
     assert "did not collect splice continuations" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("excluded", [["chrM"], ["MT"]])
+def test_excluded_contigs_match_raw_or_aliased_names(tmp_path, excluded) -> None:
+    reference = write_reference(tmp_path / "genome.fa", CONTIGS)
+    records = [
+        aligned_segment("raw_mt", 0, MT, 100, "30M"),
+        aligned_segment("kept", 0, CHR2, 100, "30M"),
+    ]
+    bam = write_alignment(tmp_path / "reads.bam", CONTIGS, records)
+    scan = scan_alignment(
+        "S", bam, reference, "SE", "forward", ["read_3p"], False,
+        excluded_contigs=excluded, contig_aliases={"MT": "chrM"},
+    )
+    evidence = scan.evidence["read_3p"]
+    assert [(item.contig, item.coordinate) for item in evidence.observations()] == [("chr2", 130)]
+    assert evidence.filtering["excluded_contig"] == 1

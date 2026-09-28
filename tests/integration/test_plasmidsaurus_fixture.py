@@ -1,10 +1,10 @@
-"""The Plasmidsaurus-like fixture must calibrate as proximal and yield its PACs.
+"""The Plasmidsaurus-like fixture calibrates as proximal-tag and yields its PACs.
 
-The fixture's sample sheet once reused the exact-boundary alignments, whose
-reads end on each PAC. Calibrated against the annotated distal ends of genes
-with PACs 50 nt apart, that kernel had spikes at 0, 50, and 100 nt. Every
-endpoint then matched several peaks equally well, and proximal discovery
-accepted no PAC.
+Its reads end 20-280 nt upstream of their PACs (see
+tests/fixtures/build_plasmidsaurus_fixture.py). The last test calibrates the
+exact-boundary fixture under the Plasmidsaurus profile instead: those reads end
+on PACs 50 nt apart, so the kernel has spikes at 0, 50, and 100 nt and the
+calibration warns.
 """
 
 from __future__ import annotations
@@ -15,20 +15,16 @@ from pathlib import Path
 import pytest
 
 from pacusage.cli import main
-from pacusage.evidence import (
-    extract_evidence,
-    extract_splice_continuations,
-    write_evidence,
-    write_splice_continuations,
-)
 from pacusage.tableio import read_tsv
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "plasmidsaurus"
 EXACT_FIXTURE = FIXTURE.parent
 
 
-def _calibrate(work: Path, reference: Path, annotation: Path, samples: list[dict]) -> Path:
-    """Calibrate SE forward read_3p samples under the Plasmidsaurus profile."""
+def _calibrate(
+    work: Path, reference: Path, annotation: Path, samples: list[dict], resolved_params
+) -> Path:
+    """Calibrate SE forward read_3p samples as the Plasmidsaurus profile would."""
     # A link keeps htslib from writing an index beside the fixture FASTA.
     fasta = work / "genome.fa"
     fasta.symlink_to(reference)
@@ -37,20 +33,19 @@ def _calibrate(work: Path, reference: Path, annotation: Path, samples: list[dict
         "sample_id\tcondition\n"
         + "".join(f"{row['sample_id']}\t{row['condition']}\n" for row in samples)
     )
-    params = work / "params.json"
-    params.write_text(
-        json.dumps(
-            {
-                "input": str(sheet),
-                "assembly": "synthetic",
-                "fasta": str(fasta),
-                "gtf": str(annotation),
-                # The test profile's value for these small fixtures.
-                "calibration_min_genes": 20,
-            }
-        )
-    )
+    params = work / "resolved_params.yaml"
+    # The test profile's value for these small fixtures.
+    resolved_params(params, calibration_min_genes=20)
+
+    transcript_ends = work / "calibration_transcript_ends.tsv"
+    assert main([
+        "calibration-reference",
+        "--annotation", str(annotation),
+        "--output", str(transcript_ends),
+    ]) == 0
+
     resolutions = []
+    calibrations = []
     for row in samples:
         resolution = work / f"{row['sample_id']}.resolution.json"
         resolution.write_text(
@@ -66,39 +61,70 @@ def _calibrate(work: Path, reference: Path, annotation: Path, samples: list[dict
             )
         )
         resolutions.append(str(resolution))
-    alignments = [row["alignment"] for row in samples]
-    arguments = ["calibrate", "--samples", str(sheet), "--alignments", *alignments]
-    arguments += ["--resolutions", *resolutions, "--reference", str(fasta)]
-    arguments += ["--annotation", str(annotation), "--params", str(params)]
-    arguments += ["--output", str(work / "library_calibration.tsv")]
-    arguments += ["--kernel", str(work / "kernel.tsv"), "--resolution", str(work / "run.json")]
-    arguments += ["--kernel-diagnostics", str(work / "kernel_diagnostics.tsv")]
-    assert main(arguments) == 0
+
+        calibration = work / f"{row['sample_id']}.calibration.json"
+        assert main([
+            "scan-alignment",
+            "--sample-id", row["sample_id"],
+            "--alignment", row["alignment"],
+            "--resolution", str(resolution),
+            "--reference", str(fasta),
+            "--transcript-ends", str(transcript_ends),
+            "--params", str(params),
+            "--calibration", str(calibration),
+            "--output-prefix", str(work / f"{row['sample_id']}.scan"),
+        ]) == 0
+        calibrations.append(str(calibration))
+
+    assert main([
+        "aggregate-calibration",
+        "--samples", str(sheet),
+        "--calibrations", *calibrations,
+        "--params", str(params),
+        "--output", str(work / "library_calibration.tsv"),
+        "--kernel", str(work / "kernel.tsv"),
+        "--resolution", str(work / "run.json"),
+        "--kernel-diagnostics", str(work / "kernel_diagnostics.tsv"),
+    ]) == 0
+
     return params
 
 
 @pytest.fixture(scope="module")
-def discovery(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
+def discovery(tmp_path_factory: pytest.TempPathFactory, resolved_params) -> dict[str, object]:
     """Calibrate the fixture's samples and discover PACs as the pipeline does."""
     work = tmp_path_factory.mktemp("plasmidsaurus")
     samples = [
         {**row, "alignment": str(FIXTURE / row["alignment"])}
         for row in read_tsv(FIXTURE / "samples.tsv")
     ]
-    params = _calibrate(work, FIXTURE / "genome.fa", FIXTURE / "genes.gtf", samples)
-    fasta = work / "genome.fa"
+    params = _calibrate(
+        work, FIXTURE / "genome.fa", FIXTURE / "genes.gtf", samples, resolved_params
+    )
     sheet = work / "normalized_samples.tsv"
-    alignments = [row["alignment"] for row in samples]
 
     evidence, continuations = [], []
-    for row, alignment in zip(samples, alignments, strict=True):
+    for row in samples:
         sample_id = row["sample_id"]
-        observations, _ = extract_evidence(sample_id, alignment, fasta, "SE", "forward", "read_3p")
-        write_evidence(observations, work / f"{sample_id}.tsv.gz", work / f"{sample_id}.parquet")
-        splices, _ = extract_splice_continuations(sample_id, alignment, fasta, "SE", "forward")
-        write_splice_continuations(splices, work / f"{sample_id}.splice.tsv.gz")
+        scan_manifest = work / f"{sample_id}.scan.filtering.json"
+
+        assert main([
+            "extract-evidence",
+            "--sample-id", sample_id,
+            "--scan", str(scan_manifest),
+            "--resolution", str(work / "run.json"),
+            "--params", str(params),
+            "--tsv", str(work / f"{sample_id}.tsv.gz"),
+            "--parquet", str(work / f"{sample_id}.parquet"),
+            "--plus-track", str(work / f"{sample_id}.plus.bedgraph"),
+            "--minus-track", str(work / f"{sample_id}.minus.bedgraph"),
+            "--splice-continuations", str(work / f"{sample_id}.splice.tsv.gz"),
+            "--qc", str(work / f"{sample_id}.extract_qc.tsv"),
+        ]) == 0
+
         evidence.append(str(work / f"{sample_id}.parquet"))
         continuations.append(str(work / f"{sample_id}.splice.tsv.gz"))
+
     arguments = ["cluster", "--evidence", *evidence, "--splice-continuations", *continuations]
     arguments += ["--samples", str(sheet), "--resolution", str(work / "run.json")]
     arguments += ["--kernel", str(work / "kernel.tsv"), "--params", str(params)]
@@ -154,7 +180,9 @@ def test_fixture_kernel_passes_the_calibration_warning(discovery) -> None:
     assert row["minimum_resolvable_separation"] == resolution
 
 
-def test_exact_boundary_reads_calibrated_as_plasmidsaurus_warn(tmp_path: Path) -> None:
+def test_exact_boundary_reads_calibrated_as_plasmidsaurus_warn(
+    tmp_path: Path, resolved_params
+) -> None:
     # The original failure: reads that end on PACs 50 nt apart calibrate to a
     # kernel of PAC spacings, which now warns before discovery finds nothing.
     conditions = {"DMSO_1": "DMSO", "DMSO_2": "DMSO", "TRA_1": "TreatmentA", "TRA_2": "TreatmentA"}
@@ -166,7 +194,9 @@ def test_exact_boundary_reads_calibrated_as_plasmidsaurus_warn(tmp_path: Path) -
         }
         for sample_id, condition in conditions.items()
     ]
-    _calibrate(tmp_path, EXACT_FIXTURE / "genome.fa", EXACT_FIXTURE / "genes.gtf", samples)
+    _calibrate(
+        tmp_path, EXACT_FIXTURE / "genome.fa", EXACT_FIXTURE / "genes.gtf", samples, resolved_params
+    )
     [row] = read_tsv(tmp_path / "kernel_diagnostics.tsv")
     assert (row["status"], row["kernel_modes"], row["minimum_resolvable_separation"]) == (
         "warning",

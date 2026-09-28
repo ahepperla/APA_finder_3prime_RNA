@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that two PACusage result directories hold byte-identical files.
 
-tests/run_nextflow.sh uses this to show that a fresh run reproduces an earlier
+tests/pipeline/run_nextflow.sh uses this to show that a fresh run reproduces an earlier
 one. Only the output directory may differ: it appears in
 manifest/resolved_params.yaml and in that file's checksum in
 manifest/run_manifest.json.

@@ -15,11 +15,10 @@ workflow DISCOVERY {
 
     main:
     BUILD_CALIBRATION_REFERENCE(annotation)
-    calibration_transcript_ends = BUILD_CALIBRATION_REFERENCE.out.transcript_ends.first()
     SCAN_ALIGNMENT(
         samples,
         reference,
-        calibration_transcript_ends,
+        BUILD_CALIBRATION_REFERENCE.out.transcript_ends,
         resolved_params
     )
     calibration_summaries = SCAN_ALIGNMENT.out.calibration
@@ -30,8 +29,8 @@ workflow DISCOVERY {
         calibration_summaries,
         resolved_params
     )
-    run_resolution = AGGREGATE_CALIBRATION.out.resolution.first()
-    kernel = AGGREGATE_CALIBRATION.out.kernel.first()
+    run_resolution = AGGREGATE_CALIBRATION.out.resolution
+    kernel = AGGREGATE_CALIBRATION.out.kernel
     // A doubtful proximal-tag kernel is reported, not fatal: the run goes on.
     AGGREGATE_CALIBRATION.out.kernel_diagnostics
         .splitCsv(header: true, sep: '\t')

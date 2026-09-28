@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import random
-import tempfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict
 from pathlib import Path
@@ -107,7 +106,7 @@ def record_filter_reason(
     min_mapq: int,
     require_unique: bool,
     exclude_duplicates: bool,
-    excluded_contigs: set[str],
+    excluded_reference_ids: set[int] | frozenset[int],
 ) -> str | None:
     if record.is_unmapped:
         return "unmapped"
@@ -121,7 +120,7 @@ def record_filter_reason(
         return "duplicate"
     if record.mapping_quality < min_mapq:
         return "low_mapq"
-    if record.reference_name in excluded_contigs:
+    if record.reference_id in excluded_reference_ids:
         return "excluded_contig"
     if require_unique and record.has_tag("NH") and int(record.get_tag("NH")) != 1:
         return "multimapped"
@@ -135,7 +134,7 @@ def pair_filter_reason(
     require_unique: bool,
     require_proper_pair: bool,
     exclude_duplicates: bool,
-    excluded_contigs: set[str],
+    excluded_reference_ids: set[int] | frozenset[int],
 ) -> str | None:
     if first.query_name != second.query_name:
         return "query_name_mismatch"
@@ -143,7 +142,7 @@ def pair_filter_reason(
         return "mate_designation"
     for record in (first, second):
         reason = record_filter_reason(
-            record, min_mapq, require_unique, exclude_duplicates, excluded_contigs
+            record, min_mapq, require_unique, exclude_duplicates, excluded_reference_ids
         )
         if reason:
             return reason
@@ -154,255 +153,7 @@ def pair_filter_reason(
     return None
 
 
-def extract_evidence(
-    sample_id: str,
-    alignment: str | Path,
-    reference: str | Path,
-    layout: str,
-    strandedness: str,
-    evidence_source: str,
-    min_mapq: int = 20,
-    require_unique: bool = True,
-    require_proper_pair: bool = True,
-    exclude_duplicates: bool = True,
-    excluded_contigs: Iterable[str] = (),
-    contig_aliases: dict[str, str] | None = None,
-    threads: int = 1,
-) -> tuple[list[EvidenceObservation], dict[str, Any]]:
-    if layout not in {"SE", "PE"}:
-        raise PacusageError(f"Sample {sample_id}: layout must resolve to SE or PE, not {layout!r}.")
-    if strandedness not in {"forward", "reverse"}:
-        raise PacusageError(f"Sample {sample_id}: strandedness must resolve to forward or reverse.")
-    if layout == "SE" and evidence_source == "fragment_3p":
-        raise PacusageError(f"Sample {sample_id}: fragment_3p requires paired-end data.")
-
-    excluded = set(excluded_contigs)
-    contig_aliases = contig_aliases or {}
-    aggregates: dict[tuple[str, str, int], list[int]] = defaultdict(lambda: [0, 0])
-    filtering: Counter[str] = Counter()
-    alignment = Path(alignment)
-    mode = "rc" if alignment.suffix.lower() == ".cram" else "rb"
-
-    if layout == "SE":
-        with pysam.AlignmentFile(str(alignment), mode, reference_filename=str(reference)) as handle:
-            for record in handle.fetch(until_eof=True):
-                filtering["records_examined"] += 1
-                reason = record_filter_reason(
-                    record, min_mapq, require_unique, exclude_duplicates, excluded
-                )
-                if reason:
-                    filtering[reason] += 1
-                    continue
-                strand = transcript_strand(record, strandedness)
-                clip = terminal_soft_clip(record, strand)
-                if evidence_source == "polyA_junction" and not is_poly_a_like(clip):
-                    filtering["no_poly_a_clip"] += 1
-                    continue
-                coordinate = read_boundary(record, strand, evidence_source)
-                contig = contig_aliases.get(record.reference_name, record.reference_name)
-                key = (contig, strand, coordinate)
-                aggregates[key][0] += 1
-                aggregates[key][1] += int(is_poly_a_like(clip))
-                filtering["accepted_fragments"] += 1
-    else:
-        with tempfile.TemporaryDirectory(prefix="pacusage-collate-") as temporary:
-            collated = Path(temporary) / "collated.bam"
-            try:
-                pysam.collate(
-                    "-@",
-                    str(max(1, threads)),
-                    "-o",
-                    str(collated),
-                    str(alignment),
-                    catch_stdout=False,
-                )
-            except Exception as error:
-                raise PacusageError(f"Could not name-collate {alignment}.") from error
-            with pysam.AlignmentFile(str(collated), "rb") as handle:
-                for group in _query_name_groups(handle.fetch(until_eof=True)):
-                    filtering["query_groups_examined"] += 1
-                    primary = [
-                        record
-                        for record in group
-                        if not record.is_secondary and not record.is_supplementary
-                    ]
-                    if len(primary) != 2:
-                        filtering["orphan_or_multiple_primary"] += 1
-                        continue
-                    first, second = primary
-                    reason = pair_filter_reason(
-                        first,
-                        second,
-                        min_mapq,
-                        require_unique,
-                        require_proper_pair,
-                        exclude_duplicates,
-                        excluded,
-                    )
-                    if reason:
-                        filtering[reason] += 1
-                        continue
-                    read1 = first if first.is_read1 else second
-                    strand = transcript_strand(read1, strandedness)
-                    selected = read1
-                    clip = terminal_soft_clip(selected, strand)
-                    if evidence_source == "polyA_junction" and not is_poly_a_like(clip):
-                        filtering["no_poly_a_clip"] += 1
-                        continue
-                    coordinate = (
-                        fragment_boundary(first, second, strand)
-                        if evidence_source == "fragment_3p"
-                        else read_boundary(selected, strand, evidence_source)
-                    )
-                    contig = contig_aliases.get(selected.reference_name, selected.reference_name)
-                    key = (contig, strand, coordinate)
-                    aggregates[key][0] += 1
-                    aggregates[key][1] += int(is_poly_a_like(clip))
-                    filtering["accepted_fragments"] += 1
-
-    observations = [
-        EvidenceObservation(
-            sample_id=sample_id,
-            contig=contig,
-            strand=strand,
-            coordinate=coordinate,
-            count=values[0],
-            poly_a_clip_count=values[1],
-            evidence_source=evidence_source,
-        )
-        for (contig, strand, coordinate), values in sorted(aggregates.items())
-    ]
-    filtering["unique_observations"] = len(observations)
-    filtering["sample_id"] = sample_id
-    filtering["layout"] = layout
-    filtering["strandedness"] = strandedness
-    filtering["evidence_source"] = evidence_source
-    return observations, dict(filtering)
-
-
-def extract_splice_continuations(
-    sample_id: str,
-    alignment: str | Path,
-    reference: str | Path,
-    layout: str,
-    strandedness: str,
-    min_mapq: int = 20,
-    require_unique: bool = True,
-    require_proper_pair: bool = True,
-    exclude_duplicates: bool = True,
-    excluded_contigs: Iterable[str] = (),
-    contig_aliases: dict[str, str] | None = None,
-    threads: int = 1,
-) -> tuple[list[SpliceContinuation], dict[str, Any]]:
-    """Aggregate direct exon-to-next-exon CIGAR evidence for one sample."""
-    if layout not in {"SE", "PE"}:
-        raise PacusageError(f"Sample {sample_id}: layout must resolve to SE or PE, not {layout!r}.")
-    if strandedness not in {"forward", "reverse"}:
-        raise PacusageError(f"Sample {sample_id}: strandedness must resolve to forward or reverse.")
-
-    excluded = set(excluded_contigs)
-    contig_aliases = contig_aliases or {}
-    aggregates: Counter[tuple[str, str, int, int, int, int]] = Counter()
-    filtering: Counter[str] = Counter()
-    alignment = Path(alignment)
-    mode = "rc" if alignment.suffix.lower() == ".cram" else "rb"
-
-    if layout == "SE":
-        with pysam.AlignmentFile(str(alignment), mode, reference_filename=str(reference)) as handle:
-            for record in handle.fetch(until_eof=True):
-                filtering["splice_records_examined"] += 1
-                reason = record_filter_reason(
-                    record, min_mapq, require_unique, exclude_duplicates, excluded
-                )
-                if reason:
-                    filtering[f"splice_{reason}"] += 1
-                    continue
-                strand = transcript_strand(record, strandedness)
-                contig = contig_aliases.get(record.reference_name, record.reference_name)
-                edges = direct_splice_continuations(record, strand)
-                for edge in edges:
-                    aggregates[(contig, strand, *edge)] += 1
-                filtering["splice_accepted_fragments"] += 1
-                filtering["splice_direct_edges"] += len(edges)
-    else:
-        with tempfile.TemporaryDirectory(prefix="pacusage-collate-") as temporary:
-            collated = Path(temporary) / "collated.bam"
-            try:
-                pysam.collate(
-                    "-@",
-                    str(max(1, threads)),
-                    "-o",
-                    str(collated),
-                    str(alignment),
-                    catch_stdout=False,
-                )
-            except Exception as error:
-                raise PacusageError(f"Could not name-collate {alignment}.") from error
-            with pysam.AlignmentFile(str(collated), "rb") as handle:
-                for group in _query_name_groups(handle.fetch(until_eof=True)):
-                    filtering["splice_query_groups_examined"] += 1
-                    primary = [
-                        record
-                        for record in group
-                        if not record.is_secondary and not record.is_supplementary
-                    ]
-                    if len(primary) != 2:
-                        filtering["splice_orphan_or_multiple_primary"] += 1
-                        continue
-                    first, second = primary
-                    reason = pair_filter_reason(
-                        first,
-                        second,
-                        min_mapq,
-                        require_unique,
-                        require_proper_pair,
-                        exclude_duplicates,
-                        excluded,
-                    )
-                    if reason:
-                        filtering[f"splice_{reason}"] += 1
-                        continue
-                    read1 = first if first.is_read1 else second
-                    strand = transcript_strand(read1, strandedness)
-                    contig = contig_aliases.get(read1.reference_name, read1.reference_name)
-                    edges = {
-                        edge
-                        for record in (first, second)
-                        for edge in direct_splice_continuations(record, strand)
-                    }
-                    for edge in edges:
-                        aggregates[(contig, strand, *edge)] += 1
-                    filtering["splice_accepted_fragments"] += 1
-                    filtering["splice_direct_edges"] += len(edges)
-
-    continuations = [
-        SpliceContinuation(
-            sample_id=sample_id,
-            contig=contig,
-            strand=strand,
-            upstream_start=upstream_start,
-            upstream_end=upstream_end,
-            downstream_start=downstream_start,
-            downstream_end=downstream_end,
-            count=count,
-        )
-        for (
-            contig,
-            strand,
-            upstream_start,
-            upstream_end,
-            downstream_start,
-            downstream_end,
-        ), count in sorted(aggregates.items())
-    ]
-    filtering["splice_unique_continuations"] = len(continuations)
-    filtering["sample_id"] = sample_id
-    filtering["splice_layout"] = layout
-    filtering["splice_strandedness"] = strandedness
-    return continuations, dict(filtering)
-
-
-def _query_name_groups(
+def query_name_groups(
     records: Iterable[pysam.AlignedSegment],
 ) -> Iterator[list[pysam.AlignedSegment]]:
     current_name: str | None = None
@@ -525,6 +276,7 @@ def infer_strandedness(
     maximum_sampled: int,
     decision_fraction: float,
     random_seed: int,
+    contig_aliases: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     index = ExonBinIndex(exons)
     alignment = Path(alignment)
@@ -532,6 +284,7 @@ def infer_strandedness(
     reservoir: list[tuple[bool, str]] = []
     eligible = 0
     rng = random.Random(random_seed)
+    aliases = contig_aliases or {}
     with pysam.AlignmentFile(str(alignment), mode, reference_filename=str(reference)) as handle:
         for record in handle.fetch(until_eof=True):
             if (
@@ -541,8 +294,9 @@ def infer_strandedness(
                 or (record.is_paired and not record.is_read1)
             ):
                 continue
+            query_contig = aliases.get(record.reference_name, record.reference_name)
             overlaps = index.query(
-                record.reference_name, record.reference_start, record.reference_end
+                query_contig, record.reference_start, record.reference_end
             )
             genes = {(feature.gene_id, feature.strand) for feature in overlaps}
             if len(genes) != 1:

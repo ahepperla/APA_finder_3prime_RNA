@@ -24,13 +24,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: conda-incubator/setup-miniconda@v3
         with:
-          environment-file: envs/test.yml
-          activate-environment: pacusage-test
+          environment-file: envs/pacusage.yml
+          activate-environment: pacusage
           auto-activate-base: false
+      # The Nextflow version on the project's cluster.
       - uses: nf-core/setup-nextflow@v2
         with:
-          version: "24.04.4"
+          version: "25.04.7"
       - shell: bash -el {0}
         run: |
           pip install --no-deps -e .
-          tests/run_nextflow.sh
+          tests/pipeline/run_nextflow.sh

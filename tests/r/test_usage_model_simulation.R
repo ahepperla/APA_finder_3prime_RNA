@@ -1,23 +1,23 @@
-# Statistical simulation checks for scripts/fit_usage_model.R (plan section
+# Statistical simulation checks for scripts/fit_usage_model.R (design section
 # "Statistical Simulation"): null calibration, effect direction and size,
 # recovery of gained and lost PACs, stage-wise error, count-scaling
 # invariance, and bootstrap interval coverage.
 #
-# Usage: Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R [seed]
+# Usage: Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R [seed]
 #
 # Thresholds sit at about 2-3x nominal error rates because DRIMSeq is liberal
-# for overdispersed genes at 3-4 replicates (DECISIONS.md, 2026-09-27). Interval
+# for overdispersed genes at 3-4 replicates (docs/decisions.md, 2026-09-27). Interval
 # coverage is about 88% at a nominal 95%, which the project lead accepted; S6
 # guards the coverage pooled over all 60 PACs at 0.75.
 
 arguments <- commandArgs(trailingOnly = TRUE)
 if (!length(arguments) %in% c(1L, 2L)) {
-  stop("Usage: Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R [seed]")
+  stop("Usage: Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R [seed]")
 }
 script <- normalizePath(arguments[[1]], mustWork = TRUE)
 seed <- if (length(arguments) == 2L) as.integer(arguments[[2]]) else 11L
 test_file <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[[1]])
-source(file.path(dirname(normalizePath(test_file)), "r", "usage_model_helpers.R"))
+source(file.path(dirname(normalizePath(test_file)), "usage_model_helpers.R"))
 
 model <- load_usage_model(script)
 work <- tempfile("pacusage-simulation-")

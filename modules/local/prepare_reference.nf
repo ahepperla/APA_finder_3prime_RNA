@@ -7,26 +7,20 @@ process PREPARE_REFERENCE {
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: 'reference_preparation.tsv'
     publishDir "${params.outdir}/prepared_reference", mode: 'copy',
-        pattern: 'genome.fa*', enabled: params.save_prepared_reference
+        pattern: 'genome.fa*', enabled: params.save_prepared_reference.toString() == 'true'
 
     input:
     path fasta, stageAs: 'source/*'
 
+    // The FASTA and its index travel together, so no step rebuilds the index.
     output:
-    path 'genome.fa', emit: fasta
-    path 'genome.fa.fai', emit: fai
+    tuple path('genome.fa'), path('genome.fa.fai'), emit: reference
     path 'reference_preparation.tsv', emit: metadata
 
     script:
     """
-    SOURCE=\$(python -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' '${fasta}')
-    FAI=""
-    if [[ -f "\${SOURCE}.fai" ]]; then
-        FAI="--fai \${SOURCE}.fai"
-    fi
     pacusage prepare-reference \
         --fasta '${fasta}' \
-        \${FAI} \
         --output genome.fa \
         --metadata reference_preparation.tsv
     """

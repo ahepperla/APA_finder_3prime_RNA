@@ -1,384 +1,430 @@
 # PACusage
 
-PACusage is a Nextflow DSL2 pipeline for discovering polyadenylation-site
-clusters (PACs) from deduplicated BAM or CRAM files and testing differential
-PAC usage. It keeps protocol calibration separate from atlas construction,
-uses a condition-blind frozen atlas, quantifies raw fragment counts, and tests
-each treatment against its declared control.
+PACusage is a Nextflow pipeline for 3′-end RNA-seq. It finds polyadenylation
+site clusters (PACs) in BAM or CRAM alignments, counts the reads at each PAC,
+and tests every treatment against its own control for changes in PAC usage:
+the share of a gene's reads at each of its PACs.
 
-The implementation follows the design in
-[`pacusage_hpc_implementation_plan.md`](pacusage_hpc_implementation_plan.md).
-Version 0.1 supports exact-boundary and calibrated proximal-tag evidence,
-single- and paired-end alignments, GTF/GFF3 annotation, known-PAC rescue,
-DRIMSeq/stageR testing, motif summaries, browser tracks, and a portable HTML
-report.
+It keeps a few things strictly separate:
+
+- **Protocol calibration and discovery.** The library's 3′-end behavior is
+  calibrated against annotated transcript ends before any PAC is called.
+- **Discovery and testing.** One condition-blind PAC atlas is built from all
+  samples, frozen, and only then counted and tested.
+- **Comparisons.** Each treatment is compared only with the control it names
+  in the sample sheet.
+
+Counts are raw read counts; PAU (PAC usage) is a PAC's count divided by its
+gene's total, with no pseudocounts. Differential usage is modeled with DRIMSeq
+and adjusted with stageR.
+
+The design, including every statistical choice, is in
+[docs/design.md](docs/design.md). Decisions made while building it are in
+[docs/decisions.md](docs/decisions.md).
+
+## Contents
+
+- [Requirements](#requirements)
+- [Set up on the cluster](#set-up-on-the-cluster)
+- [Inputs](#inputs)
+- [Run](#run)
+- [Outputs](#outputs)
+- [How it works](#how-it-works)
+- [Statistics](#statistics)
+- [Reproducibility and -resume](#reproducibility-and--resume)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
 
 ## Requirements
 
-- Nextflow 24.04 or newer
-- Java 17 or newer
-- Conda/Mamba for the `conda` profile, or Apptainer for the `apptainer` profile
-- A POSIX-like execution environment
+- Nextflow 24.04 or newer, with Java 17 or newer. CI runs the tests with
+  Nextflow 25.04.7.
+- Apptainer, for Slurm runs. Conda works too, mainly for local runs.
+- Deduplicated BAM or CRAM files. Trimming, alignment, and duplicate marking
+  happen before PACusage.
+- An uncompressed genome FASTA, and a GTF or GFF3 annotation for the same
+  assembly.
 
-Read trimming, alignment, and deduplication happen before PACusage.
+## Set up on the cluster
 
-## Quick Start
+Clone the pipeline and build its image once, on a machine with network access:
 
-Create a tab-separated sample sheet. Control rows have a genuinely empty final
-field, not the word `NA`.
+```bash
+git clone https://github.com/ahepperla/APA_finder_3prime_RNA.git pacusage
+cd pacusage
+apptainer build --fakeroot containers/pacusage.sif containers/Apptainer.def
+```
+
+`--fakeroot` needs user-namespace support; omit it on a build service that
+runs as root. The build needs only Apptainer and network access: the image
+installs its own Conda environment, from `envs/pacusage.yml`.
+
+The image contains the PACusage Python package. **Rebuild it after every
+`git pull`**, so the Python code in the image matches the R and Nextflow code
+in the checkout. After that, runs need no network access; the image and inputs
+can be copied to an offline cluster, with `container:` pointing at the image.
+
+## Inputs
+
+### Sample sheet
+
+A tab-separated file with one row per sample:
 
 ```text
 sample_id	alignment	condition	control
-DMSO_1	/data/a.bam	DMSO	
-DMSO_2	/data/b.bam	DMSO	
-TRA_1	/data/c.bam	TreatmentA	DMSO
-TRA_2	/data/d.bam	TreatmentA	DMSO
+DMSO_1	bams/dmso_1.bam	DMSO
+DMSO_2	bams/dmso_2.bam	DMSO
+TRA_1	bams/treatment_a_1.bam	TreatmentA	DMSO
+TRA_2	bams/treatment_a_2.bam	TreatmentA	DMSO
 ```
 
-Create `analysis.yaml`:
+| Column | Meaning |
+|---|---|
+| `sample_id` | Unique; letters, digits, `.`, `_`, and `-` only. |
+| `alignment` | BAM or CRAM, relative to the sample sheet. Sorted or not; PACusage sorts and indexes as needed. |
+| `condition` | The sample's condition. |
+| `control` | The condition it is compared with. Leave it **empty** (not `NA`) for a control condition. |
+
+The rules:
+- Every condition names one control, consistently across its samples.
+- Every control is used by at least one treatment.
+- Controls can chain, as in `WT → disease_vehicle → disease_drug`: a
+  condition can be tested against its control and serve as another
+  condition's control. There can be no cycles.
+- Each condition needs at least two biological replicates. For an explicitly
+  exploratory run, set `insufficient_replicates_policy: warn`.
+
+Optional columns are `replicate`, `batch`, `donor`, `layout`, `strandedness`,
+`library_profile`, and `evidence_source`; the last four override the matching
+parameter for that sample. Any other column can be used as a model covariate
+by naming it in `model_covariates`. Covariates are categorical and must be
+filled in for every sample.
+
+### analysis.yaml
+
+Parameters go in a YAML file passed with `-params-file`. Four are required:
 
 ```yaml
 input: samples.tsv
+assembly: GRCh38            # used in PAC IDs
+fasta: /refs/GRCh38.primary_assembly.genome.fa
+gtf: /refs/gencode.v46.annotation.gtf
 outdir: results
-assembly: GRCh38
-fasta: /reference/GRCh38.fa
-gtf: /reference/gencode.gtf
 ```
 
-Run locally:
+A typical HPC file adds the Slurm settings and the directories Apptainer must
+see:
 
-```bash
-nextflow run /path/to/pacusage \
-  -profile local,conda \
-  -params-file analysis.yaml \
-  -resume
+```yaml
+library_profile: plasmidsaurus_3prime
+slurm_account: my_lab
+slurm_partition: general
+scratch: /work/users/me       # work directory goes to <scratch>/pacusage-work
+bind_paths:                   # every directory holding inputs, as a YAML list
+  - /proj/my_lab
+  - /work/users/me
 ```
 
-Run on Slurm:
+`examples/analysis.yaml` has both. Relative paths in the YAML are resolved
+against the directory you launch from. Values given on the command line (for
+example `--min_mapq 30`) override the YAML. `nextflow run . --help` lists
+every parameter with its default, and
+[nextflow_schema.json](nextflow_schema.json) holds their full definitions.
+
+List parameters (`bind_paths`, `excluded_contigs`, `model_covariates`) must be
+YAML lists; a command-line value is not split.
+
+### Optional reference files
+
+- **`known_pacs`**: a BED6 file of known PACs, such as a PolyASite atlas. Each
+  record's PAC is its 3′ edge in transcript orientation: `end` on the plus
+  strand, `start` on the minus strand. Known PACs mark atlas matches, and a
+  known PAC with fewer reads than a novel one needs can be kept as
+  `known_rescue_only`.
+- **`chromosome_aliases`**: a two-column TSV mapping alignment contig names
+  to FASTA and annotation names, for example `1` to `chr1`.
+- **`pas_motif_catalog`**: a TSV of `motif`, `class`, and optional
+  `priority`, replacing the built-in poly(A)-signal catalog.
+
+### What PACusage never does to your files
+
+Sources are never modified, and nothing is written beside them. The prepared
+FASTA and every sorted alignment are **symbolic links** to your files, and any
+index is built in the work directory. Only an unsorted alignment is copied,
+into a sorted file in the work directory. Keep the sources in place and
+unchanged until the analysis is finished; each step that reads an alignment
+checks that its size and modification time still match. With Apptainer,
+`bind_paths` must cover every directory the links point into.
+
+## Run
+
+On Slurm, with Apptainer:
 
 ```bash
 nextflow run /path/to/pacusage \
   -profile slurm,apptainer \
   -params-file analysis.yaml \
-  -c institution.config \
   -resume
 ```
 
-The Slurm profile separates CPU-parallel BAM work from serial, memory-heavy
-steps. A job that runs out of memory or time is retried up to twice, with more
-memory and more time on each attempt. Completed tasks remain reusable with
-`-resume`; the statistics steps rerun when `scripts/fit_usage_model.R` changes.
-Each direct comparison family first runs its whole-family DRIMSeq fit, then
-scatters selected bootstrap genes into independent batches before a
-deterministic family-level merge.
+Run Nextflow itself from a login or interactive node, for example inside
+`tmux` or a long-running batch job; it submits every step as its own Slurm
+job. Site-wide settings, such as a default cluster queue or module loads, can
+go in a Nextflow config file passed with `-c institution.config`.
 
-`FIT_USAGE_MODEL` receives eight CPUs by default. Increase only that process
-with `--statistics_cpus 16`; those cores parallelize DRIMSeq's family-wide
-fits and tests.
-
-Genes with a PAC that has no reads in some condition cannot be fitted as they
-are. For those genes, the family is refitted `dm_zero_sensitivity_repeats`
-times (5 by default). Each refit replaces their zero counts with small seeded
-values between 0 and 0.1, following DRIMSeq's `addUniform` rule. The reported
-result is the median of the refits. PACs whose effect changes direction or
-spreads by more than `dm_zero_max_delta_pau_spread`, or that fewer than 80%
-of the refits can fit, are flagged `zero_boundary_unstable` and left untested. These perturbed values are used
-only for fitting and never appear in output tables. A condition with no reads
-at all for a gene leaves that gene untested in the comparisons that use the
-condition (`model_status` is `group_without_counts`).
-
-Bootstrap intervals hold each gene's precision at the family-fit estimate, so
-every replicate needs one refit of the proportions, or two when a simulated
-zero group needs the same perturbation. One draw gives every
-comparison in the family its interval. In simulations with four replicates per
-group, nominal 95% intervals covered the true change in PAU 80-93% of the
-time (about 88% on average), because they do not include uncertainty in the
-precision.
-`bootstrap_status` records why an interval is missing.
-
-Bootstrap work uses separate four-core jobs by default; tune their allocation
-with `--statistics_bootstrap_cpus 4` and genes per job with
-`--statistics_bootstrap_batch_size 500`. At most eight batch jobs are submitted
-at once by default; tune that cap with `--statistics_bootstrap_max_forks 8`.
-Each statistics attempt requests 12 hours of walltime and each bootstrap
-attempt 6 hours, multiplied by the attempt number on retry. To skip intervals
-in an exploratory run, set `--dm_bootstrap_replicates 0`. Setting
-`--dm_bootstrap_include_candidates false` leaves p-values and event calls
-unchanged, but omits bootstrap intervals for non-significant candidate genes.
-
-stageR's stage-wise procedure confirms both PACs of a two-PAC gene together.
-When such a gene passes the screen, both PACs report a `pac_fdr` of 0.
-
-Build the default Apptainer image once on a networked system:
+Locally, with Conda:
 
 ```bash
-apptainer build --fakeroot containers/pacusage.sif containers/Apptainer.def
+nextflow run /path/to/pacusage -profile local,conda -params-file analysis.yaml -resume
 ```
 
-The build host does not need Conda, Mamba, or micromamba. The Miniforge base
-image supplies Conda inside the build. Apptainer, network access, and either
-fakeroot support or privileged build access are required. Omit `--fakeroot`
-when using a privileged build service.
+The profiles are:
+- `slurm`: submits to Slurm with `slurm_account`, `slurm_partition`, and
+  `slurm_qos`;
+- `local`: runs on this machine;
+- `apptainer`: uses `containers/pacusage.sif`, or the image named by
+  `container`;
+- `conda`: builds `envs/pacusage.yml`;
+- `test`: runs the small built-in fixture.
 
-The SIF and all analysis inputs can then be moved to an offline cluster. Set
-`container` in YAML when the image is stored elsewhere.
+### Resources
 
-Some HPC installations do not automatically expose shared filesystems inside
-Apptainer. Add their host roots to `analysis.yaml`:
+Each step has a resource label in `conf/base.config`. A step killed for memory
+or time (exit status 137, 140, or 143) is retried up to twice, with its memory
+and time limits multiplied by the attempt number. The statistics have their
+own settings:
 
-```yaml
-container: /project/software/PACusage/containers/pacusage.sif
-bind_paths:
-  - /vast
-```
-
-PACusage passes each entry as an Apptainer bind mount with the same host and
-container path. Nextflow work directories are mounted separately.
-
-Prepared alignments, their indexes, and the prepared FASTA are symbolic links
-to your source files, not copies. Only an unsorted alignment is sorted into a
-new file, and a missing index is generated in the work directory. Therefore:
-- keep the source files in place and unmodified until the analysis is
-  accepted;
-- with Apptainer, make sure `bind_paths` covers their directories.
-
-Each step that reads a linked alignment first checks that the file's size and
-modification time still match what `PREPARE_ALIGNMENT` recorded. If they
-don't, the step fails and asks for a rerun with `-resume`. The
-`save_prepared_alignments` and `save_prepared_reference` options still
-publish real copies.
-
-Explicit command-line values override YAML values:
-
-```bash
-nextflow run /path/to/pacusage \
-  -profile local,conda \
-  -params-file analysis.yaml \
-  --min_mapq 30 \
-  -resume
-```
-
-Use `nextflow run /path/to/pacusage --help` for the required inputs and
-[`nextflow_schema.json`](nextflow_schema.json) for all parameters and defaults.
-
-## Library Profiles
-
-`generic_3prime` is the default. It tests compatible evidence sources and
-requires a reproducible, clearly preferred calibration model.
-
-`plasmidsaurus_3prime` defaults to single-end, forward-stranded `read_3p`
-evidence and a `proximal_tag` endpoint model. The BAM evidence must remain
-compatible with those defaults.
-
-`exact_boundary` is for assays preserving the transcript/poly(A) junction. It
-prefers `polyA_junction` evidence when enough genes support it and otherwise
-uses the profile-compatible aligned edge.
-
-Calibration is parallelized by sample. Nextflow first builds one compact table
-of annotated transcript ends, then submits one `SCAN_ALIGNMENT` task per
-BAM/CRAM, and finally combines the small per-sample summaries into the
-run-level calibration files. On Slurm, a 48-sample run can therefore schedule
-up to 48 independent jobs instead of scanning all alignments in one
-large-memory job. Each scan reads its alignment once, name-collating a
-paired-end file once, for every candidate evidence source together:
-- calibration summaries;
-- aggregated end observations;
-- splice continuations;
-- filtering counts.
-
-After calibration picks the run's evidence source, `EXTRACT_3PRIME_EVIDENCE`
-writes that source's evidence from the scan without reading the alignment
-again.
-
-Calibration also checks the pooled offset kernel and writes the result to
-`qc/calibration_kernel_diagnostics.tsv`. Read ends scattered around one site
-give a kernel with one mode. A proximal-tag run warns when:
-- the kernel, smoothed over its own minimum resolvable separation, has more
-  than one separated mode; or
-- the samples' median central interval is more than 6 times that separation.
-
-A kernel of PAC spacings looks like this, for example when exact-boundary
-reads run under a proximal-tag profile, or when unannotated alternative
-polyadenylation sites lie near the annotated ends that calibration uses. The
-warning appears in the Nextflow log and at the top of the report, and the run
-goes on. Check that the library profile suits the data before trusting its
-proximal-tag PACs. Exact-boundary runs record the same values with status
-`not_applicable`, because exact discovery does not assign reads through the
-kernel.
-
-When multiple library chemistries resolve differently, run them separately.
-A batch term cannot recover information lost through incompatible endpoint
-definitions.
-
-## Sample Sheet
-
-Required columns are `sample_id`, `alignment`, `condition`, and `control`.
-Paths are resolved relative to the sample sheet.
-
-Optional columns include `replicate`, `batch`, `donor`, `layout`,
-`strandedness`, `library_profile`, and `evidence_source`. Additional columns
-can be included in the model by naming them in `model_covariates`.
-
-Every condition must have one consistent direct control value. A blank control
-marks a root control condition. Nested comparisons are supported: a condition
-may be tested against its own control and also serve as the control for another
-condition, such as `WT -> disease_vehicle -> disease_drug`. Control
-relationships must be acyclic. By default every modeled condition needs two
-biological replicates.
-
-## Coordinates and Interpretation
-
-PACusage uses zero-based interbase coordinates internally and in PAC IDs.
-Exact-boundary BED entries represent `[coordinate, coordinate + 1)`;
-proximal-tag BED entries span `[region_start, region_end)`.
-
-An **end observation** is a transcript-oriented aligned boundary. It is called
-an exact PAC only after the selected protocol and calibration support
-nucleotide resolution. Proximal-tag libraries produce estimated PAC
-coordinates and resolution groups.
-
-The two discovery modes remain separate:
-
-- `exact_boundary` clusters observed cleavage boundaries directly and reports
-  nucleotide-scale representatives.
-- `proximal_tag` bins endpoints (25 nt by default), convolves each
-  chromosome/strand signal with the calibrated offset kernel, finds regional
-  score peaks, and merges peaks closer than the calibrated minimum resolvable
-  separation. The atlas reports `region_start`, `region_end`, and
-  `resolution_nt`; its representative coordinate is not a claimed
-  single-nucleotide cleavage site.
-
-Discovery and quantification stream the per-sample Parquet evidence files.
-This avoids expanding every endpoint over every kernel offset and keeps
-large, many-sample runs bounded by one chromosome/strand group at a time.
-
-Candidate support is replicate-coherent: `pac_min_supporting_samples` must be
-met by samples from at least one condition. Evidence from unrelated conditions
-cannot be combined merely to pass the discovery threshold. The atlas remains
-condition-blind otherwise: direction and treatment effect are not used during
-discovery, and the final atlas is the union of candidates supported by any
-condition. Whole-number values such as `2` require that many samples. Values
-strictly between zero and one are fractions of the samples in a condition,
-rounded up; for example, `0.5` requires three of five replicates.
-
-For `proximal_tag` libraries, PACusage additionally guards against ordinary
-aligned endpoints in splice-continued exons. It derives immediate
-exon-to-next-exon edges from full-read CIGAR `N` operations, then applies the
-post-discovery `constitutive_readthrough` filter. A candidate is rejected only
-when its representative coordinate is in an upstream CIGAR exon block and
-direct downstream continuation meets the threshold independently in every
-condition. This does not use PAS annotation, endpoint prominence, or a
-treatment effect to create candidates.
-
-The default is intentionally strict:
-`constitutive_readthrough_min_junction_count: 2` requires two direct
-continuation reads in a qualifying sample, and
-`constitutive_readthrough_min_replicate_support: all` requires every replicate
-within every condition. This avoids overloading `1`: as with
-`pac_min_supporting_samples`, a numeric `1` means one replicate. The setting
-can instead be a fraction in `(0, 1)`, rounded up within each condition, or an
-absolute count. A condition that
-does not meet this continuation requirement protects its candidate, allowing a
-condition-specific terminal exon to remain eligible for downstream testing.
-The per-sample continuation tables are written to `evidence/` for audit.
-
-PAU is the raw PAC count divided by all assigned PAC counts for that gene in
-one sample. No pseudocount is added to count or observed-PAU matrices.
+| Parameter | Default | Controls |
+|---|---|---|
+| `statistics_cpus` | 8 | CPUs for each comparison family's model fit |
+| `statistics_bootstrap_cpus` | 4 | CPUs for each bootstrap batch job |
+| `statistics_bootstrap_batch_size` | 500 | genes per bootstrap batch job |
+| `statistics_bootstrap_max_forks` | 8 | bootstrap batch jobs running at once |
+| `dm_bootstrap_replicates` | 200 | bootstrap replicates per gene; `0` skips intervals |
 
 ## Outputs
 
-The main output directories are:
+```text
+results/
+  manifest/    resolved_params.yaml, normalized_samples.tsv, input_checksums.tsv,
+               software_versions.tsv, run_manifest.json, library_resolution.json,
+               calibration_kernel.tsv
+  qc/          input validation, control mapping, reference and alignment
+               preparation, strandedness, library calibration, kernel
+               diagnostics, fragment filtering, PAC discovery, quantification
+  evidence/    per-sample read-end tables (TSV and Parquet) and splice
+               continuations
+  tracks/      per-sample plus- and minus-strand bedGraphs of read ends
+  atlas/       pacs.v1.bed.gz, pacs.v1.metadata.tsv.gz, pacs.v1.sha256,
+               rejected_candidates.tsv.gz
+  counts/      pac_counts.tsv.gz (samples as columns), pac_counts.long.parquet,
+               gene_totals.tsv.gz, observed_pau.tsv.gz
+  statistics/  per comparison: CONDITION_vs_CONTROL.genes / .pacs / .events;
+               per family: FAMILY.gene_omnibus and FAMILY.statistical_filtering;
+               fitted_pau.tsv.gz, gene_precision.tsv.gz
+  motifs/      pac_motifs.tsv.gz, motif_scores.tsv, per-comparison motif
+               preference and exploratory k-mer enrichment tables
+  report/      index.html, a self-contained report
+```
 
-- `manifest/`: resolved parameters, normalized samples, checksums, versions
-- `qc/`: validation, preparation, calibration, filtering, and conservation
-- `evidence/`: aggregate sample-level end observations
-- `atlas/`: versioned PAC BED and metadata
-- `counts/`: raw PAC counts, gene totals, and observed PAU
-- `statistics/`: family omnibus and treatment-versus-control tests and events
-- `motifs/`: motif preference results
-- `tracks/`: separate non-negative plus/minus bedGraph files
-- `report/index.html`: self-contained report
+`prepared_reference/`, `prepared_alignments/`, and `counts/per_sample/` also
+appear when `save_prepared_reference`, `save_prepared_alignments`, or
+`save_intermediates` is set.
 
-Motif outputs retain the broad `primary_motif_class` and the exact matched PAS
-in both genomic DNA (`primary_pas_motif`) and RNA (`primary_pas_motif_rna`)
-notation.
+A PAC ID such as `PACv1.GRCh38.chr1.+.1234567` holds the atlas version,
+assembly, contig, strand, and the PAC's representative coordinate. Coordinates
+are zero-based and interbase, so a plus-strand PAC at 1234567 is the boundary
+after the 1,234,567th base. In the atlas BED, an exact-boundary PAC is
+`[coordinate, coordinate + 1)` and a proximal-tag PAC is its region
+`[region_start, region_end)`.
 
-Prepared references, alignments, and per-sample count tables stay in the
-Nextflow cache unless their `save_*` options are enabled.
+The `.pacs` tables are the main results: one row per tested PAC, with raw and
+fitted PAU per group, the change in PAU, `pac_fdr`, the bootstrap interval,
+and the event call. The `.events` tables keep only the PACs with an event:
+`gained`, `lost`, `increased_usage`, `decreased_usage`, `dominant_switch`, or
+`complexity_gain` / `complexity_loss`. `gained_candidate` and `lost_candidate`
+mark detection-supported changes without a stable p-value; they are not
+confirmed calls.
+
+## How it works
+
+1. **Validate.** The parameters, sample sheet, references, and alignment
+   contigs are checked. The R statistics packages are loaded alongside, so a
+   missing one stops the run within minutes.
+2. **Prepare.** The FASTA and each alignment are linked and indexed, or
+   sorted if needed. Each alignment is hashed once, for
+   `manifest/input_checksums.tsv`.
+3. **Strandedness.** It is inferred per sample from reads over unambiguous
+   exons, unless the sample sheet or the profile sets it.
+4. **Scan and calibrate.** Each alignment is read once to collect read ends
+   for every candidate evidence source. Calibration then compares them with
+   the annotated ends of genes whose transcripts share one end. It picks one
+   evidence source and endpoint model for the whole run, and builds the
+   offset kernel. Samples that calibrate differently stop the run: analyze
+   different protocols separately.
+5. **Discover.** One condition-blind atlas is built from all samples, and a
+   PAC must be supported by replicates within at least one condition:
+   - **Exact-boundary** libraries cluster read ends directly, at nucleotide
+     resolution.
+   - **Proximal-tag** libraries find peaks of the kernel-matched signal, and
+     report each PAC with its resolution interval rather than as a cleavage
+     site. Candidates inside exon blocks that are spliced onward in every
+     condition are rejected as readthrough.
+6. **Annotate.** Genes, poly(A) signals, internal-priming flags, and known-PAC
+   matches are added, and the atlas is frozen and checksummed.
+7. **Count.** Each sample's read ends are assigned to the frozen atlas, giving
+   raw counts, gene totals, and PAU.
+8. **Test.** Each comparison family (a control and the treatments that name
+   it) is fitted and tested. Motif-class preference and an exploratory k-mer
+   enrichment follow.
+9. **Report.** Everything is summarized in `report/index.html`.
+
+### Library profiles
+
+| `library_profile` | Use for | Behavior |
+|---|---|---|
+| `generic_3prime` (default) | Any 3′-end protocol | Calibrates every compatible evidence source and requires one to be clearly best. |
+| `plasmidsaurus_3prime` | Plasmidsaurus 3′ tag-seq | Single-end, forward-stranded `read_3p` ends, modeled as proximal tags. |
+| `exact_boundary` | Assays that keep the transcript/poly(A) junction | Uses poly(A)-junction ends when enough genes have them, otherwise the aligned 3′ edge. |
+
+`endpoint_model` and `evidence_source` can override what calibration picks.
+
+For proximal-tag runs, calibration also checks the pooled kernel and writes
+`qc/calibration_kernel_diagnostics.tsv`. Read ends scattered around one site
+give a kernel with a single mode. A kernel with several separated modes, or
+one far wider than its resolution, warns in the Nextflow log and at the top
+of the report. The run continues, but the warning usually means the profile
+does not suit the data, or that unannotated alternative ends lie near the
+annotated ones calibration uses.
+
+## Statistics
+
+- **Filtering.** Each comparison family filters its own samples' counts.
+  - A gene needs `min_gene_total` reads and at least two PACs that pass.
+  - A PAC needs `min_site_count` reads, `min_site_usage` of its gene's reads,
+    and reads in `min_test_supporting_samples` samples.
+  - `statistics/FAMILY.statistical_filtering.tsv.gz` lists every PAC as
+    tested, or with the reasons it was not.
+- **Model.** DRIMSeq fits a Dirichlet-multinomial model per gene with the
+  design `~ model_covariates + condition`, with the family's control as the
+  reference.
+  - The family-wide test is descriptive.
+  - Each treatment's own gene-level test is the screen. stageR confirms PACs
+    within screened genes at `site_fdr`.
+  - A reported significant PAC passes both `gene_fdr` and `site_fdr`. stageR
+    confirms both PACs of a two-PAC gene together, so both report a
+    `pac_fdr` of 0 when the gene passes.
+- **Genes with a group without reads.** A gene with a PAC that has no reads
+  in some group can't be fitted as it is.
+  - It is refitted `dm_zero_sensitivity_repeats` times, with its zeros
+    replaced by small seeded values (DRIMSeq's `addUniform` rule), and the
+    median result is reported. These values never appear in any count or
+    PAU table.
+  - A PAC whose effect changes direction, spreads by more than
+    `dm_zero_max_delta_pau_spread`, or fits in fewer than 80% of the refits
+    is flagged `zero_boundary_unstable` and left untested.
+  - These refits are seeded from `random_seed` and the atlas. With another
+    seed, a stabilized gene's precision and p-values can move by orders of
+    magnitude while its change in PAU barely moves, so read them alongside
+    `model_status` (`drimseq_add_uniform`).
+  - A condition with no reads at all for a gene leaves that gene untested in
+    its comparisons (`model_status` `group_without_counts`).
+- **Intervals.** A parametric bootstrap gives a 95% interval for the change
+  in PAU in screened genes and detection candidates.
+  - The intervals hold each gene's precision at its fitted value. In
+    simulations with four replicates per group, they covered the true change
+    in about 88% of cases (80-93%), so read them as approximate.
+  - `bootstrap_status` says why an interval is missing.
+- **Motif preference.** A limma model on the same design tests whether a
+  treatment shifts usage toward PACs with a given poly(A)-signal class. It
+  uses genes with at least `min_gene_total` reads in every sample, and each
+  gene counts equally.
+- **k-mer enrichment** is exploratory. It is a Cochran-Mantel-Haenszel test
+  per k-mer, among gained and increased PACs, stratified by gene.
+
+## Reproducibility and -resume
+
+Every run records:
+- the resolved parameters;
+- the input checksums;
+- the software versions, including the R packages;
+- a checksum of the frozen atlas.
+
+Gzip files carry no timestamps and every random step is seeded, so a fresh
+rerun with the same inputs, parameters, and software reproduces every
+published file byte for byte.
+
+Keep the Nextflow work directory until the analysis is final: `-resume` reuses
+finished steps from it.
+
+- **Which steps rerun.** Every step from the alignment scan onward reads the
+  resolved parameters, so changing any parameter reruns them all. That
+  includes `outdir`, the `save_*` flags, and the Slurm and CPU settings.
+  Alignment preparation and strandedness inference are reused unless their
+  own inputs change. Set those parameters before the first run.
+- **After updating PACusage.** Nextflow does not track the Python package, so
+  start a fresh run: use a new work directory, or leave out `-resume`. The R
+  statistics script is tracked, and changes to it rerun the statistics.
+
+## Troubleshooting
+
+- **`Invalid parameters: ...`**: the message names each bad parameter, what
+  it must be, and what it means. Check `analysis.yaml` against `--help`.
+- **`strandedness is ambiguous`**: too few reads overlap unambiguous exons, or
+  the orientation is mixed. Set `strandedness` for the samples if the
+  protocol is known.
+- **`Samples use incompatible library profiles`**, **`do not resolve to one
+  compatible endpoint model`**, or **`No evidence source passed the
+  calibration reproducibility threshold`**: the samples don't calibrate
+  alike. Run each protocol separately, or set `library_profile`,
+  `endpoint_model`, or `evidence_source` when the protocol is known.
+- **`No PAC candidates passed discovery`**:
+  - `qc/pac_discovery.tsv` and `atlas/rejected_candidates.tsv.gz` say why
+    each candidate was rejected;
+  - a calibration kernel warning earlier in the log often names the cause.
+- **`Source alignment ... is not readable here`**: the linked source is not
+  visible inside the container. Add its directory to `bind_paths`.
+- **`Source alignment ... changed after preparation`**: a source file was
+  modified or replaced during the run. Restore it, or rerun with `-resume` so
+  that preparation records the new file.
+- **`FASTA ... is compressed`**: decompress it (`gunzip` or `bgzip -d`) and
+  point `fasta` at the uncompressed file.
 
 ## Development
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-pytest
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/ruff check src tests
+.venv/bin/python -m pytest
 ```
 
-The statistics tests need the pipeline's R packages (DRIMSeq, stageR, limma,
-and yaml). Point `R_LIBS` at a local library if they are not installed
-globally:
+The R tests need DRIMSeq, stageR, limma, BiocParallel, and yaml. Set
+`R_LIBS` to a library that has them:
 
 ```bash
-Rscript tests/test_usage_model.R scripts/fit_usage_model.R
-Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
 ```
 
-The integration fixture can be generated with:
+`tests/pipeline/run_nextflow.sh` runs everything end to end, with `.venv/bin`
+first on `PATH`. It builds the fixtures (`tests/fixtures/build_fixture.py`)
+and runs the R tests, then runs the `test` profile and checks:
+- the results, and that a fresh rerun reproduces every file;
+- that a mixed-protocol sample sheet stops before discovery;
+- the Plasmidsaurus-like fixture;
+- that exact-boundary reads run as Plasmidsaurus tags warn at calibration.
 
-```bash
-python tests/fixtures/build_fixture.py
-nextflow run . -profile test,conda -resume
-```
-
-`tests/run_nextflow.sh` runs the R tests and the fixture pipeline, then
-checks the results. It also checks that:
-- the fixture files are unchanged afterwards;
-- a fresh run in a new work directory reproduces every published file;
-- a sample sheet mixing two protocols fails at calibration, before discovery;
-- the Plasmidsaurus-like fixture runs end to end and passes
-  `tests/verify_plasmidsaurus.py`;
-- exact-boundary reads run under the Plasmidsaurus profile warn at
-  calibration, then stop at ANNOTATE_PACS.
-
-`build_fixture.py` also writes that Plasmidsaurus-like fixture, to
-`tests/fixtures/plasmidsaurus/`. It has its own reference and annotation, and
-its reads end 20-280 nt upstream of their PACs, so it exercises proximal-tag
-calibration, discovery, and quantification. To run it by hand, pass absolute
-paths:
-
-```bash
-nextflow run . -profile test,conda \
-  --input "$PWD/tests/fixtures/plasmidsaurus/samples.tsv" \
-  --fasta "$PWD/tests/fixtures/plasmidsaurus/genome.fa" \
-  --gtf "$PWD/tests/fixtures/plasmidsaurus/genes.gtf" \
-  --endpoint_model auto --outdir results-plasmidsaurus
-```
-
-If proximal-tag discovery accepts no PAC at all, the run stops at
-ANNOTATE_PACS. The error names `qc/pac_discovery.tsv` and
-`atlas/rejected_candidates.tsv.gz`, which explain why. A calibration kernel
-warning earlier in the log often points to the cause.
-
-The statistical process requires DRIMSeq, stageR, and limma. The supplied
-Conda files install them from Bioconda and pin DRIMSeq to 1.38.0, the version
-the statistics were validated with. Runs are network-independent after the
-environment or container has been prepared.
-
-## Reproducibility
-
-PACusage never modifies source FASTA or alignment files, and never writes
-beside them. It records all of the following:
-- input checksums, with each alignment hashed once by its own
-  `PREPARE_ALIGNMENT` task;
-- resolved parameters;
-- software versions;
-- preparation actions;
-- a checksum of the frozen atlas.
-
-Gzip files are written without timestamps. So a rerun with the same inputs,
-parameters, and software reproduces every published file byte for byte,
-including the atlas checksum that seeds the statistics.
-
-Nextflow work directories provide resumability; retain them until the
-analysis is accepted.
+| Path | Contents |
+|---|---|
+| `main.nf`, `workflows/`, `subworkflows/local/`, `modules/local/` | The Nextflow pipeline, one process per module file |
+| `nextflow.config`, `conf/`, `nextflow_schema.json` | Parameters, profiles, resources, and the parameter schema |
+| `src/pacusage/` | The Python package behind every `pacusage` step |
+| `scripts/fit_usage_model.R` | The statistics: DRIMSeq, stageR, bootstrap, events, motif preference |
+| `bin/pacusage` | The command Nextflow tasks run |
+| `containers/`, `envs/` | The Apptainer recipe and the Conda environment |
+| `tests/unit/`, `tests/integration/` | pytest tests |
+| `tests/r/` | R tests for the statistics |
+| `tests/pipeline/` | The end-to-end script and its result checks |
+| `tests/fixtures/` | Synthetic references and alignments, and their builders |
+| `docs/` | The design and the decisions log |

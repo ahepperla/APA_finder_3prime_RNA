@@ -18,8 +18,8 @@ menu, or with `claude --effort max` in a terminal. The desktop app passes its
 own model and effort flags, and they override `.claude/settings.json`.
 
 Point `fable-overseer` to the project documents: goals and design in
-`pacusage_hpc_implementation_plan.md`, conventions and invariants in AGENTS.md,
-and decisions in `DECISIONS.md`.
+`docs/design.md`, conventions and invariants in AGENTS.md, and decisions in
+`docs/decisions.md`.
 
 ### Orchestrating
 
@@ -46,7 +46,7 @@ and decisions in `DECISIONS.md`.
   before editing.
 - When requirements are ambiguous, ask the project lead instead of guessing.
   Offer options with your recommendation first, and record the answer in
-  `DECISIONS.md`.
+  `docs/decisions.md`.
 - Before calling a task done, run the full lint and test suite and report the
   results as they are, failures included.
 - Commits, pushes, and new dependencies wait for the project lead's request.
@@ -83,9 +83,9 @@ silently test the main checkout. Run checks from the worktree root:
 MAIN="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
 PYTHONPATH="$PWD/src" "$MAIN/.venv/bin/python" -m pytest
 "$MAIN/.venv/bin/ruff" check src tests
-R_LIBS="$MAIN/.Rlib" Rscript tests/test_usage_model.R scripts/fit_usage_model.R
+R_LIBS="$MAIN/.Rlib" Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
 ```
 
-For `tests/run_nextflow.sh`, also put `$MAIN/.venv/bin` first on `PATH`, keep
+For `tests/pipeline/run_nextflow.sh`, also put `$MAIN/.venv/bin` first on `PATH`, keep
 the same `PYTHONPATH`, and set `R_LIBS="$MAIN/.Rlib"` so the pipeline's R steps
 find DRIMSeq and stageR.

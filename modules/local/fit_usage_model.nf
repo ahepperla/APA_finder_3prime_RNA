@@ -5,7 +5,7 @@ process FIT_USAGE_MODEL {
     input:
     val family
     path normalized_samples
-    path testable_counts
+    path pac_counts
     path atlas
     path resolved_params
     path motif_scores
@@ -14,7 +14,7 @@ process FIT_USAGE_MODEL {
 
     output:
     tuple val(family), path('family-*'), emit: preliminary
-    tuple val(family), path('family-*/bootstrap-batches/*.rds'), emit: bootstrap_batches
+    tuple val(family), path('family-*/bootstrap-batches/*.rds', arity: '1..*'), emit: bootstrap_batches
 
     script:
     def outputDirectory = "family-${task.index}"
@@ -27,7 +27,7 @@ process FIT_USAGE_MODEL {
         --mode fit \
         --family '${family}' \
         --samples '${normalized_samples}' \
-        --counts '${testable_counts}' \
+        --counts '${pac_counts}' \
         --atlas '${atlas}' \
         --params '${resolved_params}' \
         --motif-scores '${motif_scores}' \

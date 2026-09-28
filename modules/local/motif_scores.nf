@@ -7,6 +7,7 @@ process MOTIF_SCORES {
     input:
     path pau
     path atlas
+    path resolved_params
 
     output:
     path 'motif_scores.tsv', emit: primary
@@ -17,10 +18,12 @@ process MOTIF_SCORES {
     pacusage motif-scores \
         --pau '${pau}' \
         --atlas '${atlas}' \
+        --params '${resolved_params}' \
         --output motif_scores.tsv
     pacusage motif-scores \
         --pau '${pau}' \
         --atlas '${atlas}' \
+        --params '${resolved_params}' \
         --include-known-rescue \
         --output motif_scores_known_rescue_sensitivity.tsv
     """

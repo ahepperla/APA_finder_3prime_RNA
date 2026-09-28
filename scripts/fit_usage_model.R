@@ -1,20 +1,20 @@
 #!/usr/bin/env Rscript
 
 # Differential PAC usage within one comparison family, fitted with DRIMSeq and
-# adjusted with stageR. The pipeline runs this file in three modes:
-#   fit        family model, zero-count stabilization, preliminary tables, and
-#              bootstrap batches;
+# adjusted with stageR. The pipeline runs this file in four modes:
+#   versions   append R and package versions to a software-versions table;
+#   fit        statistical filtering, family model, zero-count stabilization,
+#              motif preference, preliminary tables, and bootstrap batches;
 #   bootstrap  percentile intervals for one batch of genes;
 #   finalize   intervals merged into the preliminary tables, then event tables.
 
 # DRIMSeq's addUniform rule: each zero count becomes a draw from U(0, 0.1).
 ZERO_PERTURBATION_MAX <- 0.1
-# Plan section 9: a stabilized fit needs at least 80 percent of its repeats.
+# Design section 9: a stabilized fit needs at least 80 percent of its repeats.
 ZERO_MIN_SUCCESS_FRACTION <- 0.8
 # Changes in fitted PAU smaller than this count as zero when checking whether
 # the direction of an effect flips between stabilization repeats.
 DIRECTION_TOLERANCE <- 0.001
-BOOTSTRAP_BATCH_SCHEMA <- 2L
 DEFAULT_BOOTSTRAP_BATCH_SIZE <- 500L
 REQUIRED_PRECISION_SLOTS <- c(
   "mean_expression", "common_precision", "genewise_precision",
@@ -32,6 +32,12 @@ INTERVAL_COLUMNS <- c(
   "bootstrap_successes", "bootstrap_perturbed", "bootstrap_status"
 )
 GENE_PRECISION_COLUMNS <- c("gene_id", "precision", "family", "model_status")
+FILTERING_COLUMNS <- c("family", "gene_id", "pac_id", "tested", "reason")
+MOTIF_PREFERENCE_COLUMNS <- c(
+  "primary_pas_motif_rna", "primary_motif_class", "condition", "control_condition",
+  "control_mean", "treatment_mean", "delta_motif_usage", "transformed_coefficient",
+  "p_value", "informative_genes", "fdr"
+)
 FITTED_PAU_COLUMNS <- c(
   "gene_id", "feature_id", "condition", "control_condition", "fitted_control_pau",
   "fitted_treatment_pau", "delta_pau", "precision", "alpha_control",
@@ -230,18 +236,66 @@ chi_square_p <- function(lr, df) {
   result
 }
 
-family_filter <- function(counts, sample_ids, params) {
-  sample_counts <- counts[, sample_ids, drop = FALSE]
-  gene_total <- ave(rowSums(sample_counts), counts$gene_id, FUN = sum)
-  site_total <- rowSums(sample_counts)
-  supporting <- rowSums(sample_counts > 0)
-  site_usage <- ifelse(gene_total > 0, site_total / gene_total, 0)
-  site_ok <- site_total >= params$min_site_count &
-    supporting >= params$min_test_supporting_samples &
-    site_usage >= params$min_site_usage
-  eligible_per_gene <- ave(site_ok, counts$gene_id, FUN = sum)
-  gene_ok <- gene_total >= params$min_gene_total & eligible_per_gene >= 2
-  counts[site_ok & gene_ok, c("gene_id", "pac_id", sample_ids), drop = FALSE]
+# Statistical filtering within one comparison family (design section 8), on
+# the raw counts of the family's samples only. Returns the tested PACs and one
+# row per PAC of the count table: tested, or the reasons it was not. A PAC
+# without a gene, or assigned to more than one gene, is never tested.
+family_filter <- function(counts, sample_ids, params, family) {
+  gene_ids <- counts$gene_id
+  reason <- rep("", nrow(counts))
+  reason[is.na(gene_ids) | gene_ids == ""] <- "no_gene_assignment"
+  reason[reason == "" & grepl(",", gene_ids, fixed = TRUE)] <- "ambiguous_gene_assignment"
+  assigned <- reason == ""
+
+  values <- count_matrix(counts, sample_ids)
+  site_total <- rowSums(values)
+  supporting <- rowSums(values > 0)
+  gene_total <- rep(NA_real_, nrow(counts))
+  gene_total[assigned] <- ave(site_total[assigned], gene_ids[assigned], FUN = sum)
+  site_usage <- ifelse(assigned & gene_total > 0, site_total / gene_total, 0)
+  reason[assigned] <- joined_reasons(
+    site_total < params$min_site_count,
+    paste0("site_count<", params$min_site_count),
+    supporting < params$min_test_supporting_samples,
+    paste0("supporting_samples<", params$min_test_supporting_samples),
+    site_usage < params$min_site_usage,
+    paste0("site_usage<", params$min_site_usage)
+  )[assigned]
+
+  site_ok <- assigned & reason == ""
+  eligible <- rep(0, nrow(counts))
+  eligible[assigned] <- ave(as.numeric(site_ok[assigned]), gene_ids[assigned], FUN = sum)
+  gene_reason <- joined_reasons(
+    gene_total < params$min_gene_total,
+    paste0("gene_total<", params$min_gene_total),
+    eligible < 2,
+    "fewer_than_2_testable_pacs"
+  )
+  reason[site_ok] <- gene_reason[site_ok]
+  tested <- site_ok & reason == ""
+  list(
+    counts = counts[tested, c("gene_id", "pac_id", sample_ids), drop = FALSE],
+    reasons = data.frame(
+      family = rep(family, nrow(counts)),
+      gene_id = ifelse(is.na(gene_ids), "", gene_ids),
+      pac_id = counts$pac_id,
+      tested = tested,
+      reason = reason,
+      stringsAsFactors = FALSE
+    )
+  )
+}
+
+# Arguments alternate between a logical vector and its label. Returns, per
+# element, the labels of the conditions that hold, joined by ";".
+joined_reasons <- function(...) {
+  arguments <- list(...)
+  conditions <- arguments[c(TRUE, FALSE)]
+  labels <- arguments[c(FALSE, TRUE)]
+  if (!length(conditions[[1]])) return(character())
+  parts <- mapply(function(condition, label) ifelse(condition, label, ""), conditions, labels)
+  if (is.null(dim(parts))) parts <- matrix(parts, nrow = length(conditions[[1]]))
+  apply(parts, 1, function(row) paste(row[nzchar(row)], collapse = ";"))
 }
 
 supporting_samples <- function(counts, sample_rows, group_name) {
@@ -444,7 +498,7 @@ family_layout <- function(family, sample_rows, params) {
     if (anyNA(values) || any(values == "")) {
       stop("Model covariate ", covariate, " is incomplete in comparison family ", family, ".")
     }
-    # Covariates are categorical, as the Python design validation assumes.
+    # Covariates are categorical.
     samples[[covariate]] <- factor(values)
   }
   formula_text <- paste("~", paste(c(covariates, "condition"), collapse = " + "))
@@ -494,7 +548,7 @@ family_layout <- function(family, sample_rows, params) {
 }
 
 # DRIMSeq treats the last PAC of a gene as the reference, so the order must
-# be deterministic: genomic coordinate within each gene (plan section 9).
+# be deterministic: genomic coordinate within each gene (design section 9).
 order_family_counts <- function(counts, atlas) {
   coordinate <- suppressWarnings(as.numeric(atlas$coordinate[match(counts$pac_id, atlas$pac_id)]))
   if (anyNA(coordinate)) {
@@ -778,7 +832,7 @@ median_or_na <- function(values) {
 
 # Combine the stabilization repeats of each boundary gene into one set of
 # values: medians of proportions, precision, and likelihood ratios, with the
-# stability rules of plan section 9 applied per PAC and comparison.
+# stability rules of design section 9 applied per PAC and comparison.
 summarize_zero_sensitivity <- function(repeats, genes, layout, params) {
   settings <- zero_sensitivity_settings(params)
   failed <- vapply(repeats, inherits, logical(1), what = "error")
@@ -1005,7 +1059,7 @@ mask_groups_without_counts <- function(fit, empty, layout) {
 
 # ---- Multiple testing -------------------------------------------------------
 
-# Stage-wise adjustment within one comparison (plan section 9). stageR joins
+# Stage-wise adjustment within one comparison (design section 9). stageR joins
 # gene and PAC IDs with ":" and splits them again, so it receives simple keys
 # and the results are mapped back by key.
 stage_adjust <- function(gene_results, feature_results, alpha) {
@@ -1298,7 +1352,6 @@ family_bootstrap_batches <- function(selections, counts, fit, layout, params, at
     batch_counts <- counts[rows, c("gene_id", "pac_id", layout$sample_ids), drop = FALSE]
     rownames(batch_counts) <- NULL
     list(
-      schema_version = BOOTSTRAP_BATCH_SCHEMA,
       empty = FALSE,
       batch_id = sprintf("%s.batch-%03d", safe_file_component(layout$family), index),
       family = layout$family,
@@ -1323,7 +1376,6 @@ family_bootstrap_batches <- function(selections, counts, fit, layout, params, at
 
 empty_bootstrap_batch <- function(family) {
   list(
-    schema_version = BOOTSTRAP_BATCH_SCHEMA,
     empty = TRUE,
     batch_id = paste0(safe_file_component(family), ".batch-000"),
     family = family
@@ -1364,11 +1416,17 @@ fit_family <- function(
   layout <- family_layout(family, sample_rows, params)
   if (is.null(layout)) return(NULL)
   empty_result <- list(
+    layout = layout,
     precision = empty_table(GENE_PRECISION_COLUMNS),
     fitted_pau = empty_table(FITTED_PAU_COLUMNS),
     batches = list()
   )
-  filtered <- family_filter(counts, layout$sample_ids, params)
+  filtering <- family_filter(counts, layout$sample_ids, params, family)
+  write_gzip_tsv(
+    select_columns(filtering$reasons, FILTERING_COLUMNS, "The filtering table"),
+    file.path(output_dir, paste0(family, ".statistical_filtering.tsv.gz"))
+  )
+  filtered <- filtering$counts
   if (!nrow(filtered)) {
     warning("No testable genes in comparison family ", family)
     write_empty_family_outputs(layout, output_dir)
@@ -1467,6 +1525,7 @@ fit_family <- function(
     stringsAsFactors = FALSE
   )
   list(
+    layout = layout,
     precision = precision_table,
     fitted_pau = do.call(rbind, unname(fitted_rows)),
     batches = family_bootstrap_batches(
@@ -1475,104 +1534,74 @@ fit_family <- function(
   )
 }
 
-fit_motif_preferences <- function(
-  scores,
-  samples,
-  params,
-  output_dir,
-  suffix = "preference",
-  selected_family = NULL
-) {
-  if (is.null(scores) || !nrow(scores)) return(invisible(NULL))
-  if (!"primary_pas_motif_rna" %in% names(scores)) {
-    if ("primary_pas_motif" %in% names(scores)) {
-      scores$primary_pas_motif_rna <- chartr("T", "U", scores$primary_pas_motif)
-      scores$primary_pas_motif_rna[
-        is.na(scores$primary_pas_motif_rna) |
-          scores$primary_pas_motif_rna == ""
-      ] <- "none"
-    } else {
-      scores$primary_pas_motif_rna <- "unresolved"
-    }
-  }
-  merged <- merge(scores, samples, by = "sample_id")
-  comparison_map <- unique(
-    samples[
-      samples$condition != samples$control_condition,
-      c("condition", "control_condition"),
-      drop = FALSE
-    ]
+# Motif-class usage (design section 9, "Motif Preference"). Each comparison
+# is one limma fit on the family's main-model design (covariates, then
+# condition with the family control as reference), with one row per motif
+# class. A class is tested in a comparison only when every sample of that
+# comparison has at least motif_preference_min_genes informative genes for it.
+fit_motif_preferences <- function(scores, layout, params, output_dir, suffix) {
+  scores <- scores[scores$sample_id %in% layout$sample_ids, , drop = FALSE]
+  if (!nrow(scores)) return(invisible(NULL))
+  classes <- unique(scores[, c("primary_pas_motif_rna", "primary_motif_class"), drop = FALSE])
+  classes <- classes[
+    order(classes$primary_motif_class, classes$primary_pas_motif_rna, method = "radix"), ,
+    drop = FALSE
+  ]
+  rownames(classes) <- NULL
+  class_keys <- paste(classes$primary_pas_motif_rna, classes$primary_motif_class, sep = "\r")
+  score_cells <- cbind(
+    match(paste(scores$primary_pas_motif_rna, scores$primary_motif_class, sep = "\r"), class_keys),
+    match(scores$sample_id, layout$sample_ids)
   )
-  if (!is.null(selected_family)) {
-    comparison_map <- comparison_map[
-      comparison_map$control_condition == selected_family,
-      ,
-      drop = FALSE
-    ]
+  by_class <- function(column) {
+    values <- matrix(NA_real_, length(class_keys), length(layout$sample_ids))
+    colnames(values) <- layout$sample_ids
+    values[score_cells] <- as.numeric(scores[[column]])
+    values
   }
-  for (family in unique(comparison_map$control_condition)) {
-    treatments <- sort(comparison_map$condition[
-      comparison_map$control_condition == family
-    ])
-    family_rows <- merged[
-      merged$condition %in% c(family, treatments),
-      ,
-      drop = FALSE
-    ]
-    for (treatment in treatments) {
-      subset_rows <- family_rows[
-        family_rows$condition %in% c(family, treatment) &
-          family_rows$informative_genes >= params$motif_preference_min_genes,
-        ,
-        drop = FALSE
-      ]
-      output_rows <- list()
-      motifs <- unique(
-        subset_rows[, c("primary_pas_motif_rna", "primary_motif_class"), drop = FALSE]
-      )
-      for (motif_index in seq_len(nrow(motifs))) {
-        motif <- motifs$primary_pas_motif_rna[[motif_index]]
-        motif_class <- motifs$primary_motif_class[[motif_index]]
-        values <- subset_rows[
-          subset_rows$primary_pas_motif_rna == motif &
-            subset_rows$primary_motif_class == motif_class,
-          ,
-          drop = FALSE
-        ]
-        if (length(unique(values$condition)) < 2) next
-        values$condition <- relevel(factor(values$condition), ref = family)
-        design <- model.matrix(~ condition, values)
-        fit <- eBayes(lmFit(matrix(values$transformed_motif_usage, nrow = 1), design))
-        coefficient <- paste0("condition", treatment)
-        table <- topTable(fit, coef = coefficient, number = Inf, sort.by = "none")
-        output_rows[[length(output_rows) + 1]] <- data.frame(
-          primary_pas_motif_rna = motif,
-          primary_motif_class = motif_class,
-          condition = treatment,
-          control_condition = family,
-          control_mean = mean(values$motif_usage[values$condition == family]),
-          treatment_mean = mean(values$motif_usage[values$condition == treatment]),
-          delta_motif_usage =
-            mean(values$motif_usage[values$condition == treatment]) -
-            mean(values$motif_usage[values$condition == family]),
-          transformed_coefficient = table$logFC[[1]],
-          p_value = table$P.Value[[1]],
-          informative_genes = min(values$informative_genes)
-        )
-      }
-      if (length(output_rows)) {
-        output <- do.call(rbind, output_rows)
-        output$fdr <- bh(output$p_value)
-        name <- paste0(treatment, "_vs_", family, ".", suffix, ".tsv.gz")
-        write_gzip_tsv(output, file.path(output_dir, name))
-      }
-    }
+  usage <- by_class("motif_usage")
+  transformed <- by_class("transformed_motif_usage")
+  informative <- by_class("informative_genes")
+  control_ids <- layout$groups[[layout$control]]
+  for (index in seq_len(nrow(layout$comparisons))) {
+    treatment <- layout$comparisons$treatment[[index]]
+    treatment_ids <- layout$groups[[treatment]]
+    comparison_ids <- c(control_ids, treatment_ids)
+    minimum_genes <- apply(informative[, comparison_ids, drop = FALSE], 1, min)
+    testable <- which(!is.na(minimum_genes) & minimum_genes >= params$motif_preference_min_genes)
+    if (!length(testable)) next
+    fit <- limma::eBayes(limma::lmFit(transformed[testable, , drop = FALSE], layout$design))
+    table <- limma::topTable(
+      fit, coef = layout$comparisons$coefficient[[index]], number = Inf, sort.by = "none"
+    )
+    control_mean <- rowMeans(usage[testable, control_ids, drop = FALSE])
+    treatment_mean <- rowMeans(usage[testable, treatment_ids, drop = FALSE])
+    output <- data.frame(
+      primary_pas_motif_rna = classes$primary_pas_motif_rna[testable],
+      primary_motif_class = classes$primary_motif_class[testable],
+      condition = treatment,
+      control_condition = layout$control,
+      control_mean = control_mean,
+      treatment_mean = treatment_mean,
+      delta_motif_usage = treatment_mean - control_mean,
+      transformed_coefficient = table$logFC,
+      p_value = table$P.Value,
+      fdr = bh(table$P.Value),
+      informative_genes = minimum_genes[testable],
+      stringsAsFactors = FALSE
+    )
+    write_gzip_tsv(
+      select_columns(output, MOTIF_PREFERENCE_COLUMNS, "The motif preference table"),
+      file.path(output_dir, paste0(layout$comparisons$comparison[[index]], ".", suffix, ".tsv.gz"))
+    )
   }
+  invisible(NULL)
 }
 
 run_fit_mode <- function(arguments) {
   require_args(arguments, c(
-    "family", "samples", "counts", "atlas", "params", "output_dir"
+    "family", "samples", "counts", "atlas", "params", "motif_scores",
+    "motif_sensitivity", "output_dir"
   ))
   model_workers <- parse_model_workers(arguments$model_workers)
   batch_size <- parse_batch_size(arguments$bootstrap_batch_size)
@@ -1616,38 +1645,36 @@ run_fit_mode <- function(arguments) {
     file.path(preliminary_dir, "fitted_pau.tsv.gz")
   )
   write_bootstrap_batches(fitted$batches, batch_dir, arguments$family)
+  fit_motif_preferences(
+    read_tsv(arguments$motif_scores), fitted$layout, params, preliminary_dir, "preference"
+  )
+  fit_motif_preferences(
+    read_tsv(arguments$motif_sensitivity), fitted$layout, params, preliminary_dir,
+    "preference_known_rescue_sensitivity"
+  )
+}
 
-  if (!is.null(arguments$motif_scores) && file.exists(arguments$motif_scores)) {
-    fit_motif_preferences(
-      read_tsv(arguments$motif_scores),
-      samples,
-      params,
-      preliminary_dir,
-      "preference",
-      arguments$family
-    )
-  }
-  if (!is.null(arguments$motif_sensitivity) && file.exists(arguments$motif_sensitivity)) {
-    fit_motif_preferences(
-      read_tsv(arguments$motif_sensitivity),
-      samples,
-      params,
-      preliminary_dir,
-      "preference_known_rescue_sensitivity",
-      arguments$family
-    )
-  }
+# ---- Versions mode ----------------------------------------------------------
+
+# Appends R and statistics-package versions to a software-versions table,
+# creating it with a header when it does not exist yet.
+run_versions_mode <- function(arguments, versions) {
+  require_args(arguments, "output")
+  rows <- data.frame(
+    software = c("R", names(versions)),
+    version = c(paste(R.version$major, R.version$minor, sep = "."), unname(versions)),
+    stringsAsFactors = FALSE
+  )
+  exists <- file.exists(arguments$output)
+  utils::write.table(
+    rows, arguments$output, sep = "\t", quote = FALSE, row.names = FALSE,
+    col.names = !exists, append = exists
+  )
 }
 
 # ---- Bootstrap mode ---------------------------------------------------------
 
 validate_bootstrap_batch <- function(batch) {
-  if (!identical(batch$schema_version, BOOTSTRAP_BATCH_SCHEMA)) {
-    stop(
-      "Bootstrap batch schema ", format(batch$schema_version),
-      " is not supported; rerun the fit step with this script."
-    )
-  }
   required <- c(
     "batch_id", "family", "control", "comparisons", "samples", "design", "params",
     "atlas_checksum", "counts", "fitted", "genes", "selections"
@@ -2094,9 +2121,10 @@ run_finalize_mode <- function(arguments) {
 
 main <- function(argv) {
   arguments <- parse_args(argv)
-  load_statistics_packages()
+  versions <- load_statistics_packages()
   switch(
     arguments$mode,
+    versions = run_versions_mode(arguments, versions),
     fit = run_fit_mode(arguments),
     bootstrap = run_bootstrap_mode(arguments),
     finalize = run_finalize_mode(arguments),

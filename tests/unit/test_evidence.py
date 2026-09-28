@@ -1,12 +1,12 @@
 import pandas as pd
 import pysam
+from alignment_builders import aligned_segment, write_alignment, write_reference
 
 from pacusage.cli import _iter_observations
 from pacusage.evidence import (
     direct_splice_continuations,
-    extract_evidence,
-    extract_splice_continuations,
     fragment_boundary,
+    infer_strandedness,
     is_poly_a_like,
     read_boundary,
     terminal_soft_clip,
@@ -14,6 +14,8 @@ from pacusage.evidence import (
     write_evidence,
 )
 from pacusage.models import EvidenceObservation
+from pacusage.reference import GenomicFeature
+from pacusage.scan import scan_alignment
 
 
 def record(flag: int, start: int, cigar: list[tuple[int, int]], sequence: str = "A" * 30):
@@ -84,17 +86,19 @@ def test_paired_end_extraction_counts_one_fragment(tmp_path) -> None:
     with pysam.AlignmentFile(bam, "wb", header=header) as handle:
         handle.write(first)
         handle.write(second)
-    observations, qc = extract_evidence(
+    scan = scan_alignment(
         "sample",
         bam,
         fasta,
         "PE",
         "forward",
-        "fragment_3p",
+        ["fragment_3p"],
+        False,
         min_mapq=0,
     )
+    observations = list(scan.evidence["fragment_3p"].observations())
     assert [(item.coordinate, item.count) for item in observations] == [(230, 1)]
-    assert qc["accepted_fragments"] == 1
+    assert scan.evidence["fragment_3p"].filtering["accepted_fragments"] == 1
 
 
 def test_paired_splice_continuations_deduplicate_mates(tmp_path) -> None:
@@ -114,14 +118,17 @@ def test_paired_splice_continuations_deduplicate_mates(tmp_path) -> None:
     with pysam.AlignmentFile(bam, "wb", header=header) as handle:
         handle.write(first)
         handle.write(second)
-    continuations, qc = extract_splice_continuations(
+    scan = scan_alignment(
         "sample",
         bam,
         fasta,
         "PE",
         "forward",
+        ["read_3p"],  # Need at least one source
+        splice_continuations=True,
         min_mapq=0,
     )
+    continuations, qc = scan.splice
     assert [
         (
             item.upstream_start,
@@ -174,3 +181,21 @@ def test_parquet_evidence_streams_in_global_coordinate_order(tmp_path) -> None:
         ("chr1", "-", 200, "b"),
         ("chr2", "+", 50, "a"),
     ]
+
+
+def test_strandedness_inference_applies_contig_aliases(tmp_path) -> None:
+    # Reads on contig "1"; the annotation names it "chr1".
+    contigs = [("1", 5000)]
+    reference = write_reference(tmp_path / "genome.fa", contigs)
+    reads = [aligned_segment(f"r{index}", 0, 0, 100 + index, "30M") for index in range(20)]
+    bam = write_alignment(tmp_path / "reads.bam", contigs, reads)
+    exons = [GenomicFeature("chr1", 50, 400, "+", "exon", "g1", "t1")]
+    settings = {
+        "minimum_informative": 10,
+        "maximum_sampled": 100,
+        "decision_fraction": 0.8,
+        "random_seed": 1,
+    }
+    aliased = infer_strandedness(bam, reference, exons, contig_aliases={"1": "chr1"}, **settings)
+    assert (aliased["informative_fragments"], aliased["inferred_strandedness"]) == (20, "forward")
+    assert infer_strandedness(bam, reference, exons, **settings)["informative_fragments"] == 0

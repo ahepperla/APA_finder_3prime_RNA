@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Run PACusage from a source checkout without installing the package."""
+"""The pacusage command for Nextflow tasks, which put bin/ on PATH.
+
+An installed package, such as the one in the Apptainer image, runs as it is.
+Without one, as with the conda profile, the package runs from this checkout.
+"""
 
 from __future__ import annotations
 
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+if find_spec("pacusage") is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pacusage.cli import main
+from pacusage.cli import main  # noqa: E402
 
 raise SystemExit(main())

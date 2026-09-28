@@ -10,9 +10,10 @@ coverage before making broad or negative structural claims.
 
 ## Architecture And Conventions
 
-- PACusage is a Nextflow DSL2 pipeline with a Python library and CLI in
-  `src/pacusage`. The installed `pacusage` command resolves to
-  `pacusage.cli:main`.
+- PACusage is a Nextflow DSL2 pipeline with a Python package and CLI in
+  `src/pacusage` and the statistics in `scripts/fit_usage_model.R`. Nextflow
+  tasks run `bin/pacusage`, which uses the installed package (as in the
+  Apptainer image) or else this checkout's `src/`.
 - `main.nf` is the workflow entry point. `workflows/pacusage.nf` orchestrates
   `VALIDATE_INPUTS`, `PREPARATION`, `DISCOVERY`, `QUANTIFICATION`,
   `STATISTICS`, and `BUILD_REPORT`, in that order.
@@ -22,6 +23,19 @@ coverage before making broad or negative structural claims.
 - Keep workflow modules small and use their declared channels rather than
   bypassing stages with ad hoc files. Explicit Nextflow CLI parameters override
   values supplied by `analysis.yaml`.
+- Parameters are defined once, in `nextflow_schema.json`: types, ranges,
+  defaults, and descriptions.
+  - `nextflow.config` repeats the defaults, and `tests/unit/test_config.py`
+    keeps the two in step.
+  - VALIDATE_INPUTS resolves and validates the parameters once, against the
+    staged schema.
+  - Later steps read `resolved_params.yaml` as it is. The exception is
+    INFER_STRANDEDNESS, which takes its few parameters on the command line so
+    that other parameter changes don't rerun it. Nextflow applies the
+    resource, scheduling, and publication parameters itself.
+  - RECORD_SOFTWARE_VERSIONS loads the R packages right after validation. Keep
+    the R script out of VALIDATE_INPUTS, or every edit to it reruns the whole
+    pipeline on `-resume`.
 - Do not modify source FASTA or alignment inputs.
   - Prepared alignments, indexes, and the prepared FASTA are symlinks to the
     sources. Never write through them.
@@ -31,17 +45,20 @@ coverage before making broad or negative structural claims.
 - The pipeline records checksums, resolved parameters, software versions,
   preparation actions, and the frozen-atlas checksum for reproducibility.
   Published gzip files carry no timestamps, so reruns are byte-identical.
+  The atlas checksum seeds the statistics, so any change to the atlas file's
+  contents or columns changes the seeded results.
 - Each alignment is read in full twice: once by INFER_STRANDEDNESS, and once
-  by SCAN_ALIGNMENT for every candidate evidence source together.
-  EXTRACT_3PRIME_EVIDENCE works from the scan. `src/pacusage/scan.py` must
-  reproduce `extract_evidence` and `extract_splice_continuations` in
-  `evidence.py`, which stay as the reference implementation;
-  `tests/unit/test_scan.py` holds the equivalence tests.
+  by SCAN_ALIGNMENT (`src/pacusage/scan.py`) for every candidate evidence
+  source together. EXTRACT_3PRIME_EVIDENCE writes the chosen source's
+  evidence from the scan.
+- Statistical filtering belongs to `fit_usage_model.R`: it filters each
+  comparison family's own samples and writes the reasons, per PAC, to
+  `FAMILY.statistical_filtering.tsv.gz`.
 
 ## Input And Data Invariants
 
 - `analysis.yaml` requires `input`, `assembly`, `fasta`, and `gtf`; `outdir`
-  should be supplied for normal analysis runs.
+  should be supplied for normal analysis runs. The FASTA must be uncompressed.
 - Sample sheets are TSV files with required `sample_id`, `alignment`,
   `condition`, and `control` columns. Alignment paths are relative to the
   sample sheet. A root control has a genuinely empty `control` field, never
@@ -51,7 +68,9 @@ coverage before making broad or negative structural claims.
   replicates.
 - PAC IDs and internal coordinates are zero-based interbase coordinates.
   Exact-boundary BED records are `[coordinate, coordinate + 1)`; proximal-tag
-  BED records are `[region_start, region_end)`.
+  BED records are `[region_start, region_end)`. Gene assignment treats an
+  exon or gene as containing coordinates `start` through `end` inclusive,
+  because a 3′ boundary equals its exon's `end`.
 - Keep exact-boundary and proximal-tag discovery semantics distinct. Do not
   represent a proximal-tag estimate as nucleotide-resolution cleavage evidence.
 - Counts are raw assigned fragment counts. PAU is each PAC count divided by
@@ -78,20 +97,22 @@ ruff check src tests
 ```
 
 ```bash
-Rscript tests/test_usage_model.R scripts/fit_usage_model.R
-Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R
-tests/run_nextflow.sh
+Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
+tests/pipeline/run_nextflow.sh
 ```
 
 The integration script:
 - runs the R statistics tests and rebuilds the fixtures;
 - executes the test Nextflow profile, checks the required result artifacts,
-  and validates their contents;
+  and validates their contents (`tests/pipeline/verify_integration.py`);
 - checks that the fixture files are unchanged;
 - checks that a fresh rerun reproduces every published file;
 - checks that a mixed-protocol sample sheet fails before discovery;
 - runs the Plasmidsaurus-like proximal-tag fixture in
-  `tests/fixtures/plasmidsaurus/`, which has its own reference and annotation.
+  `tests/fixtures/plasmidsaurus/`, which has its own reference and annotation;
+- checks that exact-boundary reads run under the Plasmidsaurus profile warn
+  at calibration and stop before quantification.
 
 Keep that fixture's calibration genes single-ended. Its multi-PAC genes
 annotate one transcript per PAC, so alternative ends stay out of the

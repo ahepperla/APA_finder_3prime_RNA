@@ -19,7 +19,6 @@ process CLUSTER_PACS {
     path 'pac_discovery.tsv', emit: qc
 
     script:
-    def knownArgument = params.known_pacs ? "--known-pacs '${params.known_pacs}'" : ''
     """
     pacusage cluster \
         --evidence ${evidence_tables.join(' ')} \
@@ -28,7 +27,6 @@ process CLUSTER_PACS {
         --resolution '${run_resolution}' \
         --kernel '${kernel}' \
         --params '${resolved_params}' \
-        ${knownArgument} \
         --accepted accepted_candidates.tsv.gz \
         --rejected rejected_candidates.tsv.gz \
         --qc pac_discovery.tsv

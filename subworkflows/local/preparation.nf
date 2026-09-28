@@ -5,15 +5,11 @@ include { INFER_STRANDEDNESS } from '../../modules/local/infer_strandedness'
 workflow PREPARATION {
     take:
     normalized_samples
-    resolved_params
     annotation
 
     main:
-    PREPARE_REFERENCE(Channel.value(file(params.fasta, checkIfExists: true)))
-    // The FASTA and its index travel together, so no step rebuilds the index.
-    prepared_reference = PREPARE_REFERENCE.out.fasta
-        .combine(PREPARE_REFERENCE.out.fai)
-        .first()
+    PREPARE_REFERENCE(file(params.fasta, checkIfExists: true))
+    prepared_reference = PREPARE_REFERENCE.out.reference
 
     alignment_inputs = normalized_samples
         .splitCsv(header: true, sep: '\t')
@@ -35,12 +31,7 @@ workflow PREPARATION {
         }
 
     PREPARE_ALIGNMENT(alignment_inputs, prepared_reference)
-    INFER_STRANDEDNESS(
-        PREPARE_ALIGNMENT.out.prepared,
-        prepared_reference,
-        annotation,
-        resolved_params
-    )
+    INFER_STRANDEDNESS(PREPARE_ALIGNMENT.out.prepared, prepared_reference, annotation)
     prepared = PREPARE_ALIGNMENT.out.prepared.map { meta, alignment, index, qc ->
         tuple(meta.sample_id, meta, alignment, index, qc)
     }

@@ -9,6 +9,7 @@ def helpMessage() {
         'PACusage: polyadenylation site discovery and differential usage',
         '',
         'Usage:',
+        '  nextflow run /path/to/pacusage -profile slurm,apptainer -params-file analysis.yaml -resume',
         '  nextflow run /path/to/pacusage -profile local,conda -params-file analysis.yaml -resume',
         ''
     ]

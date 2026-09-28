@@ -8,10 +8,8 @@ process INFER_STRANDEDNESS {
     tuple val(meta), path(alignment), path(index), path(alignment_qc)
     tuple path(reference), path(reference_index)
     path annotation
-    path resolved_params
 
-    // The alignment is not an output: passing it through made Nextflow copy
-    // the whole file back from scratch. PREPARATION rejoins it by sample.
+    // The alignment is not an output; PREPARATION rejoins it by sample.
     output:
     tuple val(meta),
         path("${meta.sample_id}.resolution.json"),
@@ -19,6 +17,8 @@ process INFER_STRANDEDNESS {
         emit: resolved
 
     script:
+    def aliasArgument = params.chromosome_aliases ?
+        "--chromosome-aliases '${file(params.chromosome_aliases)}'" : ''
     """
     pacusage infer-strandedness \
         --sample-id '${meta.sample_id}' \
@@ -26,6 +26,7 @@ process INFER_STRANDEDNESS {
         --alignment-metadata '${alignment_qc}' \
         --reference '${reference}' \
         --annotation '${annotation}' \
+        ${aliasArgument} \
         --profile '${meta.library_profile}' \
         --layout '${meta.layout}' \
         --strandedness '${meta.strandedness}' \

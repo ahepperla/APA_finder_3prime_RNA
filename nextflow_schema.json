@@ -8,86 +8,316 @@
     "input_output": {
       "title": "Input and output",
       "type": "object",
-      "required": ["input", "assembly", "fasta", "gtf"],
+      "required": [
+        "input",
+        "assembly",
+        "fasta",
+        "gtf"
+      ],
       "properties": {
-        "input": {"type": "string", "format": "file-path", "description": "TSV sample sheet."},
-        "outdir": {"type": "string", "default": "results", "description": "Output directory."},
-        "assembly": {"type": "string", "description": "Genome assembly label used in PAC IDs."},
-        "fasta": {"type": "string", "format": "file-path", "description": "Genome FASTA."},
-        "gtf": {"type": "string", "format": "file-path", "description": "GTF or GFF3 annotation."},
-        "known_pacs": {"type": ["string", "null"], "format": "file-path", "default": null},
-        "chromosome_aliases": {"type": ["string", "null"], "format": "file-path", "default": null}
+        "input": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Sample sheet (TSV) with sample_id, alignment, condition, and control columns. Alignment paths are relative to the sheet."
+        },
+        "outdir": {
+          "type": "string",
+          "default": "results",
+          "description": "Directory for published results."
+        },
+        "assembly": {
+          "type": "string",
+          "description": "Genome assembly name, used in PAC IDs (for example GRCh38)."
+        },
+        "fasta": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Uncompressed genome FASTA. It is indexed in the work directory and never modified."
+        },
+        "gtf": {
+          "type": "string",
+          "format": "file-path",
+          "description": "GTF or GFF3 gene annotation."
+        },
+        "known_pacs": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "file-path",
+          "default": null,
+          "description": "Optional BED6 of known PACs. Each record's PAC is its 3' edge in transcript orientation: end on +, start on -."
+        },
+        "chromosome_aliases": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "file-path",
+          "default": null,
+          "description": "Optional two-column TSV mapping alignment contig names to FASTA and annotation names."
+        }
       }
     },
     "protocol": {
       "title": "Protocol and evidence",
       "type": "object",
       "properties": {
-        "layout": {"type": "string", "enum": ["auto", "SE", "PE"], "default": "auto"},
-        "strandedness": {"type": "string", "enum": ["auto", "forward", "reverse"], "default": "auto"},
+        "layout": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "SE",
+            "PE"
+          ],
+          "default": "auto",
+          "description": "SE, PE, or auto to detect from each alignment. A layout column in the sample sheet overrides it."
+        },
+        "strandedness": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "forward",
+            "reverse"
+          ],
+          "default": "auto",
+          "description": "forward, reverse, or auto to infer from reads over annotated exons. The sample sheet can override it."
+        },
         "library_profile": {
           "type": "string",
-          "enum": ["generic_3prime", "plasmidsaurus_3prime", "exact_boundary"],
-          "default": "generic_3prime"
+          "enum": [
+            "generic_3prime",
+            "plasmidsaurus_3prime",
+            "exact_boundary"
+          ],
+          "default": "generic_3prime",
+          "description": "generic_3prime calibrates every compatible evidence source; plasmidsaurus_3prime expects single-end, forward read_3p proximal tags; exact_boundary is for assays that keep the transcript/poly(A) junction."
         },
         "endpoint_model": {
           "type": "string",
-          "enum": ["auto", "exact_boundary", "proximal_tag"],
-          "default": "auto"
+          "enum": [
+            "auto",
+            "exact_boundary",
+            "proximal_tag"
+          ],
+          "default": "auto",
+          "description": "auto lets calibration choose; exact_boundary or proximal_tag requires one."
         },
         "evidence_source": {
           "type": "string",
-          "enum": ["auto", "read_3p", "read_5p", "fragment_3p", "polyA_junction"],
-          "default": "auto"
+          "enum": [
+            "auto",
+            "read_3p",
+            "read_5p",
+            "fragment_3p",
+            "polyA_junction"
+          ],
+          "default": "auto",
+          "description": "auto, or read_3p, read_5p, fragment_3p (paired-end), or polyA_junction to require that source."
         },
-        "min_mapq": {"type": "integer", "minimum": 0, "default": 20},
-        "require_unique": {"type": "boolean", "default": true},
-        "require_proper_pair": {"type": "boolean", "default": true},
-        "exclude_duplicates": {"type": "boolean", "default": true},
-        "excluded_contigs": {"type": "array", "items": {"type": "string"}, "default": []}
+        "min_mapq": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 20,
+          "description": "Minimum mapping quality for a read to count."
+        },
+        "require_unique": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip reads whose NH tag reports more than one alignment."
+        },
+        "require_proper_pair": {
+          "type": "boolean",
+          "default": true,
+          "description": "For paired-end data, require the proper-pair flag."
+        },
+        "exclude_duplicates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip reads flagged as duplicates."
+        },
+        "excluded_contigs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Contigs to ignore, by alignment name or alias (for example chrM)."
+        }
       }
     },
     "calibration": {
       "title": "Replication and calibration",
       "type": "object",
       "properties": {
-        "min_replicates_per_condition": {"type": "integer", "minimum": 1, "default": 2},
-        "insufficient_replicates_policy": {"type": "string", "enum": ["error", "warn"], "default": "error"},
-        "strand_min_informative_fragments": {"type": "integer", "minimum": 1, "default": 10000},
-        "strand_max_sampled_fragments": {"type": "integer", "minimum": 1, "default": 200000},
-        "strand_decision_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.8},
-        "calibration_min_genes": {"type": "integer", "minimum": 1, "default": 100},
-        "calibration_max_distance": {"type": "integer", "minimum": 1, "default": 1000},
-        "calibration_quantile_low": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.05},
-        "calibration_quantile_high": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.95},
-        "calibration_min_kernel_correlation": {"type": "number", "minimum": -1, "maximum": 1, "default": 0.8},
-        "calibration_min_model_margin": {"type": "number", "minimum": 0, "default": 0.1},
-        "exact_max_median_abs_offset": {"type": "number", "minimum": 0, "default": 2},
-        "exact_max_central_width": {"type": "number", "minimum": 0, "default": 12},
-        "exact_min_boundary_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
-        "proximal_min_median_upstream_offset": {"type": "number", "minimum": 0, "default": 3}
+        "min_replicates_per_condition": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Biological replicates each modeled condition needs."
+        },
+        "insufficient_replicates_policy": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn"
+          ],
+          "default": "error",
+          "description": "error stops a run with too few replicates; warn marks its comparisons exploratory and suppresses confirmed gained and lost calls."
+        },
+        "strand_min_informative_fragments": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10000,
+          "description": "Reads over unambiguous exons needed to infer strandedness."
+        },
+        "strand_max_sampled_fragments": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 200000,
+          "description": "Reservoir size for strandedness inference."
+        },
+        "strand_decision_fraction": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.8,
+          "description": "Share of informative reads in one orientation needed to call strandedness."
+        },
+        "calibration_min_genes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "Calibration genes (genes whose transcripts share one annotated end) each sample needs."
+        },
+        "calibration_max_distance": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1000,
+          "description": "Largest distance (nt) from an annotated end at which a read end counts toward calibration; also the kernel's half-width."
+        },
+        "calibration_quantile_low": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Lower quantile of the calibration offsets; with the upper one it bounds the central interval."
+        },
+        "calibration_quantile_high": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.95,
+          "description": "Upper quantile of the calibration offsets."
+        },
+        "calibration_min_kernel_correlation": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "default": 0.8,
+          "description": "Minimum leave-one-sample-out kernel correlation for an evidence source to be usable."
+        },
+        "calibration_min_model_margin": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.1,
+          "description": "For generic_3prime, how far the best source's median correlation must exceed the runner-up's."
+        },
+        "exact_max_median_abs_offset": {
+          "type": "number",
+          "minimum": 0,
+          "default": 2,
+          "description": "Largest absolute median offset (nt) classified as an exact boundary."
+        },
+        "exact_max_central_width": {
+          "type": "number",
+          "minimum": 0,
+          "default": 12,
+          "description": "Widest central interval (nt) classified as an exact boundary."
+        },
+        "exact_min_boundary_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Share of read ends within 1 nt of the annotated end needed for an exact boundary."
+        },
+        "proximal_min_median_upstream_offset": {
+          "type": "number",
+          "minimum": 0,
+          "default": 3,
+          "description": "Minimum median upstream offset (nt) for a proximal-tag classification."
+        }
       }
     },
     "discovery": {
       "title": "PAC discovery and annotation",
       "type": "object",
       "properties": {
-        "pac_seed_radius": {"type": "integer", "minimum": 0, "default": 2},
-        "pac_cluster_radius": {"type": "integer", "minimum": 0, "default": 12},
-        "pac_min_total_count": {"type": "integer", "minimum": 1, "default": 10},
-        "pac_min_sample_count": {"type": "integer", "minimum": 1, "default": 2},
+        "pac_seed_radius": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 2,
+          "description": "Radius (nt) over which exact-boundary seeds are ranked."
+        },
+        "pac_cluster_radius": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 12,
+          "description": "Radius (nt) an exact-boundary PAC claims around its seed; also the assignment radius when counting."
+        },
+        "pac_min_total_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Reads a candidate PAC needs across all samples."
+        },
+        "pac_min_sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Reads a sample needs at a candidate to count as supporting it."
+        },
         "pac_min_supporting_samples": {
           "anyOf": [
-            {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
-            {"type": "integer", "minimum": 1}
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
           ],
           "default": 2,
           "description": "Required qualifying support within at least one condition. Values in (0, 1) are fractions of that condition's samples, rounded up; whole numbers are absolute sample counts."
         },
-        "known_pac_rescue_total": {"type": "integer", "minimum": 1, "default": 5},
-        "known_pac_match_radius": {"type": "integer", "minimum": 0, "default": 12},
-        "proximal_kernel_overlap_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
-        "proximal_assignment_likelihood_ratio": {"type": "number", "minimum": 1, "default": 3},
+        "known_pac_rescue_total": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Reads a known PAC needs to be kept as known_rescue_only when it misses pac_min_total_count."
+        },
+        "known_pac_match_radius": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 12,
+          "description": "Distance (nt) within which a PAC matches a known PAC."
+        },
+        "proximal_kernel_overlap_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Kernel self-overlap at which two proximal-tag peaks count as resolved; it sets the minimum resolvable separation."
+        },
+        "proximal_assignment_likelihood_ratio": {
+          "type": "number",
+          "minimum": 1,
+          "default": 3,
+          "description": "How many times likelier the best PAC must be than the next for a proximal-tag read to be assigned."
+        },
         "proximal_bin_size": {
           "type": "integer",
           "minimum": 1,
@@ -107,83 +337,337 @@
         },
         "constitutive_readthrough_min_replicate_support": {
           "anyOf": [
-            {"type": "string", "enum": ["all"]},
-            {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
-            {"type": "integer", "minimum": 1}
+            {
+              "type": "string",
+              "enum": [
+                "all"
+              ]
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
           ],
           "default": "all",
           "description": "Required replicate support independently within every condition. Use 'all' to require every replicate; fractions in (0, 1) are rounded up; whole numbers are absolute replicate counts."
         },
-        "max_downstream_distance": {"type": "integer", "minimum": 0, "default": 5000},
-        "pas_scan_upstream_far": {"type": "integer", "minimum": 1, "default": 50},
-        "pas_scan_upstream_near": {"type": "integer", "minimum": 0, "default": 5},
-        "pas_core_upstream_far": {"type": "integer", "minimum": 1, "default": 35},
-        "pas_core_upstream_near": {"type": "integer", "minimum": 0, "default": 10},
-        "pas_motif_catalog": {"type": ["string", "null"], "format": "file-path", "default": null},
-        "internal_priming_window": {"type": "integer", "minimum": 1, "default": 20},
-        "internal_priming_max_a_run": {"type": "integer", "minimum": 0, "default": 6},
-        "internal_priming_max_a_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.6}
+        "max_downstream_distance": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000,
+          "description": "Largest distance (nt) past a gene's end at which a PAC is still assigned to that gene."
+        },
+        "pas_scan_upstream_far": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50,
+          "description": "Far edge (nt upstream of the PAC) of the window scanned for PAS motifs."
+        },
+        "pas_scan_upstream_near": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5,
+          "description": "Near edge (nt upstream of the PAC) of the PAS scan window."
+        },
+        "pas_core_upstream_far": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 35,
+          "description": "Far edge of the core window where a PAS motif is expected."
+        },
+        "pas_core_upstream_near": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10,
+          "description": "Near edge of the core PAS window."
+        },
+        "pas_motif_catalog": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "file-path",
+          "default": null,
+          "description": "Optional TSV of motif, class, and priority that replaces the built-in PAS catalog."
+        },
+        "internal_priming_window": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20,
+          "description": "Genomic window (nt) downstream of a PAC checked for internal priming."
+        },
+        "internal_priming_max_a_run": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 6,
+          "description": "Longest A run in that window before a PAC is flagged as possible internal priming."
+        },
+        "internal_priming_max_a_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.6,
+          "description": "Highest A fraction in that window before a PAC is flagged as possible internal priming."
+        }
       }
     },
     "statistics": {
       "title": "Statistical analysis",
       "type": "object",
       "properties": {
-        "min_gene_total": {"type": "integer", "minimum": 1, "default": 20},
-        "min_site_count": {"type": "integer", "minimum": 1, "default": 5},
-        "min_site_usage": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.01},
-        "min_test_supporting_samples": {"type": "integer", "minimum": 1, "default": 2},
-        "model_covariates": {"type": "array", "items": {"type": "string"}, "default": []},
-        "gene_fdr": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.05},
-        "site_fdr": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.05},
-        "min_abs_delta_pau": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.1},
-        "dm_bootstrap_replicates": {"type": "integer", "minimum": 0, "default": 200},
-        "dm_bootstrap_min_success_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.8},
-        "dm_bootstrap_include_candidates": {"type": "boolean", "default": true, "description": "Also calculate bootstrap intervals for pre-statistical gained/lost candidates. Set false to retain intervals only for genes passing gene_fdr."},
-        "dm_zero_sensitivity_repeats": {"type": "integer", "minimum": 1, "default": 5},
-        "dm_zero_max_delta_pau_spread": {"type": "number", "minimum": 0, "default": 0.02},
-        "random_seed": {"type": "integer", "default": 1729},
-        "event_min_treatment_pau": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.05},
-        "event_max_control_pau": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.01},
-        "event_min_supporting_samples": {"type": "integer", "minimum": 1, "default": 2},
-        "motif_preference_min_genes": {"type": "integer", "minimum": 1, "default": 50},
-        "motif_kmer_length": {"type": "integer", "minimum": 1, "default": 6},
-        "run_kmer_enrichment": {"type": "boolean", "default": true}
+        "min_gene_total": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20,
+          "description": "Reads a gene needs across a comparison family to be tested. Motif scores and the report's PAU QC use genes with this many reads in every sample."
+        },
+        "min_site_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Reads a PAC needs across a comparison family to be tested."
+        },
+        "min_site_usage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.01,
+          "description": "Share of its gene's reads a PAC needs to be tested."
+        },
+        "min_test_supporting_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Samples with reads that a PAC needs to be tested."
+        },
+        "model_covariates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Sample-sheet columns added to every model as categorical covariates (for example batch)."
+        },
+        "gene_fdr": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Gene-level FDR for each treatment-versus-control screen."
+        },
+        "site_fdr": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Stage-wise PAC-level FDR within screened genes."
+        },
+        "min_abs_delta_pau": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.1,
+          "description": "Smallest absolute change in PAU that counts as an effect for event calls."
+        },
+        "dm_bootstrap_replicates": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 200,
+          "description": "Parametric bootstrap replicates for change-in-PAU intervals; 0 skips the intervals."
+        },
+        "dm_bootstrap_min_success_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.8,
+          "description": "Share of bootstrap replicates that must succeed for an interval to be reported."
+        },
+        "dm_bootstrap_include_candidates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also calculate bootstrap intervals for pre-statistical gained/lost candidates. Set false to retain intervals only for genes passing gene_fdr."
+        },
+        "dm_zero_sensitivity_repeats": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Refits, with zero counts perturbed, for genes that have a group without reads for a PAC."
+        },
+        "dm_zero_max_delta_pau_spread": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.02,
+          "description": "Largest spread of change in PAU across those refits before a PAC is flagged zero_boundary_unstable."
+        },
+        "random_seed": {
+          "type": "integer",
+          "default": 1729,
+          "description": "Seed for every random step; a run is reproducible for a given seed and atlas."
+        },
+        "event_min_treatment_pau": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Fitted PAU a PAC needs in the gaining group for a gained or lost call."
+        },
+        "event_max_control_pau": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.01,
+          "description": "Highest fitted PAU in the other group for a gained or lost call."
+        },
+        "event_min_supporting_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Samples with reads a group needs for a PAC to count as detected there."
+        },
+        "motif_preference_min_genes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50,
+          "description": "Informative genes each sample of a comparison needs for a motif class to be tested."
+        },
+        "motif_kmer_length": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 6,
+          "description": "k for the exploratory k-mer enrichment."
+        },
+        "run_kmer_enrichment": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the exploratory k-mer enrichment."
+        }
       }
     },
     "execution": {
       "title": "Execution and publication",
       "type": "object",
       "properties": {
-        "save_prepared_reference": {"type": "boolean", "default": false},
-        "save_prepared_alignments": {"type": "boolean", "default": false},
-        "save_intermediates": {"type": "boolean", "default": false},
-        "statistics_cpus": {"type": "integer", "minimum": 1, "default": 8, "description": "CPU cores allocated to each family-wide DRIMSeq fit and zero-boundary sensitivity pass."},
-        "statistics_bootstrap_cpus": {"type": "integer", "minimum": 1, "default": 4, "description": "CPU cores per scattered bootstrap batch. Each batch keeps bootstrap replicate parallelism within this allocation."},
-        "statistics_bootstrap_batch_size": {"type": "integer", "minimum": 1, "default": 500, "description": "Number of genes per scattered bootstrap batch."},
-        "statistics_bootstrap_max_forks": {"type": "integer", "minimum": 1, "default": 8, "description": "Maximum concurrent scattered bootstrap batches across the workflow."},
-        "slurm_account": {"type": ["string", "null"], "default": null},
-        "slurm_partition": {"type": ["string", "null"], "default": null},
-        "slurm_qos": {"type": ["string", "null"], "default": null},
-        "slurm_queue_size": {"type": "integer", "minimum": 1, "default": 100},
-        "slurm_submit_rate": {"type": "string", "default": "10 sec"},
-        "scratch": {"type": ["string", "null"], "default": null},
+        "save_prepared_reference": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish the prepared FASTA and its index to outdir/prepared_reference."
+        },
+        "save_prepared_alignments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish prepared alignments and indexes to outdir/prepared_alignments."
+        },
+        "save_intermediates": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish per-sample PAC count tables to outdir/counts/per_sample."
+        },
+        "statistics_cpus": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8,
+          "description": "CPU cores allocated to each family-wide DRIMSeq fit and zero-boundary sensitivity pass."
+        },
+        "statistics_bootstrap_cpus": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 4,
+          "description": "CPU cores per scattered bootstrap batch. Each batch keeps bootstrap replicate parallelism within this allocation."
+        },
+        "statistics_bootstrap_batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 500,
+          "description": "Number of genes per scattered bootstrap batch."
+        },
+        "statistics_bootstrap_max_forks": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8,
+          "description": "Maximum concurrent scattered bootstrap batches across the workflow."
+        },
+        "slurm_account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Slurm account (--account)."
+        },
+        "slurm_partition": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Slurm partition."
+        },
+        "slurm_qos": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Slurm quality of service (--qos)."
+        },
+        "slurm_queue_size": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "Most jobs Nextflow keeps queued at once."
+        },
+        "slurm_submit_rate": {
+          "type": "string",
+          "default": "10 sec",
+          "description": "Job submission rate limit, for example '10 sec'."
+        },
+        "scratch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Shared scratch directory. When set, the work directory is <scratch>/pacusage-work and tasks run there."
+        },
         "bind_paths": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "default": [],
-          "description": "Host directories explicitly bind-mounted into Apptainer."
+          "description": "Host directories bind-mounted into Apptainer at the same path, for inputs outside its default mounts. Give a YAML list in analysis.yaml."
         },
-        "container": {"type": "string", "default": "containers/pacusage.sif"}
+        "container": {
+          "type": "string",
+          "default": "containers/pacusage.sif",
+          "description": "Apptainer image. Defaults to containers/pacusage.sif in the pipeline directory."
+        }
       }
     }
   },
   "allOf": [
-    {"$ref": "#/definitions/input_output"},
-    {"$ref": "#/definitions/protocol"},
-    {"$ref": "#/definitions/calibration"},
-    {"$ref": "#/definitions/discovery"},
-    {"$ref": "#/definitions/statistics"},
-    {"$ref": "#/definitions/execution"}
+    {
+      "$ref": "#/definitions/input_output"
+    },
+    {
+      "$ref": "#/definitions/protocol"
+    },
+    {
+      "$ref": "#/definitions/calibration"
+    },
+    {
+      "$ref": "#/definitions/discovery"
+    },
+    {
+      "$ref": "#/definitions/statistics"
+    },
+    {
+      "$ref": "#/definitions/execution"
+    }
   ]
 }

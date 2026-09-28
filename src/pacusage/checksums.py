@@ -17,11 +17,6 @@ def record_input_checksums(
     """
     if not base_rows:
         raise PacusageError("Base input checksums are empty.")
-    if any(row.get("role") == "alignment" for row in base_rows):
-        raise PacusageError(
-            "Base input checksums already contain alignment rows. VALIDATE_INPUTS was "
-            "probably reused from an older PACusage version; rerun without -resume."
-        )
 
     metadata_by_sample: dict[str, dict[str, str]] = {}
     for metadata in metadata_rows:

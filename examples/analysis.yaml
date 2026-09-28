@@ -1,15 +1,22 @@
+# Required. Relative paths resolve against the directory Nextflow runs from.
 input: samples.tsv
-outdir: results
 assembly: GRCh38
-fasta: /reference/GRCh38.fa
-gtf: /reference/gencode.gtf
+fasta: /refs/GRCh38.primary_assembly.genome.fa
+gtf: /refs/gencode.v46.annotation.gtf
+outdir: results
 
+# The protocol. generic_3prime calibrates every compatible evidence source.
 library_profile: generic_3prime
-layout: auto
-strandedness: auto
-evidence_source: auto
-endpoint_model: auto
 
-# Add shared filesystem roots when using Apptainer on an HPC.
+# Slurm, used with -profile slurm.
+# slurm_account: my_lab
+# slurm_partition: general
+
+# Put the Nextflow work directory on a scratch filesystem.
+# scratch: /work/users/me
+
+# Apptainer mounts only some host paths by default. List every directory that
+# holds inputs, including the directories the alignments live in.
 # bind_paths:
-#   - /vast
+#   - /proj/my_lab
+#   - /work/users/me

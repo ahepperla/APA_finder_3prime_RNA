@@ -3,8 +3,10 @@ from pathlib import Path
 import pytest
 
 from pacusage.errors import PacusageError
-from pacusage.parameters import normalize_parameters
+from pacusage.parameters import load_schema, resolve_parameters
 from pacusage.samples import control_mapping_rows, read_and_validate_samples
+
+SCHEMA = Path(__file__).resolve().parents[2] / "nextflow_schema.json"
 
 
 def parameters(tmp_path: Path) -> dict:
@@ -12,13 +14,14 @@ def parameters(tmp_path: Path) -> dict:
     gtf = tmp_path / "genes.gtf"
     fasta.write_text(">chr1\nAAAA\n")
     gtf.write_text('chr1\ttest\tgene\t1\t4\t.\t+\t.\tgene_id "g1";\n')
-    return normalize_parameters(
+    return resolve_parameters(
         {
             "input": str(tmp_path / "samples.tsv"),
             "assembly": "test",
             "fasta": str(fasta),
             "gtf": str(gtf),
-        }
+        },
+        load_schema(SCHEMA),
     )
 
 

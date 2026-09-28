@@ -76,16 +76,6 @@ def test_record_input_checksums_empty_base_rows() -> None:
         record_input_checksums([], [], [])
 
 
-def test_record_input_checksums_base_already_has_alignment_row() -> None:
-    """Test that base_rows with alignment role raises PacusageError."""
-    base = [
-        {"role": "sample_sheet", "path": "/path", "sha256": "abc123"},
-        {"role": "alignment", "path": "/path/align.bam", "sha256": "def456"},
-    ]
-    with pytest.raises(PacusageError, match="already contain alignment rows"):
-        record_input_checksums(base, [], [])
-
-
 def test_record_input_checksums_mismatched_alignment_path() -> None:
     """Test that mismatched source_alignment raises PacusageError naming the sample."""
     base = [

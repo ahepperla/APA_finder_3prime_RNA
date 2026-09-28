@@ -12,14 +12,12 @@ workflow QUANTIFICATION {
     main:
     QUANTIFY_PACS(evidence, atlas, run_resolution, kernel, resolved_params)
     count_tables = QUANTIFY_PACS.out.counts.map { meta, table -> table }.collect()
-    MERGE_COUNTS(count_tables, atlas, resolved_params)
+    MERGE_COUNTS(count_tables, atlas)
 
     emit:
     wide = MERGE_COUNTS.out.wide
     long_counts = MERGE_COUNTS.out.long_counts
     gene_totals = MERGE_COUNTS.out.gene_totals
     pau = MERGE_COUNTS.out.pau
-    testable = MERGE_COUNTS.out.testable
-    filtering = MERGE_COUNTS.out.filtering
     quantification_qc = QUANTIFY_PACS.out.qc.collect()
 }

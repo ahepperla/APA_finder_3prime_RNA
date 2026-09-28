@@ -1,18 +1,16 @@
 # Tests for scripts/fit_usage_model.R with real DRIMSeq and stageR.
 #
-# Usage: Rscript tests/test_usage_model.R scripts/fit_usage_model.R
+# Usage: Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
 #
-# Cases marked NEW describe the repaired statistics and must fail on the
-# pre-repair script (commit 870c4d1). Cases marked KEEP cover helper behavior
-# that both versions share.
+# Cases marked M cover the model and its outputs; cases marked H cover helpers.
 
 arguments <- commandArgs(trailingOnly = TRUE)
 if (length(arguments) != 1L) {
-  stop("Usage: Rscript tests/test_usage_model.R scripts/fit_usage_model.R")
+  stop("Usage: Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R")
 }
 script <- normalizePath(arguments[[1]], mustWork = TRUE)
 test_file <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[[1]])
-source(file.path(dirname(normalizePath(test_file)), "r", "usage_model_helpers.R"))
+source(file.path(dirname(normalizePath(test_file)), "usage_model_helpers.R"))
 
 model <- load_usage_model(script)
 install_drimseq_counters()
@@ -86,7 +84,7 @@ stager_oracle <- function(pacs, alpha) {
   result
 }
 
-test_case("NEW-01", "pac_fdr is finite for screened genes and matches stageR", {
+test_case("M-01", "pac_fdr is finite for screened genes and matches stageR", {
   run <- require_run(run_a)
   screened <- list(
     T1_vs_C = c(
@@ -124,7 +122,7 @@ test_case("NEW-01", "pac_fdr is finite for screened genes and matches stageR", {
   }
 })
 
-test_case("NEW-02", "a PAC silent in the control is called gained", {
+test_case("M-02", "a PAC silent in the control is called gained", {
   run <- require_run(run_a)
   pacs <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
   row <- one_row(pacs, pac_id = gain_pac3)
@@ -146,7 +144,7 @@ test_case("NEW-02", "a PAC silent in the control is called gained", {
   )
 })
 
-test_case("NEW-03", "a PAC silent only in another treatment leaves this comparison testable", {
+test_case("M-03", "a PAC silent only in another treatment leaves this comparison testable", {
   run <- require_run(run_a)
   t1 <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
   rows <- t1[t1$gene_id == "gene_unrelated_zero", , drop = FALSE]
@@ -177,7 +175,7 @@ test_case("NEW-03", "a PAC silent only in another treatment leaves this comparis
   )
 })
 
-test_case("NEW-04", "stabilized genes get precision, proportions, and gene p-values", {
+test_case("M-04", "stabilized genes get precision, proportions, and gene p-values", {
   run <- require_run(run_a)
   for (comparison in c("T1_vs_C", "T2_vs_C")) {
     pacs <- read_result(run$final_directory, paste0(comparison, ".pacs.tsv.gz"))
@@ -213,7 +211,7 @@ test_case("NEW-04", "stabilized genes get precision, proportions, and gene p-val
   check(all(is.finite(as_number(rows$fitted_control_pau))), "fitted_pau has missing values.")
 })
 
-test_case("NEW-05", "bootstrap intervals exist for gained, lost, and shifted PACs", {
+test_case("M-05", "bootstrap intervals exist for gained, lost, and shifted PACs", {
   for (run in list(require_run(run_a), require_run(run_b))) {
     t1 <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
     t2 <- read_result(run$final_directory, "T2_vs_C.pacs.tsv.gz")
@@ -242,7 +240,7 @@ test_case("NEW-05", "bootstrap intervals exist for gained, lost, and shifted PAC
   }
 })
 
-test_case("NEW-06", "results do not depend on workers, batch size, or the ambient seed", {
+test_case("M-06", "results do not depend on workers, batch size, or the ambient seed", {
   a <- require_run(run_a)
   b <- require_run(run_b)
   check(length(a$batches) >= 3L, "run A wrote ", length(a$batches), " batches.")
@@ -255,13 +253,13 @@ test_case("NEW-06", "results do not depend on workers, batch size, or the ambien
   }
 })
 
-test_case("NEW-07", "the fit calls DRIMSeq once plus once per stabilization repeat", {
+test_case("M-07", "the fit calls DRIMSeq once plus once per stabilization repeat", {
   calls <- require_run(run_a)$fit_calls
   check(calls[["dmPrecision"]] == 6L, "dmPrecision was called ", calls[["dmPrecision"]], " times.")
   check(calls[["dmFit"]] == 6L, "dmFit was called ", calls[["dmFit"]], " times.")
 })
 
-test_case("NEW-08", "the bootstrap keeps precision fixed and refits each batch once per draw", {
+test_case("M-08", "the bootstrap keeps precision fixed and refits each batch once per draw", {
   run <- require_run(run_a)
   calls <- run$bootstrap_calls
   batches <- length(run$batches)
@@ -272,7 +270,7 @@ test_case("NEW-08", "the bootstrap keeps precision fixed and refits each batch o
   )
 })
 
-test_case("NEW-09", "sourcing the script does not run the command line", {
+test_case("M-09", "sourcing the script does not run the command line", {
   environment <- new.env()
   outcome <- tryCatch(
     {
@@ -285,11 +283,11 @@ test_case("NEW-09", "sourcing the script does not run the command line", {
   check(exists("run_fit_mode", envir = environment, inherits = FALSE), "run_fit_mode is missing.")
 })
 
-test_case("NEW-10", "bootstrap batches default to 500 genes", {
+test_case("M-10", "bootstrap batches default to 500 genes", {
   check(identical(model$parse_batch_size(NULL), 500L), "default batch size is not 500.")
 })
 
-test_case("KEEP-01", "bootstrap totals must be finite non-negative integers", {
+test_case("H-01", "bootstrap totals must be finite non-negative integers", {
   check(identical(model$bootstrap_total(c(1, 2), "gene-1", "sample-1"), 3L), "total of 1 and 2.")
   check(identical(model$bootstrap_total(c(0, 0), "gene-1", "sample-1"), 0L), "total of zeros.")
   for (values in list(c(1, NA_real_), c(0.5, 0.6), c(.Machine$integer.max, 1))) {
@@ -307,7 +305,7 @@ test_case("KEEP-01", "bootstrap totals must be finite non-negative integers", {
   }
 })
 
-test_case("KEEP-02", "bootstrap gene selection follows gene FDR and candidates", {
+test_case("H-02", "bootstrap gene selection follows gene FDR and candidates", {
   check(identical(
     model$bootstrap_gene_ids(
       c("gene-1", "gene-2", NA_character_, "gene-4"),
@@ -326,7 +324,7 @@ test_case("KEEP-02", "bootstrap gene selection follows gene FDR and candidates",
   ), "selection without candidates.")
 })
 
-test_case("KEEP-03", "parallel bootstrap application matches serial application", {
+test_case("H-03", "parallel bootstrap application matches serial application", {
   probe <- function(repeat_number) {
     set.seed(1000L + repeat_number)
     c(repeat_number, stats::runif(1))
@@ -337,12 +335,12 @@ test_case("KEEP-03", "parallel bootstrap application matches serial application"
   )
 })
 
-test_case("KEEP-04", "dominant PAC ignores missing values", {
+test_case("H-04", "dominant PAC ignores missing values", {
   check(identical(model$dominant_pac(c("p1", "p2"), c(NA_real_, NA_real_)), NA_character_), "all NA.")
   check(identical(model$dominant_pac(c("p1", "p2"), c(NA_real_, 0.25)), "p2"), "one NA.")
 })
 
-test_case("KEEP-05", "event classification", {
+test_case("H-05", "event classification", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05
@@ -380,7 +378,7 @@ test_case("KEEP-05", "event classification", {
   }
 })
 
-test_case("KEEP-06", "bootstrap interval files are validated", {
+test_case("H-06", "bootstrap interval files are validated", {
   expect_error_text <- function(code, pattern) {
     message_text <- tryCatch(
       {
@@ -427,7 +425,7 @@ expect_error_containing <- function(code, pattern) {
   check(grepl(pattern, message_text, fixed = TRUE), "expected an error containing '", pattern, "'.")
 }
 
-test_case("NEW-11", "PACs are ordered by genomic coordinate within each gene", {
+test_case("M-11", "PACs are ordered by genomic coordinate within each gene", {
   counts <- data.frame(
     gene_id = c("g1", "g1", "g2", "g2"),
     pac_id = c("PACv1.t.chr1.+.1000", "PACv1.t.chr1.+.200", "PACv1.t.chr1.-.90", "PACv1.t.chr1.-.80"),
@@ -461,7 +459,7 @@ small_layout <- function() {
   )
 }
 
-test_case("NEW-12", "zero groups are found across condition and covariate levels", {
+test_case("M-12", "zero groups are found across condition and covariate levels", {
   layout <- small_layout()
   check(is.factor(layout$samples$batch), "covariates are not categorical.")
   counts <- data.frame(
@@ -477,7 +475,7 @@ test_case("NEW-12", "zero groups are found across condition and covariate levels
   )
 })
 
-test_case("NEW-13", "zero perturbation changes only zeros, within (0, 0.1), reproducibly", {
+test_case("M-13", "zero perturbation changes only zeros, within (0, 0.1), reproducibly", {
   values <- matrix(c(0, 3, 0, 7, 0, 1), nrow = 2)
   first <- model$perturb_zero_cells(values, 42L)
   again <- model$perturb_zero_cells(values, 42L)
@@ -489,7 +487,7 @@ test_case("NEW-13", "zero perturbation changes only zeros, within (0, 0.1), repr
   check(!identical(first, other), "different seeds gave identical values.")
 })
 
-test_case("NEW-14", "event classification reads typed flags in a mixed table", {
+test_case("M-14", "event classification reads typed flags in a mixed table", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05
@@ -515,7 +513,7 @@ test_case("NEW-14", "event classification reads typed flags in a mixed table", {
   )
 })
 
-test_case("NEW-15", "bootstrap batches are validated before use", {
+test_case("M-15", "bootstrap batches are validated before use", {
   run <- require_run(run_a)
   batch <- readRDS(run$batches[[1]])
   model$validate_bootstrap_batch(batch)
@@ -526,7 +524,6 @@ test_case("NEW-15", "bootstrap batches are validated before use", {
     changed
   }
   broken <- list(
-    list(with_field("schema_version", 1L), "is not supported"),
     list(with_field("counts", batch$counts[, -3L, drop = FALSE]), "counts columns that do not match"),
     list(with_field("selections", data.frame(
       gene_id = "unknown", comparison = batch$comparisons$comparison[[1]]
@@ -536,7 +533,7 @@ test_case("NEW-15", "bootstrap batches are validated before use", {
   for (case in broken) expect_error_containing(model$validate_bootstrap_batch(case[[1]]), case[[2]])
 })
 
-test_case("NEW-19", "bootstrap seeds are distinct across replicates of a gene", {
+test_case("M-19", "bootstrap seeds are distinct across replicates of a gene", {
   seeds <- vapply(1:1000, function(replicate_number) {
     model$stable_seed(1729, "0123456789abcdef0123456789abcdef", "DMSO", "gene-1", "bootstrap", replicate_number)
   }, integer(1))
@@ -544,7 +541,7 @@ test_case("NEW-19", "bootstrap seeds are distinct across replicates of a gene", 
   check(seeds[[120]] != seeds[[201]], "replicates 120 and 201 share a seed.")
 })
 
-test_case("NEW-16", "finalize stops when a selected PAC receives no interval", {
+test_case("M-16", "finalize stops when a selected PAC receives no interval", {
   run <- require_run(run_a)
   empty_intervals <- tempfile(fileext = ".tsv.gz")
   connection <- gzfile(empty_intervals, "wt")
@@ -560,7 +557,7 @@ test_case("NEW-16", "finalize stops when a selected PAC receives no interval", {
   )
 })
 
-test_case("NEW-20", "a stabilized gene whose first repeat failed keeps its df and p-values", {
+test_case("M-20", "a stabilized gene whose first repeat failed keeps its df and p-values", {
   sample_ids <- c("C_1", "C_2", "T1_1", "T1_2")
   layout <- list(
     family = "C", control = "C", sample_ids = sample_ids,
@@ -620,7 +617,7 @@ run_variant <- tryCatch(
   error = function(error) error
 )
 
-test_case("NEW-17", "with zero bootstrap replicates, rows are marked disabled", {
+test_case("M-17", "with zero bootstrap replicates, rows are marked disabled", {
   run <- require_run(run_variant)
   check(length(run$batches) == 1L, "expected one placeholder batch, found ", length(run$batches), ".")
   check(isTRUE(readRDS(run$batches[[1]])$empty), "the only batch is not the empty placeholder.")
@@ -630,7 +627,7 @@ test_case("NEW-17", "with zero bootstrap replicates, rows are marked disabled", 
   }
 })
 
-test_case("NEW-18", "a condition with no counts leaves only its comparisons untested", {
+test_case("M-18", "a condition with no counts leaves only its comparisons untested", {
   run <- require_run(run_variant)
   t2 <- read_result(run$final_directory, "T2_vs_C.pacs.tsv.gz")
   rows <- t2[t2$gene_id == "null_01", , drop = FALSE]
@@ -646,6 +643,98 @@ test_case("NEW-18", "a condition with no counts leaves only its comparisons unte
   check(one_row(omnibus, gene_id = "null_01")$model_status == "group_without_counts", "omnibus not masked.")
   precision <- read_result(run$final_directory, "gene_precision.tsv.gz")
   check(one_row(precision, gene_id = "null_01")$model_status == "group_without_counts", "precision status.")
+})
+
+test_case("M-21", "statistical filtering gives every PAC one row: tested or its reasons", {
+  counts <- data.frame(
+    gene_id = c(
+      "gA", "gA", "gA", "gB", "gB", NA, "gC,gD", "gE", "gE", "gF", "gF", "gG", "gG"
+    ),
+    pac_id = sprintf("p%02d", 1:13),
+    s1 = c(30, 10, 0, 3, 4, 50, 50, 10, 10, 15, 1, 3, 1),
+    s2 = c(30, 10, 1, 3, 4, 50, 50, 10, 10, 15, 0, 3, 0),
+    outside = rep(99, 13),
+    stringsAsFactors = FALSE
+  )
+  params <- list(
+    min_site_count = 5L, min_test_supporting_samples = 2L,
+    min_site_usage = 0.01, min_gene_total = 20L
+  )
+  result <- model$family_filter(counts, c("s1", "s2"), params, "F")
+  expected_reasons <- c(
+    "", "", "site_count<5;supporting_samples<2", "gene_total<20", "gene_total<20",
+    "no_gene_assignment", "ambiguous_gene_assignment", "", "",
+    "fewer_than_2_testable_pacs", "site_count<5;supporting_samples<2",
+    "gene_total<20;fewer_than_2_testable_pacs", "site_count<5;supporting_samples<2"
+  )
+  reasons <- result$reasons
+  check(identical(names(reasons), model$FILTERING_COLUMNS), "columns: ", paste(names(reasons), collapse = ", "))
+  check(identical(reasons$pac_id, counts$pac_id), "rows are not in input order.")
+  check(all(reasons$family == "F"), "family column is wrong.")
+  check(identical(reasons$reason, expected_reasons), "reasons were ", paste(reasons$reason, collapse = " | "))
+  check(identical(reasons$tested, expected_reasons == ""), "tested flags do not match the reasons.")
+  check(identical(result$counts$pac_id, c("p01", "p02", "p08", "p09")), "tested PACs: ",
+    paste(result$counts$pac_id, collapse = ", "))
+  check(identical(names(result$counts), c("gene_id", "pac_id", "s1", "s2")), "samples outside the family leaked.")
+
+  run <- require_run(run_a)
+  written <- read_result(run$final_directory, "C.statistical_filtering.tsv.gz")
+  check(nrow(written) == nrow(dataset$counts), "the family table does not list every PAC once.")
+  tested <- unique(read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")$pac_id)
+  check(setequal(written$pac_id[written$tested == "TRUE"], tested), "tested flags differ from the tested PACs.")
+})
+
+test_case("M-22", "motif preference uses the family design, covariates included", {
+  samples <- data.frame(
+    sample_id = c("a1", "a2", "a3", "b1", "b2", "b3"),
+    condition = c("A", "A", "A", "B", "B", "B"),
+    control_condition = "A",
+    batch = c("x", "x", "y", "x", "y", "y"),
+    stringsAsFactors = FALSE
+  )
+  layout <- model$family_layout(
+    "A", samples, list(model_covariates = list("batch"), min_replicates_per_condition = 2)
+  )
+  noise <- c(0.01, -0.02, 0.015, -0.01, 0.02, -0.005)
+  canonical <- 0.5 + 0.1 * (samples$condition == "B") + 0.2 * (samples$batch == "y") + noise
+  scores <- rbind(
+    data.frame(
+      sample_id = samples$sample_id, primary_pas_motif_rna = "AAUAAA",
+      primary_motif_class = "canonical", motif_usage = sin(canonical)^2,
+      transformed_motif_usage = canonical, informative_genes = 60L, stringsAsFactors = FALSE
+    ),
+    data.frame(
+      sample_id = samples$sample_id, primary_pas_motif_rna = "AUUAAA",
+      primary_motif_class = "common_variant", motif_usage = 0.2,
+      transformed_motif_usage = asin(sqrt(0.2)) + noise,
+      informative_genes = c(60L, 60L, 60L, 10L, 60L, 60L), stringsAsFactors = FALSE
+    )
+  )
+  directory <- tempfile("motif-")
+  dir.create(directory)
+  model$fit_motif_preferences(scores, layout, list(motif_preference_min_genes = 50L), directory, "preference")
+  output <- read_result(directory, "B_vs_A.preference.tsv.gz")
+  check(identical(names(output), model$MOTIF_PREFERENCE_COLUMNS), "unexpected columns.")
+  check(identical(output$primary_pas_motif_rna, "AAUAAA"), "a class below motif_preference_min_genes in one sample was tested.")
+  adjusted <- unname(stats::coef(stats::lm(canonical ~ batch + condition, data = samples))[["conditionB"]])
+  unadjusted <- unname(stats::coef(stats::lm(canonical ~ condition, data = samples))[["conditionB"]])
+  observed <- as_number(output$transformed_coefficient)
+  check(abs(observed - adjusted) < 1e-10, "coefficient ", observed, " is not the batch-adjusted ", adjusted, ".")
+  check(abs(adjusted - unadjusted) > 1e-3, "the fixture does not distinguish adjusted from unadjusted fits.")
+  check(abs(as_number(output$delta_motif_usage) -
+    (mean(sin(canonical[4:6])^2) - mean(sin(canonical[1:3])^2))) < 1e-10, "delta motif usage is wrong.")
+  check(as_number(output$informative_genes) == 60, "informative genes should be the comparison minimum.")
+})
+
+test_case("M-23", "versions mode writes a table, then appends to it", {
+  path <- tempfile(fileext = ".tsv")
+  versions <- c(DRIMSeq = "1.38.0", stageR = "1.2.3")
+  model$run_versions_mode(list(output = path), versions)
+  model$run_versions_mode(list(output = path), versions)
+  table <- utils::read.delim(path, colClasses = "character")
+  check(identical(names(table), c("software", "version")), "header: ", paste(names(table), collapse = ", "))
+  check(identical(table$software, rep(c("R", "DRIMSeq", "stageR"), 2)), "rows: ", paste(table$software, collapse = ", "))
+  check(identical(table$version[2:3], c("1.38.0", "1.2.3")), "package versions were not written.")
 })
 
 finish_tests()

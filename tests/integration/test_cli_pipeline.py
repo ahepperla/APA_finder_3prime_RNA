@@ -32,7 +32,10 @@ def test_small_exact_boundary_pipeline(tmp_path: Path) -> None:
         EvidenceObservation("t2", "chr1", "+", 300, 2),
         EvidenceObservation("t2", "chr1", "+", 350, 7),
     ]
-    candidates, _ = cluster_exact_boundaries(observations, 2, 12, 5, 2, 2)
+    conditions = {"c1": "control", "c2": "control", "t1": "treatment", "t2": "treatment"}
+    candidates, _ = cluster_exact_boundaries(
+        observations, 2, 12, 5, 2, 2, sample_conditions=conditions
+    )
     atlas = annotate_candidates(
         candidates,
         parse_annotation(gtf),
@@ -64,7 +67,7 @@ def test_small_exact_boundary_pipeline(tmp_path: Path) -> None:
     )
 
 
-def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
+def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path, resolved_params) -> None:
     evidence_paths = []
     splice_continuation_paths = []
     for sample_id in ("a", "b"):
@@ -80,21 +83,13 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
         write_splice_continuations([], splice_continuations)
         splice_continuation_paths.append(str(splice_continuations))
 
-    params = tmp_path / "params.yaml"
-    params.write_text(
-        "\n".join(
-            [
-                "input: samples.tsv",
-                "assembly: test",
-                "fasta: genome.fa",
-                "gtf: genes.gtf",
-                "pac_min_total_count: 1",
-                "pac_min_sample_count: 1",
-                "pac_min_supporting_samples: 0.75",
-                "proximal_bin_size: 1",
-            ]
-        )
-        + "\n"
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(
+        params,
+        pac_min_total_count=1,
+        pac_min_sample_count=1,
+        pac_min_supporting_samples=0.75,
+        proximal_bin_size=1,
     )
     resolution = tmp_path / "resolution.json"
     resolution.write_text('{"endpoint_model":"proximal_tag","evidence_source":"read_3p"}\n')
@@ -148,7 +143,9 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path) -> None:
     )
 
 
-def test_proximal_cluster_cli_rejects_constitutive_readthrough(tmp_path: Path) -> None:
+def test_proximal_cluster_cli_rejects_constitutive_readthrough(
+    tmp_path: Path, resolved_params
+) -> None:
     evidence_paths = []
     continuation_paths = []
     sample_ids = ("control_1", "control_2", "treatment_1", "treatment_2")
@@ -176,23 +173,15 @@ def test_proximal_cluster_cli_rejects_constitutive_readthrough(tmp_path: Path) -
         )
         continuation_paths.append(str(continuation_path))
 
-    params = tmp_path / "params.yaml"
-    params.write_text(
-        "\n".join(
-            [
-                "input: samples.tsv",
-                "assembly: test",
-                "fasta: genome.fa",
-                "gtf: genes.gtf",
-                "pac_min_total_count: 1",
-                "pac_min_sample_count: 1",
-                "pac_min_supporting_samples: 1",
-                "proximal_bin_size: 1",
-                "constitutive_readthrough_min_junction_count: 2",
-                "constitutive_readthrough_min_replicate_support: all",
-            ]
-        )
-        + "\n"
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(
+        params,
+        pac_min_total_count=1,
+        pac_min_sample_count=1,
+        pac_min_supporting_samples=1,
+        proximal_bin_size=1,
+        constitutive_readthrough_min_junction_count=2,
+        constitutive_readthrough_min_replicate_support="all",
     )
     resolution = tmp_path / "resolution.json"
     resolution.write_text('{"endpoint_model":"proximal_tag","evidence_source":"read_3p"}\n')
@@ -299,7 +288,9 @@ def test_merge_comparison_family_statistics(tmp_path: Path) -> None:
     assert (output / "treatment_b_vs_control_b.genes.tsv.gz").is_file()
 
 
-def test_kmer_enrichment_tolerates_unavailable_model_statistics(tmp_path: Path) -> None:
+def test_kmer_enrichment_tolerates_unavailable_model_statistics(
+    tmp_path: Path, resolved_params
+) -> None:
     statistics = tmp_path / "statistics"
     statistics.mkdir()
     write_tsv(
@@ -348,27 +339,21 @@ def test_kmer_enrichment_tolerates_unavailable_model_statistics(tmp_path: Path) 
         atlas,
     )
 
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(params, motif_kmer_length=2)
     output = tmp_path / "kmer"
-    assert (
-        main(
-            [
-                "kmer-enrichment",
-                "--statistics",
-                str(statistics),
-                "--atlas",
-                str(atlas),
-                "--k",
-                "2",
-                "--output-dir",
-                str(output),
-            ]
-        )
-        == 0
-    )
+    arguments = ["kmer-enrichment", "--statistics", str(statistics), "--atlas", str(atlas)]
+    assert main([*arguments, "--params", str(params), "--output-dir", str(output)]) == 0
     assert read_tsv(output / "kmer_enrichment_status.tsv") == [
         {"comparison": "treatment_vs_control", "tested_kmers": "4"}
     ]
     assert (output / "treatment_vs_control.kmer_enrichment.tsv.gz").is_file()
+
+    resolved_params(params, run_kmer_enrichment=False)
+    skipped = tmp_path / "skipped"
+    assert main([*arguments, "--params", str(params), "--output-dir", str(skipped)]) == 0
+    assert read_tsv(skipped / "kmer_enrichment_status.tsv") == [{"status": "not_requested"}]
+    assert not list(skipped.glob("*.kmer_enrichment.tsv.gz"))
 
 
 def test_merge_statistics_concatenates_precision_shards_with_model_status(tmp_path: Path) -> None:
@@ -512,7 +497,9 @@ def test_merge_statistics_orders_shards_by_family_not_task_number(tmp_path: Path
     assert [row["control_condition"] for row in fitted] == ["DMSO", "TreatmentA", "Vehicle"]
 
 
-def _annotate_arguments(tmp_path: Path, candidates: list[PacCandidate], model: str) -> list[str]:
+def _annotate_arguments(
+    tmp_path: Path, candidates: list[PacCandidate], model: str, resolved_params
+) -> list[str]:
     """Inputs for `pacusage annotate` around a one-gene reference."""
     fasta = tmp_path / "genome.fa"
     fasta.write_text(">chr1\n" + "C" * 500 + "\n")
@@ -522,9 +509,8 @@ def _annotate_arguments(tmp_path: Path, candidates: list[PacCandidate], model: s
         'chr1\ttest\tgene\t101\t400\t.\t+\t.\tgene_id "g1"; gene_name "G1";\n'
         'chr1\ttest\texon\t101\t400\t.\t+\t.\tgene_id "g1"; transcript_id "t1";\n'
     )
-    params = tmp_path / "params.json"
-    required = {"input": "samples.tsv", "assembly": "test", "fasta": str(fasta), "gtf": str(gtf)}
-    params.write_text(json.dumps(required))
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(params, fasta=str(fasta), gtf=str(gtf))
     resolution = tmp_path / "resolution.json"
     resolution.write_text(json.dumps({"endpoint_model": model, "evidence_source": "read_3p"}))
     # CLUSTER_PACS writes an empty table, with no header, when nothing passes.
@@ -554,10 +540,10 @@ def _annotate_arguments(tmp_path: Path, candidates: list[PacCandidate], model: s
 
 
 def test_annotate_rejects_an_empty_candidate_table(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], resolved_params
 ) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        main(_annotate_arguments(tmp_path, [], "proximal_tag"))
+        main(_annotate_arguments(tmp_path, [], "proximal_tag", resolved_params))
     assert exc_info.value.code == 2
     error = capsys.readouterr().err
     assert "No PAC candidates passed discovery" in error
@@ -566,7 +552,7 @@ def test_annotate_rejects_an_empty_candidate_table(
     assert not (tmp_path / "pacs.v1.metadata.tsv.gz").exists()
 
 
-def test_annotate_writes_an_atlas_for_one_candidate(tmp_path: Path) -> None:
+def test_annotate_writes_an_atlas_for_one_candidate(tmp_path: Path, resolved_params) -> None:
     candidate = PacCandidate(
         contig="chr1",
         strand="+",
@@ -577,6 +563,6 @@ def test_annotate_writes_an_atlas_for_one_candidate(tmp_path: Path) -> None:
         member_coordinates=(300,),
         status="primary",
     )
-    assert main(_annotate_arguments(tmp_path, [candidate], "exact_boundary")) == 0
+    assert main(_annotate_arguments(tmp_path, [candidate], "exact_boundary", resolved_params)) == 0
     metadata = read_tsv(tmp_path / "pacs.v1.metadata.tsv.gz")
     assert [row["pac_id"] for row in metadata] == ["PACv1.test.chr1.+.300"]

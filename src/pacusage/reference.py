@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import shutil
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -30,17 +29,26 @@ class GenomicFeature:
 def prepare_reference(
     fasta: str | Path,
     output_fasta: str | Path,
-    supplied_fai: str | Path | None = None,
 ) -> dict[str, str]:
-    """Link the FASTA and place a validated or new index beside the link.
+    """Link the FASTA and index it in the task directory.
 
-    The source is never copied or written to: ``faidx`` runs on the link, so a
+    The source is never copied or written to: ``faidx`` runs on the link, so the
     generated index lands next to ``output_fasta``, not next to the source.
     """
     source = Path(fasta).resolve()
     destination = Path(output_fasta)
     if not source.is_file():
         raise PacusageError(f"Genome FASTA does not exist: {source}")
+
+    # Detect compression by magic bytes.
+    with open(source, "rb") as handle:
+        magic = handle.read(2)
+    if magic == b"\x1f\x8b":
+        raise PacusageError(
+            f"FASTA {source} is compressed. Decompress it (gunzip or bgzip -d) "
+            "and set fasta to the uncompressed file."
+        )
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination_fai = Path(f"{destination}.fai")
     for path in (destination, destination_fai):
@@ -52,77 +60,24 @@ def prepare_reference(
             path.unlink()
     destination.symlink_to(source)
 
-    action = "generated_index"
-    if supplied_fai and Path(supplied_fai).is_file():
-        if validate_fai(source, supplied_fai):
-            shutil.copyfile(supplied_fai, destination_fai)
-            action = "reused_index"
-        else:
-            raise PacusageError(
-                f"Supplied FASTA index {supplied_fai} does not match {source}. "
-                "Remove it or provide the matching index."
-            )
-    else:
-        sibling = Path(f"{source}.fai")
-        if sibling.is_file() and validate_fai(source, sibling):
-            shutil.copyfile(sibling, destination_fai)
-            action = "reused_index"
-        else:
-            try:
-                pysam.faidx(str(destination))
-            except Exception as error:
-                raise PacusageError(
-                    f"FASTA {source} could not be indexed. Ensure it is uncompressed "
-                    "or BGZF-compressed and contains valid FASTA records."
-                ) from error
+    try:
+        pysam.faidx(str(destination))
+    except Exception as error:
+        raise PacusageError(
+            f"FASTA {source} could not be indexed. Ensure it is uncompressed "
+            "and contains valid FASTA records."
+        ) from error
+
     if not destination_fai.is_file():
         raise PacusageError(f"Reference preparation did not create {destination_fai}.")
     return {
         "source_fasta": str(source),
         "prepared_fasta": str(destination),
         "prepared_fai": str(destination_fai),
-        "action": action,
+        "action": "generated_index",
         "fasta_sha256": sha256_file(destination),
         "fai_sha256": sha256_file(destination_fai),
     }
-
-
-def validate_fai(fasta: str | Path, fai: str | Path) -> bool:
-    try:
-        expected = _scan_fasta_lengths(fasta)
-        observed: dict[str, int] = {}
-        with Path(fai).open() as handle:
-            for line in handle:
-                fields = line.rstrip("\n").split("\t")
-                if len(fields) < 2:
-                    return False
-                observed[fields[0]] = int(fields[1])
-        return observed == expected
-    except (OSError, ValueError):
-        return False
-
-
-def _scan_fasta_lengths(path: str | Path) -> dict[str, int]:
-    lengths: dict[str, int] = {}
-    name: str | None = None
-    length = 0
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rt") as handle:
-        for line in handle:
-            if line.startswith(">"):
-                if name is not None:
-                    lengths[name] = length
-                name = line[1:].split()[0]
-                if not name or name in lengths:
-                    raise ValueError("Invalid or duplicate FASTA sequence name")
-                length = 0
-            else:
-                length += len(line.strip())
-    if name is not None:
-        lengths[name] = length
-    if not lengths:
-        raise ValueError("No FASTA records")
-    return lengths
 
 
 def annotation_contigs(path: str | Path) -> set[str]:
@@ -248,6 +203,3 @@ def transcript_ends(
         result[key] = sorted(set(result[key]))
     return result
 
-
-def iter_exons(features: list[GenomicFeature]) -> Iterator[GenomicFeature]:
-    return (feature for feature in features if feature.feature_type == "exon")

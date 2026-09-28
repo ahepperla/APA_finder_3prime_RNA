@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-REPOSITORY = Path(__file__).resolve().parents[1]
+REPOSITORY = Path(__file__).resolve().parents[2]
 ROOT = REPOSITORY / "results-test"
 FIXTURES = REPOSITORY / "tests" / "fixtures"
 COMPARISONS = ("TreatmentA_vs_DMSO", "TreatmentB_vs_Vehicle", "Rescue_vs_TreatmentA")
@@ -81,9 +81,8 @@ def task_directories(trace_text: str, process: str) -> dict[str, Path]:
 
 
 def check_alignment_handling(trace_text: str) -> None:
-    # One scan per sample replaces per-source calibration passes.
+    # One scan per sample reads each alignment once for every evidence source.
     assert trace_text.count("PACUSAGE:DISCOVERY:SCAN_ALIGNMENT") == 10
-    assert "CALIBRATE_SAMPLE" not in trace_text
     assert trace_text.count("PACUSAGE:RECORD_INPUT_CHECKSUMS") == 1
     samples = pd.read_csv(FIXTURES / "samples.tsv", sep="\t", dtype=str)
     sources = dict(zip(samples["sample_id"], samples["alignment"], strict=True))
@@ -211,6 +210,23 @@ def main() -> None:
     assert (observed[samples].astype(int) == wanted[samples].astype(int)).all().all()
     assert (observed["gene_id"] == wanted["gene_id"]).all()
 
+    # Every PAC gets one filtering row per family, tested exactly when it
+    # appears in that family's comparisons.
+    assert not (ROOT / "qc" / "statistical_filtering.tsv").exists()
+    for family in FAMILIES:
+        filtering = statistics_table(f"{family}.statistical_filtering.tsv.gz")
+        assert sorted(filtering["pac_id"]) == sorted(counts["pac_id"]), family
+        tested = set(filtering.loc[filtering["tested"], "pac_id"])
+        for name in COMPARISONS:
+            if name.endswith(f"_vs_{family}"):
+                assert set(tables[name]["pac_id"]) == tested, name
+        assert (filtering.loc[~filtering["tested"], "reason"].str.len() > 0).all(), family
+    assert not list((ROOT / "statistics").glob("*.preference*")), "preference tables in statistics/"
+    assert len(list((ROOT / "motifs").glob("*.preference.tsv.gz"))) == len(COMPARISONS)
+
+    versions = pd.read_csv(ROOT / "manifest" / "software_versions.tsv", sep="\t")
+    assert {"pacusage", "pysam", "R", "DRIMSeq", "stageR", "limma"} <= set(versions["software"])
+
     pau = pd.read_csv(ROOT / "counts" / "observed_pau.tsv.gz", sep="\t")
     positive = pau[pau["gene_total"] > 0]
     sums = positive.groupby(["gene_id", "sample_id"])["pau"].sum().to_numpy()
@@ -228,6 +244,8 @@ def main() -> None:
     assert "<h2>Calibration kernel</h2>" in report_text
     assert "Calibration warning" not in report_text
     assert "PAU sample correlation" in report_text
+    assert "<h2>Top gene usage profiles</h2>" in report_text
+    assert "<h2>Statistical filtering</h2>" in report_text
     assert "PAC-level p-value distribution" in report_text
     assert "primary_pas_motif_rna" in report_text
     assert "AAUAAA" in report_text
@@ -249,6 +267,11 @@ def main() -> None:
     for family in FAMILIES:
         assert tags.count(family) >= 1, f"{family} has no bootstrap task"
     assert tags.count("DMSO") >= 2, "the DMSO family was not scattered into several batches"
+    # Each batch file becomes one bootstrap task, including a family's only batch.
+    fits = task_directories(trace_text, "FIT_USAGE_MODEL")
+    batches = [len(list(path.glob("family-*/bootstrap-batches/*.rds"))) for path in fits.values()]
+    assert sum(batches) == len(tags), f"{sum(batches)} batch files, {len(tags)} bootstrap tasks"
+    assert 1 in batches, "no family wrote a single bootstrap batch"
 
 
 if __name__ == "__main__":

@@ -6,12 +6,13 @@ process BUILD_REPORT {
 
     input:
     path artifacts
+    path resolved_params
 
     output:
     path 'index.html', emit: html
 
     script:
     """
-    pacusage report --results . --output index.html
+    pacusage report --results . --params '${resolved_params}' --output index.html
     """
 }

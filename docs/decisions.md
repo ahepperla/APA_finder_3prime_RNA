@@ -8,6 +8,113 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-27: Stabilized genes' p-values are seed-dependent, and documented as such
+
+Status: accepted (project lead, option (a) of the overseer's question)
+
+Genes fitted with zero-count stabilization (`model_status`
+`drimseq_add_uniform`) keep the stabilization and instability rules of
+"Statistics repair details". The README now says that their precision and
+p-values depend on the seed, and should be read alongside `model_status`.
+
+Reason: on the fixture, a new seed moved one stabilized gene's precision 7x
+and one PAC's `pac_fdr` from 0.18 to 0.001, while ΔPAU moved by under 0.001.
+The rejected alternatives were a precision or p-value spread criterion in the
+instability flag, more stabilization repeats, and a spread column. Any of
+them would change the statistics just before the final HPC run.
+
+## 2026-09-27: Resume reruns everything from the alignment scan after any parameter change
+
+Status: accepted (project lead)
+
+Every step from SCAN_ALIGNMENT on reads `resolved_params.yaml`. So any
+parameter change reruns them on `-resume`, including `outdir`, the `save_*`
+flags, and the Slurm and CPU settings; only preparation and strandedness
+inference are reused. This stays as it is, and the README says so.
+
+Reason: VALIDATE_INPUTS reruns on any change, and its outputs get new paths,
+so downstream caches miss. Avoiding that would need content-hashed inputs,
+which re-read every alignment on resume, or validation split across more
+steps. That is complexity the final cleanup was meant to remove.
+
+## 2026-09-27: Final cleanup before the HPC rerun
+
+Status: accepted (project lead, by approving the cleanup plan and answering
+its questions)
+
+- **One implementation of each step.**
+  - `scan.py` is the only evidence extraction. `evidence.py`'s
+    `extract_evidence` and `extract_splice_continuations`, and the serial
+    `pacusage calibrate`, are deleted. Tests assert the documented rules, plus
+    calibration outputs recorded from the removed path while it existed.
+  - Statistical filtering reasons are written per comparison family by
+    `fit_usage_model.R`, from the filter that selects the tested PACs, to
+    `statistics/FAMILY.statistical_filtering.tsv.gz`. `qc/statistical_filtering.tsv`
+    and Python's `filter_testable_features` are removed.
+  - `nextflow_schema.json` defines every parameter. VALIDATE_INPUTS stages it
+    and validates once. Later steps read `resolved_params.yaml` as it is,
+    except INFER_STRANDEDNESS, which takes its parameters on the command line
+    so that other parameter changes don't rerun it. Python's `DEFAULTS` and
+    its copies of the schema's rules are removed.
+- **Logic fixes.**
+  - Contig aliases apply to `excluded_contigs` (raw or aliased name) and to
+    strandedness inference. This closes the deferral in "Read each alignment
+    once".
+  - The k-mer CMH interval uses the Robins-Breslow-Greenland variance, as R's
+    `mantelhaen.test` does.
+  - Motif preference follows design section 9:
+    - it fits the family's main design, covariates included;
+    - one limma fit per comparison, with motif classes as rows;
+    - a class is tested only when every sample of the comparison has enough
+      informative genes.
+
+    Motif scores and the report's PAU QC use genes with at least
+    `min_gene_total` reads in every sample.
+  - A compressed FASTA is rejected, and the `.fai` is always generated in the
+    task directory. This supersedes the sibling-index reuse in
+    "Implementation choices in the BAM pass cleanup".
+  - `samtools sort` runs with `--no-PG`.
+  - File parameters are resolved against the launch directory.
+  - The `save_*` publication flags are compared as text, since Nextflow 25.10
+    and later pass command-line values as strings.
+  - RECORD_SOFTWARE_VERSIONS adds R and the statistics packages to
+    `software_versions.tsv`. Loading them right after validation stops a run
+    that lacks one within minutes. It is a separate step, so that an edit to
+    the R script reruns only the statistics on `-resume`.
+  - The report stages the sample sheet, so its gene plots appear.
+  - Motif preference tables are published only to `motifs/`.
+  - Gene and known-PAC lookups in annotation and clustering use indexes
+    instead of scanning every feature.
+- **Removed.**
+  - The scan and bootstrap-batch version guards.
+  - The VALIDATE_INPUTS cache-busting comment, which supersedes that item of
+    "Implementation choices in the BAM pass cleanup".
+  - Fallbacks for older output formats.
+  - Three never-set atlas columns and the never-produced
+    `motif_assisted_rescue` status.
+  - The Dockerfile, `envs/test.yml`, the bootstrap channel test, and the
+    benchmark script.
+- **Layout.**
+  - The design and this log moved to `docs/design.md` and
+    `docs/decisions.md`; this supersedes the file name in "Decisions are
+    recorded in DECISIONS.md".
+  - The R tests are in `tests/r/`, and the end-to-end script and its checks in
+    `tests/pipeline/`.
+- **Deployment.**
+  - The Apptainer image stays self-contained, with the Python package
+    installed, and is rebuilt after every pull. `bin/pacusage` prefers the
+    installed package and otherwise runs `src/`.
+  - With `scratch` set, tasks run in the work directory.
+  - CI pins Nextflow 25.04.7, the cluster's version.
+
+Reason: the lead asked for one last simplification pass, with no backwards
+compatibility, before a fresh run on the cluster. Each item removes duplicate
+or dead logic, or fixes a mismatch with the design. The atlas file lost three
+columns, and its checksum seeds the statistics, so the seeded results change
+once. On the fixture this moved ΔPAU by under 0.001. In the one gene with
+zero-count stabilization, it moved p-values by up to two orders of magnitude
+and changed one descriptive event call.
+
 ## 2026-09-27: The calibration kernel diagnostic warns and never stops a run
 
 Status: accepted (project lead, by approving the calibration kernel warning

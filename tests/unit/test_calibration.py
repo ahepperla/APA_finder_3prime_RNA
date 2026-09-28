@@ -21,12 +21,7 @@ from pacusage.calibration import (
 )
 from pacusage.cli import _read_kernel, main
 from pacusage.models import EvidenceObservation
-from pacusage.parameters import normalize_parameters
 from pacusage.tableio import read_tsv
-
-
-def params() -> dict:
-    return normalize_parameters({"input": "x", "assembly": "x", "fasta": "x", "gtf": "x"})
 
 
 def test_empirical_kernel_is_normalized_and_deterministic() -> None:
@@ -37,8 +32,8 @@ def test_empirical_kernel_is_normalized_and_deterministic() -> None:
     assert kernel_overlap(first, 0) == 1
 
 
-def test_exact_and_proximal_classification() -> None:
-    values = params()
+def test_exact_and_proximal_classification(resolved_params) -> None:
+    values = resolved_params()
     values["calibration_min_genes"] = 1
     exact = CalibrationMetrics("s", "read_3p", 2, 20, 0, 0, -1, 1, 0.9, 0, 0.95)
     proximal = CalibrationMetrics("s", "read_3p", 2, 20, 50, 50, 30, 70, 0, 0, 0.95)
@@ -187,26 +182,64 @@ CALIBRATION_CASES = {
 }
 
 
+# The outputs of the serial calibration that the split path replaced,
+# recorded while both existed. Per sample: evidence source, calibration genes,
+# observations, then median_offset, central_low, central_high,
+# adjacent_boundary_fraction, poly_a_clip_fraction, and reproducibility.
+TRIANGLE = {-2: 1 / 9, -1: 2 / 9, 0: 3 / 9, 1: 2 / 9, 2: 1 / 9}
+CALIBRATION_EXPECTED = {
+    "exact_boundary_SE": {
+        "resolution": ("exact_boundary", "polyA_junction", "exact_boundary", "SE"),
+        "samples": {
+            "sample_a": ("polyA_junction", 5, 50, (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)),
+            "sample_b": ("polyA_junction", 5, 50, (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)),
+        },
+        "kernel": TRIANGLE,
+        "diagnostics": (1, 2, 0.0, 0.0),
+    },
+    "generic_SE": {
+        "resolution": ("generic_3prime", "read_3p", "exact_boundary", "SE"),
+        "samples": {
+            "sample_a": ("read_3p", 5, 125, (0.0, -3.0, 0.0, 0.8, 0.2, 0.9463258650628944)),
+            "sample_b": ("read_3p", 5, 125, (0.0, 0.0, 3.0, 0.8, 0.2, 0.9463258650628944)),
+        },
+        "kernel": {
+            offset: weight / 90
+            for offset, weight in zip(
+                range(-5, 6), (1, 2, 3, 10, 17, 24, 17, 10, 3, 2, 1), strict=True
+            )
+        },
+        "diagnostics": (1, 3, 3.0, 1.0),
+    },
+    "generic_PE": {
+        "resolution": ("generic_3prime", "fragment_3p", "exact_boundary", "PE"),
+        "samples": {
+            "sample_a": ("fragment_3p", 5, 100, (0.0, 0.0, 0.0, 1.0, 0.25, 1.0)),
+            "sample_b": ("fragment_3p", 5, 100, (0.0, 0.0, 0.0, 1.0, 0.25, 1.0)),
+        },
+        "kernel": TRIANGLE,
+        "diagnostics": (1, 2, 0.0, 0.0),
+    },
+}
+METRIC_COLUMNS = (
+    "median_offset",
+    "central_low",
+    "central_high",
+    "adjacent_boundary_fraction",
+    "poly_a_clip_fraction",
+    "reproducibility",
+)
+
+
 @pytest.mark.parametrize("case", CALIBRATION_CASES)
-def test_split_calibration_matches_legacy_outputs(tmp_path: Path, case: str) -> None:
+def test_split_calibration_outputs(tmp_path: Path, case: str, resolved_params) -> None:
     profile, layout, endpoint_model, reads = CALIBRATION_CASES[case]
     samples = tmp_path / "samples.tsv"
     samples.write_text("sample_id\nsample_a\nsample_b\n")
     annotation = calibration_annotation(tmp_path / "genes.gtf")
     reference = write_reference(tmp_path / "genome.fa", CONTIGS)
-    params_path = tmp_path / "params.json"
-    params_path.write_text(
-        json.dumps(
-            {
-                "input": str(samples),
-                "assembly": "test",
-                "fasta": str(reference),
-                "gtf": str(annotation),
-                "calibration_min_genes": 1,
-                "pac_min_sample_count": 1,
-            }
-        )
-    )
+    params_path = tmp_path / "resolved_params.yaml"
+    resolved_params(params_path, calibration_min_genes=1, pac_min_sample_count=1)
 
     resolutions = []
     alignments = []
@@ -227,37 +260,6 @@ def test_split_calibration_matches_legacy_outputs(tmp_path: Path, case: str) -> 
         resolutions.append(str(resolution))
         alignment = write_alignment(tmp_path / f"{sample_id}.bam", CONTIGS, reads(sample_id))
         alignments.append(str(alignment))
-
-    legacy = tmp_path / "legacy"
-    legacy.mkdir()
-    assert (
-        main(
-            [
-                "calibrate",
-                "--samples",
-                str(samples),
-                "--alignments",
-                *alignments,
-                "--resolutions",
-                *resolutions,
-                "--reference",
-                str(reference),
-                "--annotation",
-                str(annotation),
-                "--params",
-                str(params_path),
-                "--output",
-                str(legacy / "library_calibration.tsv"),
-                "--kernel",
-                str(legacy / "calibration_kernel.tsv"),
-                "--resolution",
-                str(legacy / "library_resolution.json"),
-                "--kernel-diagnostics",
-                str(legacy / "calibration_kernel_diagnostics.tsv"),
-            ]
-        )
-        == 0
-    )
 
     split = tmp_path / "split"
     split.mkdir()
@@ -334,22 +336,33 @@ def test_split_calibration_matches_legacy_outputs(tmp_path: Path, case: str) -> 
         == 0
     )
 
-    for name in (
-        "library_calibration.tsv",
-        "calibration_kernel.tsv",
-        "library_resolution.json",
-        "calibration_kernel_diagnostics.tsv",
-    ):
-        assert (split / name).read_bytes() == (legacy / name).read_bytes()
-    # Every case resolves to exact boundaries, which the kernel warning skips.
-    diagnostics = read_tsv(split / "calibration_kernel_diagnostics.tsv")
-    assert [row["status"] for row in diagnostics] == ["not_applicable"]
+    expected = CALIBRATION_EXPECTED[case]
     selected = json.loads((split / "library_resolution.json").read_text())
-    assert (selected["evidence_source"], selected["endpoint_model"]) == {
-        "exact_boundary_SE": ("polyA_junction", "exact_boundary"),
-        "generic_SE": ("read_3p", "exact_boundary"),
-        "generic_PE": ("fragment_3p", "exact_boundary"),
-    }[case]
+    profile_name, source, model, sample_layout = expected["resolution"]
+    assert (selected["library_profile"], selected["evidence_source"]) == (profile_name, source)
+    assert selected["endpoint_model"] == model
+    assert {value["layout"] for value in selected["samples"].values()} == {sample_layout}
+    metrics = {row["sample_id"]: row for row in read_tsv(split / "library_calibration.tsv")}
+    assert set(metrics) == set(expected["samples"])
+    for sample_id, (row_source, genes, observations, values) in expected["samples"].items():
+        row = metrics[sample_id]
+        assert (row["evidence_source"], row["classification"]) == (row_source, "exact")
+        assert (int(row["calibration_genes"]), int(row["observations"])) == (genes, observations)
+        assert [float(row[name]) for name in METRIC_COLUMNS] == pytest.approx(values)
+    kernel = {
+        int(row["offset"]): float(row["weight"])
+        for row in read_tsv(split / "calibration_kernel.tsv")
+    }
+    assert kernel == pytest.approx(expected["kernel"])
+    # Every case resolves to exact boundaries, which the kernel warning skips.
+    (diagnostics,) = read_tsv(split / "calibration_kernel_diagnostics.tsv")
+    assert diagnostics["status"] == "not_applicable"
+    assert [
+        int(diagnostics["kernel_modes"]),
+        int(diagnostics["minimum_resolvable_separation"]),
+        float(diagnostics["median_central_interval_width"]),
+        float(diagnostics["spread_to_resolution_ratio"]),
+    ] == pytest.approx(expected["diagnostics"])
 
 
 # The pooled kernel from calibrating exact-boundary reads, PACs 50 nt apart,
@@ -477,7 +490,9 @@ def test_exact_boundary_kernels_are_described_but_not_judged() -> None:
     assert (row["kernel_modes"], row["minimum_resolvable_separation"]) == (3, 2)
 
 
-def test_diagnostics_describe_the_kernel_discovery_reads_back(tmp_path: Path) -> None:
+def test_diagnostics_describe_the_kernel_discovery_reads_back(
+    tmp_path: Path, resolved_params
+) -> None:
     # These offsets put the kernel's overlap at 3 nt exactly on the 0.5
     # threshold. Summed over the full pooled array, the tie rounds the other
     # way, giving a resolution that discovery never uses.
@@ -486,10 +501,8 @@ def test_diagnostics_describe_the_kernel_discovery_reads_back(tmp_path: Path) ->
     assert minimum_resolvable_separation(full, 0.5) == 3, "the offsets no longer tie"
     sheet = tmp_path / "samples.tsv"
     sheet.write_text("sample_id\tcondition\nS1\tA\nS2\tA\n")
-    params = tmp_path / "params.json"
-    params.write_text(
-        json.dumps({"input": str(sheet), "assembly": "synthetic", "fasta": "x.fa", "gtf": "x.gtf"})
-    )
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(params)
     summaries = []
     for sample_id in ("S1", "S2"):
         metrics = calculate_metrics(sample_id, "read_3p", offsets, 100, 0, 0.05, 0.95)

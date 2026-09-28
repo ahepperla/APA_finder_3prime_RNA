@@ -14,6 +14,7 @@ from itertools import groupby
 import numpy as np
 from scipy.signal import find_peaks, oaconvolve
 
+from .annotation import KnownSiteIndex
 from .calibration import minimum_resolvable_separation
 from .errors import PacusageError
 from .models import EvidenceObservation, PacCandidate, SpliceContinuation
@@ -28,16 +29,14 @@ def cluster_exact_boundaries(
     minimum_total: int,
     minimum_sample_count: int,
     minimum_supporting_samples: float,
-    known_sites: set[tuple[str, str, int]] | None = None,
+    known_sites: KnownSiteIndex | None = None,
     known_rescue_total: int = 5,
     known_match_radius: int = 12,
     observations_sorted: bool = False,
-    sample_conditions: Mapping[str, str] | None = None,
+    *,
+    sample_conditions: Mapping[str, str],
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
-    minimum_supporting_samples = _validate_support_threshold(
-        minimum_supporting_samples
-    )
-    known_sites = known_sites or set()
+    known_sites = known_sites or KnownSiteIndex()
     ordered: Iterable[EvidenceObservation]
     if observations_sorted:
         ordered = observations
@@ -114,7 +113,9 @@ def cluster_exact_boundaries(
                 coordinate_counts,
                 cluster_radius,
             )
-            known = _matches_known(contig, strand, coordinate, known_sites, known_match_radius)
+            known = bool(
+                known_sites.matches(contig, strand, coordinate, known_match_radius)
+            )
             primary_pass = total >= minimum_total and support_pass
             rescue_pass = (
                 known and total >= known_rescue_total and support_pass
@@ -242,7 +243,7 @@ def _flank_count(
 def _condition_support(
     per_sample: Mapping[str, int],
     minimum_sample_count: int,
-    sample_conditions: Mapping[str, str] | None,
+    sample_conditions: Mapping[str, str],
     minimum_supporting_samples: float,
 ) -> tuple[int, int, str, bool]:
     qualifying = [
@@ -251,17 +252,6 @@ def _condition_support(
         if count >= minimum_sample_count
     ]
     total_supporting = len(qualifying)
-    if not sample_conditions:
-        if minimum_supporting_samples < 1:
-            raise PacusageError(
-                "Fractional pac_min_supporting_samples requires sample conditions."
-            )
-        return (
-            total_supporting,
-            total_supporting,
-            "",
-            total_supporting >= int(minimum_supporting_samples),
-        )
     missing = sorted(set(per_sample).difference(sample_conditions))
     if missing:
         raise PacusageError(
@@ -299,20 +289,6 @@ def _condition_support(
     return total_supporting, supporting, supporting_condition, support_pass
 
 
-def _validate_support_threshold(value: float) -> float:
-    threshold = float(value)
-    if not math.isfinite(threshold):
-        raise PacusageError("pac_min_supporting_samples must be a finite number.")
-    if threshold <= 0:
-        raise PacusageError("pac_min_supporting_samples must be greater than zero.")
-    if threshold >= 1 and not threshold.is_integer():
-        raise PacusageError(
-            "pac_min_supporting_samples must be a fraction in (0, 1) "
-            "or a whole-number sample count."
-        )
-    return threshold
-
-
 def _required_supporting_samples(threshold: float, condition_size: int) -> int:
     if threshold < 1:
         return math.ceil(threshold * condition_size)
@@ -323,21 +299,6 @@ def _support_failure_reason(threshold: float) -> str:
     if threshold < 1:
         return f"supporting_sample_fraction<{threshold:g}"
     return f"supporting_samples<{int(threshold)}"
-
-
-def _matches_known(
-    contig: str,
-    strand: str,
-    coordinate: int,
-    known_sites: set[tuple[str, str, int]],
-    radius: int,
-) -> bool:
-    return any(
-        known_contig == contig
-        and known_strand == strand
-        and abs(known_coordinate - coordinate) <= radius
-        for known_contig, known_strand, known_coordinate in known_sites
-    )
 
 
 def discover_proximal_pacs(
@@ -351,13 +312,9 @@ def discover_proximal_pacs(
     bin_size: int = 25,
     assignment_likelihood_ratio: float = 3.0,
     observations_sorted: bool = False,
-    sample_conditions: Mapping[str, str] | None = None,
+    *,
+    sample_conditions: Mapping[str, str],
 ) -> tuple[list[PacCandidate], list[PacCandidate], int]:
-    minimum_supporting_samples = _validate_support_threshold(
-        minimum_supporting_samples
-    )
-    if bin_size < 1:
-        raise ValueError("Proximal discovery bin size must be at least one nucleotide.")
     nonzero = np.flatnonzero(kernel > 0)
     if not len(nonzero):
         raise PacusageError("The calibration kernel contains no positive weights.")
@@ -422,14 +379,6 @@ def filter_constitutive_readthrough(
     A condition must independently meet the replicate-support threshold, so a
     condition without consistent continuation protects a candidate.
     """
-    if minimum_junction_count < 1:
-        raise PacusageError("constitutive_readthrough_min_junction_count must be at least 1.")
-    _validate_constitutive_readthrough_replicate_support(minimum_replicate_support)
-    if not sample_conditions:
-        raise PacusageError(
-            "Constitutive-readthrough filtering requires sample conditions."
-        )
-
     candidates = list(candidates)
     continuations = list(continuations)
     unexpected_samples = sorted(
@@ -530,33 +479,6 @@ def filter_constitutive_readthrough(
     return accepted, rejected
 
 
-def _validate_constitutive_readthrough_replicate_support(value: float | str) -> None:
-    if isinstance(value, str):
-        if value == "all":
-            return
-        raise PacusageError(
-            "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
-            "in (0, 1), or a whole-number sample count."
-        )
-    if isinstance(value, bool):
-        raise PacusageError(
-            "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
-            "in (0, 1), or a whole-number sample count."
-        )
-    threshold = float(value)
-    if not math.isfinite(threshold) or threshold <= 0:
-        raise PacusageError(
-            "constitutive_readthrough_min_replicate_support must be greater than zero."
-        )
-    if threshold < 1:
-        return
-    if not threshold.is_integer():
-        raise PacusageError(
-            "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
-            "in (0, 1), or a whole-number sample count."
-        )
-
-
 def _required_constitutive_readthrough_replicates(
     threshold: float | str,
     condition_size: int,
@@ -582,7 +504,7 @@ def _discover_proximal_group(
     minimum_total: int,
     minimum_sample_count: int,
     minimum_supporting_samples: float,
-    sample_conditions: Mapping[str, str] | None,
+    sample_conditions: Mapping[str, str],
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
     binned_counts: defaultdict[int, int] = defaultdict(int)
     sample_indexes: dict[str, int] = {}
@@ -686,22 +608,11 @@ def _condition_support_arrays(
     counts: np.ndarray,
     sample_indexes: Mapping[str, int],
     minimum_sample_count: int,
-    sample_conditions: Mapping[str, str] | None,
+    sample_conditions: Mapping[str, str],
     minimum_supporting_samples: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     qualifying = counts >= minimum_sample_count
     total_supporting = qualifying.sum(axis=1)
-    if not sample_conditions:
-        if minimum_supporting_samples < 1:
-            raise PacusageError(
-                "Fractional pac_min_supporting_samples requires sample conditions."
-            )
-        return (
-            total_supporting,
-            total_supporting.copy(),
-            np.full(len(counts), "", dtype=object),
-            total_supporting >= int(minimum_supporting_samples),
-        )
     missing = sorted(set(sample_indexes).difference(sample_conditions))
     if missing:
         raise PacusageError(

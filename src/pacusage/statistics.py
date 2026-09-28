@@ -1,226 +1,31 @@
-"""Statistical input validation and researcher-facing summaries."""
+"""Motif usage scores and the exploratory k-mer test."""
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-from .errors import PacusageError
-
-
-def deterministic_seed(base_seed: int, *parts: str) -> int:
-    payload = "\0".join([str(base_seed), *parts]).encode()
-    return int.from_bytes(hashlib.sha256(payload).digest()[:4], "big")
-
-
-def validate_design_matrix(
-    samples: pd.DataFrame, covariates: list[str], include_condition: bool = True
-) -> pd.DataFrame:
-    missing = [name for name in covariates if name not in samples.columns]
-    if missing:
-        raise PacusageError("Model covariates absent from sample data: " + ", ".join(missing))
-    columns = []
-    names = ["intercept"]
-    columns.append(np.ones(len(samples)))
-    for covariate in covariates:
-        if samples[covariate].isna().any() or (samples[covariate].astype(str) == "").any():
-            raise PacusageError(f"Covariate {covariate!r} is incomplete in this comparison family.")
-        encoded = pd.get_dummies(samples[covariate].astype(str), prefix=covariate, drop_first=True)
-        for name in encoded:
-            columns.append(encoded[name].to_numpy(dtype=float))
-            names.append(name)
-    if include_condition:
-        encoded = pd.get_dummies(
-            samples["condition"].astype(str), prefix="condition", drop_first=True
-        )
-        for name in encoded:
-            columns.append(encoded[name].to_numpy(dtype=float))
-            names.append(name)
-    matrix = np.column_stack(columns)
-    rank = np.linalg.matrix_rank(matrix)
-    if rank < matrix.shape[1]:
-        raise PacusageError(
-            "The model design is not full rank. Condition is confounded with one or more "
-            f"covariates ({', '.join(covariates) or 'none'})."
-        )
-    return pd.DataFrame(matrix, columns=names, index=samples.index)
-
-
-def filter_testable_features(
-    counts: pd.DataFrame,
-    minimum_gene_total: int,
-    minimum_site_count: int,
-    minimum_site_usage: float,
-    minimum_supporting_samples: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    sample_columns = [name for name in counts if name not in {"gene_id", "pac_id"}]
-    keep_rows = []
-    reasons = []
-    for gene_id, group in counts.groupby("gene_id", sort=False):
-        gene_total = int(group[sample_columns].to_numpy().sum())
-        eligible_sites = []
-        for _, row in group.iterrows():
-            total = int(row[sample_columns].sum())
-            supporting = int((row[sample_columns] > 0).sum())
-            usage = total / gene_total if gene_total else 0.0
-            failures = []
-            if total < minimum_site_count:
-                failures.append(f"site_count<{minimum_site_count}")
-            if supporting < minimum_supporting_samples:
-                failures.append(f"supporting_samples<{minimum_supporting_samples}")
-            if usage < minimum_site_usage:
-                failures.append(f"site_usage<{minimum_site_usage}")
-            if not failures:
-                eligible_sites.append(str(row["pac_id"]))
-            else:
-                reasons.append(
-                    {
-                        "gene_id": gene_id,
-                        "pac_id": row["pac_id"],
-                        "tested": False,
-                        "reason": ";".join(failures),
-                    }
-                )
-        gene_failures = []
-        if gene_total < minimum_gene_total:
-            gene_failures.append(f"gene_total<{minimum_gene_total}")
-        if len(eligible_sites) < 2:
-            gene_failures.append("fewer_than_2_testable_pacs")
-        if gene_failures:
-            reasons.extend(
-                {
-                    "gene_id": gene_id,
-                    "pac_id": pac_id,
-                    "tested": False,
-                    "reason": ";".join(gene_failures),
-                }
-                for pac_id in eligible_sites
-            )
-        else:
-            keep_rows.extend(eligible_sites)
-    kept = counts[counts["pac_id"].astype(str).isin(keep_rows)].copy()
-    return kept, pd.DataFrame(reasons, columns=["gene_id", "pac_id", "tested", "reason"])
-
-
-def classify_event(row: pd.Series, params: dict) -> str:
-    control_support_available = _finite(row.get("control_supporting_samples"))
-    control_detected = _finite_and_at_least(
-        row.get("control_supporting_samples"),
-        params["event_min_supporting_samples"]
-    )
-    treatment_support_available = _finite(row.get("treatment_supporting_samples"))
-    treatment_detected = _finite_and_at_least(
-        row.get("treatment_supporting_samples"),
-        params["event_min_supporting_samples"]
-    )
-    positive = _finite_and_at_least(row.get("delta_pau"), params["min_abs_delta_pau"])
-    negative = _finite_and_at_most(row.get("delta_pau"), -float(params["min_abs_delta_pau"]))
-    significant = _finite_and_at_most(
-        row.get("gene_fdr"), float(params["gene_fdr"])
-    ) and _finite_and_at_most(row.get("pac_fdr"), float(params["site_fdr"]))
-    stable = not _truth(row.get("zero_boundary_unstable", False))
-    confidence = row.get("confidence", "")
-    confident = not _missing(confidence) and str(confidence) != "low" and not _truth(
-        row.get("internal_priming_flag", False)
-    )
-    gained_detection = (
-        control_support_available
-        and treatment_support_available
-        and not control_detected
-        and treatment_detected
-        and _finite_and_at_most(row.get("fitted_control_pau"), params["event_max_control_pau"])
-        and _finite_and_at_least(
-            row.get("fitted_treatment_pau"), params["event_min_treatment_pau"]
-        )
-        and positive
-    )
-    lost_detection = (
-        control_support_available
-        and treatment_support_available
-        and control_detected
-        and not treatment_detected
-        and _finite_and_at_most(row.get("fitted_treatment_pau"), params["event_max_control_pau"])
-        and _finite_and_at_least(
-            row.get("fitted_control_pau"), params["event_min_treatment_pau"]
-        )
-        and negative
-    )
-    if gained_detection:
-        return "gained" if significant and stable and confident else "gained_candidate"
-    if lost_detection:
-        return "lost" if significant and stable and confident else "lost_candidate"
-    if control_detected and treatment_detected and significant and positive:
-        return "increased_usage"
-    if control_detected and treatment_detected and significant and negative:
-        return "decreased_usage"
-    return "none"
-
-
-def _finite_and_at_most(value: object, threshold: float) -> bool:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return np.isfinite(number) and number <= threshold
-
-
-def _finite_and_at_least(value: object, threshold: float) -> bool:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return np.isfinite(number) and number >= threshold
-
-
-def _finite(value: object) -> bool:
-    try:
-        return bool(np.isfinite(float(value)))
-    except (TypeError, ValueError):
-        return False
-
-
-def _missing(value: object) -> bool:
-    try:
-        return bool(pd.isna(value))
-    except (TypeError, ValueError):
-        return False
-
-
-def _truth(value: object) -> bool:
-    return str(value).lower() in {"true", "t", "1"}
-
 
 def motif_usage_scores(
     pau: pd.DataFrame,
     atlas: pd.DataFrame,
+    minimum_gene_total: int,
     excluded_rescue_sites: bool = True,
 ) -> pd.DataFrame:
-    columns = [
-        "pac_id",
-        "primary_pas_motif",
-        "primary_motif_class",
-        "known_rescue_only",
-        "candidate_status",
-    ]
-    if "primary_pas_motif_rna" in atlas:
-        columns.append("primary_pas_motif_rna")
+    columns = ["pac_id", "primary_motif_class", "known_rescue_only", "primary_pas_motif_rna"]
     merged = pau.merge(atlas[columns], on="pac_id", how="inner")
-    if "primary_pas_motif_rna" not in merged:
-        merged["primary_pas_motif_rna"] = (
-            merged["primary_pas_motif"].fillna("").astype(str).str.upper().str.replace("T", "U")
-        )
     merged["primary_pas_motif_rna"] = (
         merged["primary_pas_motif_rna"].fillna("").astype(str).replace("", "none")
     )
+    # A fixed, condition-blind gene set: genes with at least minimum_gene_total
+    # reads in every sample.
+    covered = merged.groupby("gene_id")["gene_total"].min() >= minimum_gene_total
+    merged = merged[merged["gene_id"].isin(covered.index[covered])]
     if excluded_rescue_sites:
-        merged = merged[
-            ~merged["known_rescue_only"].astype(bool)
-            & (merged["candidate_status"].astype(str) != "motif_assisted_rescue")
-        ]
+        merged = merged[~merged["known_rescue_only"].astype(bool)]
     retained_total = merged.groupby(["gene_id", "sample_id"])["count"].transform("sum")
     merged = merged[retained_total > 0].copy()
     merged["renormalized_pau"] = merged["count"] / retained_total[retained_total > 0]
@@ -270,9 +75,12 @@ def cmh_kmer_test(
             "p_value": float("nan"),
             "informative_genes": 0,
         }
-    numerator = sum(table[0, 0] * table[1, 1] / table.sum() for table in tables)
-    denominator = sum(table[0, 1] * table[1, 0] / table.sum() for table in tables)
-    odds_ratio = numerator / denominator if denominator else float("inf")
+    # Per stratum: a, b are event PACs with and without the k-mer; c, d are
+    # background PACs with and without it.
+    a, b, c, d = (np.array([table.flat[cell] for table in tables]) for cell in range(4))
+    n = a + b + c + d
+    r, s = a * d / n, b * c / n
+    odds_ratio = r.sum() / s.sum() if s.sum() else float("inf")
     score = sum(table[0, 0] - table[0].sum() * table[:, 0].sum() / table.sum() for table in tables)
     variance = sum(
         np.prod(table.sum(axis=0))
@@ -283,12 +91,23 @@ def cmh_kmer_test(
     )
     chi_square = score**2 / variance if variance else float("nan")
     p_value = float(stats.chi2.sf(chi_square, 1)) if np.isfinite(chi_square) else float("nan")
-    se = np.sqrt(sum(1 / cell for table in tables for cell in table.flat if cell > 0))
-    log_or = np.log(odds_ratio) if 0 < odds_ratio < np.inf else float("nan")
+    ci_low = ci_high = float("nan")
+    if r.sum() > 0 and s.sum() > 0:
+        # Robins-Breslow-Greenland variance of log(OR_MH), as in R's
+        # mantelhaen.test.
+        p, q = (a + d) / n, (b + c) / n
+        log_variance = (
+            (p * r).sum() / (2 * r.sum() ** 2)
+            + (p * s + q * r).sum() / (2 * r.sum() * s.sum())
+            + (q * s).sum() / (2 * s.sum() ** 2)
+        )
+        half_width = stats.norm.ppf(0.975) * np.sqrt(log_variance)
+        ci_low = float(np.exp(np.log(odds_ratio) - half_width))
+        ci_high = float(np.exp(np.log(odds_ratio) + half_width))
     return {
         "common_odds_ratio": float(odds_ratio),
-        "ci_low": float(np.exp(log_or - 1.96 * se)) if np.isfinite(log_or) else float("nan"),
-        "ci_high": float(np.exp(log_or + 1.96 * se)) if np.isfinite(log_or) else float("nan"),
+        "ci_low": ci_low,
+        "ci_high": ci_high,
         "p_value": p_value,
         "informative_genes": len(tables),
     }

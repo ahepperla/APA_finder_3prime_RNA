@@ -1,8 +1,8 @@
-# PACusage: Nextflow Implementation Plan
+# PACusage design
 
 ## Goal
 
-Build a readable, reproducible command-line pipeline that:
+PACusage is a readable, reproducible command-line pipeline that:
 
 1. Starts from deduplicated BAM or CRAM files.
 2. Prepares any missing FASTA or alignment indexes.
@@ -158,17 +158,21 @@ Require:
 
 Optionally accept:
 
-- a known-PAC BED file;
-- chromosome-name aliases.
+- a known-PAC BED file, whose records each give a PAC at their 3′ edge in
+  transcript orientation (`end` on the plus strand, `start` on the minus
+  strand);
+- chromosome-name aliases, mapping alignment contig names to FASTA and
+  annotation names;
+- a PAS motif catalog replacing the built-in one.
 
-The FASTA does not need to be indexed. A `PREPARE_REFERENCE` process must:
+The FASTA must be uncompressed and does not need to be indexed. A
+`PREPARE_REFERENCE` process must:
 
-1. Validate a supplied `.fai` when available.
-2. Generate an index with `samtools faidx` when needed.
-3. Write generated files in the Nextflow work directory.
-4. Never modify the source FASTA or its directory.
-5. Emit the prepared FASTA and index together.
-6. Fail clearly if the FASTA is not indexable.
+1. Link the FASTA into the work directory and index the link with
+   `samtools faidx`, so the index is written in the work directory.
+2. Never modify the source FASTA or its directory.
+3. Emit the prepared FASTA and index together.
+4. Fail clearly if the FASTA is compressed or not indexable.
 
 CRAM inputs must be compatible with the supplied FASTA.
 
@@ -226,6 +230,9 @@ known_pac_match_radius: 12
 proximal_kernel_overlap_threshold: 0.50
 proximal_assignment_likelihood_ratio: 3.0
 proximal_bin_size: 25
+constitutive_readthrough_filter: true
+constitutive_readthrough_min_junction_count: 2
+constitutive_readthrough_min_replicate_support: all
 
 max_downstream_distance: 5000
 pas_scan_upstream_far: 50
@@ -265,6 +272,10 @@ save_intermediates: false
 
 Defaults must permit a standard run with a shorter YAML containing only
 `input`, `outdir`, `assembly`, `fasta`, and `gtf`.
+
+`nextflow_schema.json` is the single definition of every parameter: its type,
+range, default, and description. `VALIDATE_INPUTS` resolves the parameters
+against it once, and every later step reads the resolved file.
 
 `insufficient_replicates_policy` accepts `error` or `warn`. The default
 `error` stops before modeling. `warn` permits an explicitly exploratory run,
@@ -609,9 +620,9 @@ nucleotide-resolution cleavage site.
 
 For `proximal_tag`, known transcript ends may be used for calibration and
 annotation, but PAS motif sequence must not be used to select or reposition
-primary candidates. This prevents circular motif-preference results. An
-optional motif-assisted rescue pass may be produced separately, and rescued
-sites must be excluded from motif-preference testing.
+primary candidates. This prevents circular motif-preference results. PACusage
+has no motif-assisted rescue pass; one added later must keep its rescued sites
+out of motif-preference testing.
 
 #### Exact-Boundary Clustering
 
@@ -648,8 +659,8 @@ A known PAC may be retained with:
 - at least two supporting samples.
 
 Mark a known PAC that passes only the relaxed known-site thresholds as
-`known_rescue_only`. Exclude these sites, as well as motif-assisted rescue
-sites, from primary motif-preference and k-mer analyses. Produce a sensitivity
+`known_rescue_only`. Exclude these sites from primary motif-preference and k-mer
+analyses. Produce a sensitivity
 table that repeats motif summaries with known-rescue-only sites included.
 
 Keep rejected candidates and their reasons. For exact-boundary data, the
@@ -773,8 +784,9 @@ support in >= 2 samples
 ```
 
 Apply filters across all samples in a comparison family without requiring
-support in a particular condition. Record why every excluded gene or PAC was
-not tested.
+support in a particular condition. Record, for every PAC and family, whether it
+was tested and why not, in `statistics/FAMILY.statistical_filtering.tsv.gz`;
+PACs without a gene or with an ambiguous gene assignment are never tested.
 
 ### 9. Model Differential PAC Usage
 
@@ -1020,8 +1032,9 @@ Retain all matches even though one primary class is selected for summaries.
 For every treatment-control comparison:
 
 1. Select before looking at condition effects a fixed set of adequately covered
-   genes with at least two primary-discovery PACs.
-2. Remove motif-assisted and `known_rescue_only` PACs, then renormalize usage
+   genes with at least two primary-discovery PACs: genes with at least
+   `min_gene_total` reads in every sample.
+2. Remove `known_rescue_only` PACs, then renormalize usage
    across the remaining PACs within each sample and gene. Exclude a gene when
    fewer than two primary PACs remain or their retained total is zero.
 3. For each sample and gene, sum the renormalized PAU for PACs belonging to each
@@ -1031,7 +1044,10 @@ For every treatment-control comparison:
 5. Transform each sample-level score with
    `asin(sqrt(score))`, which accepts exact zero and one without pseudocounts.
 6. Fit a `limma` linear model for each motif class using the same condition and
-   covariate design as the main model.
+   covariate design as the main model: one fit per comparison, on the
+   family's samples, with the motif classes as rows. A class is tested in a
+   comparison only when every sample of that comparison has at least
+   `motif_preference_min_genes` informative genes for it.
 7. Test the treatment-control coefficient and adjust across motif classes
    within the comparison using BH.
 
@@ -1121,6 +1137,7 @@ results/
     observed_pau.tsv.gz
   statistics/
     FAMILY.gene_omnibus.tsv.gz
+    FAMILY.statistical_filtering.tsv.gz
     CONDITION_vs_CONTROL.genes.tsv.gz
     CONDITION_vs_CONTROL.pacs.tsv.gz
     CONDITION_vs_CONTROL.events.tsv.gz
@@ -1153,12 +1170,14 @@ pacusage/
   workflows/              # top-level workflow composition
   subworkflows/local/     # preparation, discovery, quantification, statistics
   modules/local/          # one Nextflow process per major operation
-  conf/                   # base, local, Slurm, and test profiles
+  conf/                   # resources, Slurm, and test profiles
   src/pacusage/           # tested Python scientific logic
-  bin/                    # small Nextflow-facing Python entry points
+  bin/                    # the pacusage command Nextflow tasks run
   scripts/                # R statistical model
-  envs/                   # Conda environments
-  tests/                  # unit, integration, simulation, and fixtures
+  containers/             # Apptainer recipe
+  envs/                   # Conda environment
+  tests/                  # unit, integration, R, pipeline, and fixtures
+  docs/                   # this design and the decisions log
 ```
 
 Name modules after the workflow operations above, including
@@ -1212,8 +1231,9 @@ Provide:
 
 Parallelize sample-level extraction, alignment preparation, quantification, and
 track creation. Parallelize atlas work by chromosome and strand where useful.
-Run the initial statistical model in one sufficiently resourced R job unless
-testing proves that chunking preserves global precision estimation.
+Fit each comparison family's model in one sufficiently resourced R job, so that
+precision is estimated across the whole family, and scatter only the bootstrap
+into independent batches.
 
 Use the configured scratch location for temporary files and avoid large files
 in `$HOME`. Never overwrite source inputs. Publish only completed outputs.

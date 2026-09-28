@@ -69,9 +69,6 @@ class PacCandidate:
     width_90: int = 0
     poly_a_clip_fraction: float = 0.0
     local_enrichment: float = 0.0
-    coordinate_interval_low: int | None = None
-    coordinate_interval_high: int | None = None
-    coordinate_bootstrap_successes: int = 0
     region_start: int | None = None
     region_end: int | None = None
     resolution_nt: int = 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${project_dir}"
 # Stale outputs from an earlier run must not satisfy the checks below.
 rm -rf results-test
@@ -9,19 +9,8 @@ rm -rf results-test
 scratch_root="$(mktemp -d)"
 trap 'rm -rf "${scratch_root}"' EXIT
 
-channel_test_root="${scratch_root}/channel"
-mkdir -p "${channel_test_root}"
-touch "${channel_test_root}/batch-001.rds"
-touch "${channel_test_root}/batch-002.rds"
-touch "${channel_test_root}/batch-003.rds"
-nextflow run tests/test_bootstrap_batch_channel.nf \
-  --batch_root "${channel_test_root}" \
-  -work-dir "${channel_test_root}/work" \
-  -with-trace "${channel_test_root}/trace.txt"
-test "$(grep -c "ASSERT_SINGLE_BOOTSTRAP_BATCH" "${channel_test_root}/trace.txt")" -eq 3
-
-Rscript tests/test_usage_model.R scripts/fit_usage_model.R
-Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
 python tests/fixtures/build_fixture.py
 
 # Prepared alignments and the FASTA link to the fixture files, so every run
@@ -44,7 +33,7 @@ test -s results-test/statistics/TreatmentB_vs_Vehicle.pacs.tsv.gz
 test -s results-test/statistics/Rescue_vs_TreatmentA.pacs.tsv.gz
 test -s results-test/statistics/gene_precision.tsv.gz
 test -s results-test/statistics/fitted_pau.tsv.gz
-python tests/verify_integration.py
+python tests/pipeline/verify_integration.py
 test "$(fixture_state)" = "${fixtures_before}"
 
 # The runs below launch from scratch directories, so they never become the
@@ -57,7 +46,7 @@ mkdir -p "${rerun_root}"
   --outdir "${rerun_root}/results" \
   -work-dir "${rerun_root}/work" \
   -with-trace "${rerun_root}/trace.txt")
-python tests/compare_results.py results-test "${rerun_root}/results"
+python tests/pipeline/compare_results.py results-test "${rerun_root}/results"
 test "$(fixture_state)" = "${fixtures_before}"
 
 # Samples from two protocols must fail at calibration, before discovery.
@@ -91,7 +80,7 @@ mkdir -p "${plasmidsaurus_root}"
   --outdir "${plasmidsaurus_root}/results" \
   -work-dir "${plasmidsaurus_root}/work" \
   -with-trace "${plasmidsaurus_root}/trace.txt")
-python tests/verify_plasmidsaurus.py "${plasmidsaurus_root}/results"
+python tests/pipeline/verify_plasmidsaurus.py "${plasmidsaurus_root}/results"
 test "$(fixture_state)" = "${fixtures_before}"
 
 # Exact-boundary reads run as Plasmidsaurus tags calibrate to a kernel of PAC

@@ -1,11 +1,9 @@
 """One pass over an alignment for every candidate evidence source.
 
 ``scan_alignment`` reads an alignment once, with at most one name-collate for
-paired-end data. It reproduces what ``extract_evidence`` returns for each
-candidate evidence source, and what ``extract_splice_continuations`` returns.
-Those functions stay as the reference implementation. Each source keeps its
-own filtering counter, fed in the order its own pass would feed it, because
-``fragment_filtering.tsv`` publishes the counters in first-seen order.
+paired-end data, collecting every candidate evidence source, direct splice
+continuations, and per-source filtering counters. Counters keep first-seen
+order because ``fragment_filtering.tsv`` publishes them in that order.
 """
 
 from __future__ import annotations
@@ -22,11 +20,11 @@ import pysam
 
 from .errors import PacusageError
 from .evidence import (
-    _query_name_groups,
     direct_splice_continuations,
     fragment_boundary,
     is_poly_a_like,
     pair_filter_reason,
+    query_name_groups,
     read_boundary,
     record_filter_reason,
     terminal_soft_clip,
@@ -37,7 +35,6 @@ from .evidence import (
 from .models import EvidenceObservation, SpliceContinuation
 from .tableio import write_json
 
-SCAN_VERSION = 1
 EVIDENCE_SOURCES = ("fragment_3p", "polyA_junction", "read_3p", "read_5p")
 
 
@@ -55,7 +52,7 @@ class SourceEvidence:
     filtering: dict[str, Any]
 
     def observations(self) -> Iterator[EvidenceObservation]:
-        """Yield observations in the order ``extract_evidence`` returns them."""
+        """Yield observations sorted by contig, strand, and coordinate."""
         for contig, strand in sorted(self.groups):
             counts, poly_a = self.groups[(contig, strand)]
             for coordinate in sorted(counts):
@@ -160,16 +157,26 @@ def scan_alignment(
 
     accumulators = [_SourceAccumulator(source) for source in selected]
     splice = _SpliceAccumulator() if splice_continuations else None
-    filters = (min_mapq, require_unique, exclude_duplicates, set(excluded_contigs))
     alignment = Path(alignment)
     mode = "rc" if alignment.suffix.lower() == ".cram" else "rb"
     threads = max(1, threads)
+    aliases = contig_aliases or {}
+    excluded = set(excluded_contigs)
+
+    def excluded_ids(names: tuple[str, ...]) -> frozenset[int]:
+        # An excluded contig may be named as in the alignment or by its alias.
+        return frozenset(
+            index
+            for index, name in enumerate(names)
+            if name in excluded or aliases.get(name, name) in excluded
+        )
 
     if layout == "SE":
         with pysam.AlignmentFile(
             str(alignment), mode, reference_filename=str(reference), threads=threads
         ) as handle:
             names = handle.references
+            filters = (min_mapq, require_unique, exclude_duplicates, excluded_ids(names))
             _scan_single_end(handle, strandedness, filters, accumulators, splice)
     else:
         with tempfile.TemporaryDirectory(prefix="pacusage-collate-") as temporary:
@@ -189,11 +196,11 @@ def scan_alignment(
                 raise PacusageError(f"Could not name-collate {alignment}.") from error
             with pysam.AlignmentFile(str(collated), "rb", threads=threads) as handle:
                 names = handle.references
+                filters = (min_mapq, require_unique, exclude_duplicates, excluded_ids(names))
                 _scan_paired_end(
                     handle, strandedness, filters, require_proper_pair, accumulators, splice
                 )
 
-    aliases = contig_aliases or {}
     evidence = {
         accumulator.source: _finish_source(
             accumulator, sample_id, layout, strandedness, names, aliases
@@ -253,7 +260,7 @@ def _scan_paired_end(
     splice: _SpliceAccumulator | None,
 ) -> None:
     min_mapq, require_unique, exclude_duplicates, excluded = filters
-    for group in _query_name_groups(handle.fetch(until_eof=True)):
+    for group in query_name_groups(handle.fetch(until_eof=True)):
         for accumulator in accumulators:
             accumulator.filtering["query_groups_examined"] += 1
         if splice is not None:
@@ -327,8 +334,7 @@ def _finish_source(
         if group not in groups:
             groups[group] = (counts, poly_a)
             continue
-        # Two alignment contigs alias to one name: merge them, as
-        # extract_evidence does when it keys on the aliased name.
+        # Two alignment contigs alias to one name: merge them.
         merged_counts, merged_poly_a = groups[group]
         for coordinate, value in counts.items():
             merged_counts[coordinate] = merged_counts.get(coordinate, 0) + value
@@ -411,7 +417,6 @@ def write_scan(scan: AlignmentScan, prefix: str | Path) -> Path:
     manifest = prefix.with_name(f"{prefix.name}.filtering.json")
     write_json(
         {
-            "scan_version": SCAN_VERSION,
             "sample_id": scan.sample_id,
             "layout": scan.layout,
             "strandedness": scan.strandedness,
@@ -429,11 +434,6 @@ def read_scan_manifest(path: str | Path) -> ScanManifest:
         payload = json.loads(path.read_text())
     except (OSError, ValueError) as error:
         raise PacusageError(f"Cannot read alignment scan manifest {path}.") from error
-    if payload.get("scan_version") != SCAN_VERSION:
-        raise PacusageError(
-            f"Alignment scan {path} has version {payload.get('scan_version')!r}; "
-            f"this PACusage reads version {SCAN_VERSION}. Rerun SCAN_ALIGNMENT."
-        )
     sources = {
         source: (path.parent / value["parquet"], dict(value["filtering"]))
         for source, value in payload["sources"].items()

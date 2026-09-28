@@ -1,4 +1,9 @@
-"""Parameter defaults, normalization, and lightweight schema validation."""
+"""Parameter resolution against nextflow_schema.json.
+
+VALIDATE_INPUTS resolves the parameters once: schema defaults, overridden by
+what Nextflow passes (analysis.yaml, then the command line). It writes
+resolved_params.yaml, which every later step reads as it is.
+"""
 
 from __future__ import annotations
 
@@ -13,134 +18,80 @@ from jsonschema import Draft7Validator
 
 from .errors import PacusageError
 
-DEFAULTS: dict[str, Any] = {
-    "outdir": "results",
-    "known_pacs": None,
-    "chromosome_aliases": None,
-    "layout": "auto",
-    "strandedness": "auto",
-    "library_profile": "generic_3prime",
-    "endpoint_model": "auto",
-    "evidence_source": "auto",
-    "min_mapq": 20,
-    "require_unique": True,
-    "require_proper_pair": True,
-    "exclude_duplicates": True,
-    "excluded_contigs": [],
-    "min_replicates_per_condition": 2,
-    "insufficient_replicates_policy": "error",
-    "strand_min_informative_fragments": 10000,
-    "strand_max_sampled_fragments": 200000,
-    "strand_decision_fraction": 0.80,
-    "calibration_min_genes": 100,
-    "calibration_max_distance": 1000,
-    "calibration_quantile_low": 0.05,
-    "calibration_quantile_high": 0.95,
-    "calibration_min_kernel_correlation": 0.80,
-    "calibration_min_model_margin": 0.10,
-    "exact_max_median_abs_offset": 2,
-    "exact_max_central_width": 12,
-    "exact_min_boundary_fraction": 0.50,
-    "proximal_min_median_upstream_offset": 3,
-    "pac_seed_radius": 2,
-    "pac_cluster_radius": 12,
-    "pac_min_total_count": 10,
-    "pac_min_sample_count": 2,
-    "pac_min_supporting_samples": 2,
-    "known_pac_rescue_total": 5,
-    "known_pac_match_radius": 12,
-    "proximal_kernel_overlap_threshold": 0.50,
-    "proximal_assignment_likelihood_ratio": 3.0,
-    "proximal_bin_size": 25,
-    "constitutive_readthrough_filter": True,
-    "constitutive_readthrough_min_junction_count": 2,
-    "constitutive_readthrough_min_replicate_support": "all",
-    "max_downstream_distance": 5000,
-    "pas_scan_upstream_far": 50,
-    "pas_scan_upstream_near": 5,
-    "pas_core_upstream_far": 35,
-    "pas_core_upstream_near": 10,
-    "pas_motif_catalog": None,
-    "internal_priming_window": 20,
-    "internal_priming_max_a_run": 6,
-    "internal_priming_max_a_fraction": 0.60,
-    "min_gene_total": 20,
-    "min_site_count": 5,
-    "min_site_usage": 0.01,
-    "min_test_supporting_samples": 2,
-    "model_covariates": [],
-    "gene_fdr": 0.05,
-    "site_fdr": 0.05,
-    "min_abs_delta_pau": 0.10,
-    "dm_bootstrap_replicates": 200,
-    "dm_bootstrap_min_success_fraction": 0.80,
-    "dm_bootstrap_include_candidates": True,
-    "dm_zero_sensitivity_repeats": 5,
-    "dm_zero_max_delta_pau_spread": 0.02,
-    "random_seed": 1729,
-    "event_min_treatment_pau": 0.05,
-    "event_max_control_pau": 0.01,
-    "event_min_supporting_samples": 2,
-    "motif_preference_min_genes": 50,
-    "motif_kmer_length": 6,
-    "run_kmer_enrichment": True,
-    "save_prepared_reference": False,
-    "save_prepared_alignments": False,
-    "save_intermediates": False,
-    "statistics_cpus": 8,
-    "statistics_bootstrap_cpus": 4,
-    "statistics_bootstrap_batch_size": 500,
-    "statistics_bootstrap_max_forks": 8,
-    "bind_paths": [],
-}
-
 REQUIRED = ("input", "assembly", "fasta", "gtf")
-CHOICES = {
-    "layout": {"auto", "SE", "PE"},
-    "strandedness": {"auto", "forward", "reverse"},
-    "library_profile": {"generic_3prime", "plasmidsaurus_3prime", "exact_boundary"},
-    "endpoint_model": {"auto", "exact_boundary", "proximal_tag"},
-    "evidence_source": {"auto", "read_3p", "read_5p", "fragment_3p", "polyA_junction"},
-    "insufficient_replicates_policy": {"error", "warn"},
-}
-
-
-SCHEMA_PATH = Path(__file__).resolve().parents[2] / "nextflow_schema.json"
 _INTEGER = re.compile(r"[+-]?\d+")
 _NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
-def load_parameters(path: str | Path) -> dict[str, Any]:
+def load_schema(path: str | Path) -> dict[str, Any]:
+    with Path(path).open() as handle:
+        return json.load(handle)
+
+
+def read_supplied_parameters(path: str | Path) -> dict[str, Any]:
+    """The parameters Nextflow passes, as JSON or YAML."""
     path = Path(path)
     with path.open() as handle:
-        if path.suffix.lower() == ".json":
-            supplied = json.load(handle)
-        else:
-            supplied = yaml.safe_load(handle) or {}
+        supplied = json.load(handle) if path.suffix.lower() == ".json" else yaml.safe_load(handle)
     if not isinstance(supplied, dict):
         raise PacusageError(f"Parameter file {path} must contain a mapping.")
-    params = normalize_parameters(coerce_command_line_types(supplied, _load_schema()))
-    validate_against_schema(params)
+    return supplied
+
+
+def resolve_parameters(supplied: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Schema defaults overridden by ``supplied``, validated against the schema."""
+    properties = _schema_properties(schema)
+    defaults = {key: spec["default"] for key, spec in properties.items() if "default" in spec}
+    params = {**defaults, **coerce_command_line_types(supplied, schema)}
+    missing = [key for key in REQUIRED if params.get(key) in (None, "")]
+    if missing:
+        raise PacusageError(
+            "Missing required parameters: "
+            + ", ".join(missing)
+            + ". Supply them in analysis.yaml or on the Nextflow command line."
+        )
+    # JSON Schema range checks pass NaN, since every comparison with it is false.
+    for key, value in params.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            raise PacusageError(f"{key} must be a finite number, not {value}.")
+    errors = sorted(
+        Draft7Validator(schema).iter_errors(params), key=lambda error: list(error.path)
+    )
+    if errors:
+        details = []
+        for error in errors[:10]:
+            key = ".".join(map(str, error.path)) or "parameters"
+            name = str(error.path[0]) if error.path else ""
+            description = properties.get(name, {}).get("description", "")
+            details.append(f"{key}: {error.message}" + (f" ({description})" if description else ""))
+        raise PacusageError("Invalid parameters: " + "; ".join(details))
+    if not params["calibration_quantile_low"] < params["calibration_quantile_high"]:
+        raise PacusageError("calibration_quantile_low must be below calibration_quantile_high.")
+    # YAML writes 2.0 for an integer parameter given as 2.0; keep it an integer.
+    for key, types in _declared_types(schema).items():
+        value = params.get(key)
+        if "integer" in types and isinstance(value, float) and value.is_integer():
+            params[key] = int(value)
     return params
 
 
 def coerce_command_line_types(
-    supplied: dict[str, Any], schema: dict[str, Any] | None
+    supplied: dict[str, Any], schema: dict[str, Any]
 ) -> dict[str, Any]:
     """Convert command-line strings to the types their parameters declare.
 
     Nextflow 25.10 and later pass every command-line value as a string, so
     `--min_mapq 30` arrives as "30" and a bare `--save_prepared_alignments` as
     "true". A params file keeps its YAML types. Only an exact integer, a finite
-    number, or true/false (in any case) is converted, and never for a
-    parameter that also accepts strings or lists. Anything else is left for
-    validation to report.
+    number, or true/false (in any case) is converted, and only for a parameter
+    that accepts that type; a list parameter is never split. Anything else is
+    left for validation to report.
     """
     declared = _declared_types(schema)
     coerced = dict(supplied)
     for key, value in supplied.items():
         accepted = declared.get(key, set())
-        if not isinstance(value, str) or not accepted or accepted & {"string", "array"}:
+        if not isinstance(value, str) or not accepted or "array" in accepted:
             continue
         text = value.strip()
         if "boolean" in accepted and text.lower() in {"true", "false"}:
@@ -152,131 +103,9 @@ def coerce_command_line_types(
     return coerced
 
 
-def _declared_types(schema: dict[str, Any] | None) -> dict[str, set[str]]:
-    """JSON types each parameter accepts: from the schema, or else the defaults.
-
-    Installed packages, including the container's, do not ship the schema, so
-    the defaults' types stand in for it there.
-    """
-    if schema is None:
-        names = {bool: "boolean", int: "integer", float: "number", list: "array", str: "string"}
-        return {
-            key: {names[type(value)]} for key, value in DEFAULTS.items() if value is not None
-        }
-    declared: dict[str, set[str]] = {}
-    for group in schema.get("definitions", {}).values():
-        for key, specification in group.get("properties", {}).items():
-            types: set[str] = set()
-            for branch in specification.get("anyOf", [specification]):
-                value = branch.get("type")
-                types.update(value if isinstance(value, list) else [value] if value else [])
-            declared[key] = types
-    return declared
-
-
-def _load_schema() -> dict[str, Any] | None:
-    if not SCHEMA_PATH.is_file():
-        return None
-    with SCHEMA_PATH.open() as handle:
-        return json.load(handle)
-
-
-def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
-    params = {**DEFAULTS, **supplied}
-    missing = [key for key in REQUIRED if params.get(key) in (None, "")]
-    if missing:
-        raise PacusageError(
-            "Missing required parameters: "
-            + ", ".join(missing)
-            + ". Supply them in analysis.yaml or on the Nextflow command line."
-        )
-    for key, choices in CHOICES.items():
-        if params[key] not in choices:
-            expected = ", ".join(sorted(choices))
-            raise PacusageError(f"Invalid {key}={params[key]!r}; expected one of: {expected}.")
-    if not 0 < float(params["strand_decision_fraction"]) <= 1:
-        raise PacusageError("strand_decision_fraction must be in (0, 1].")
-    if (
-        not 0
-        <= float(params["calibration_quantile_low"])
-        < float(params["calibration_quantile_high"])
-        <= 1
-    ):
-        raise PacusageError("Calibration quantiles must satisfy 0 <= low < high <= 1.")
-    if int(params["min_replicates_per_condition"]) < 1:
-        raise PacusageError("min_replicates_per_condition must be at least 1.")
-    if int(params["proximal_bin_size"]) < 1:
-        raise PacusageError("proximal_bin_size must be at least 1.")
-    raw_junction_count = params["constitutive_readthrough_min_junction_count"]
-    try:
-        junction_count = float(raw_junction_count)
-    except (TypeError, ValueError) as error:
-        raise PacusageError(
-            "constitutive_readthrough_min_junction_count must be an integer of at least 1."
-        ) from error
-    if (
-        isinstance(raw_junction_count, bool)
-        or not math.isfinite(junction_count)
-        or junction_count < 1
-        or not junction_count.is_integer()
-    ):
-        raise PacusageError(
-            "constitutive_readthrough_min_junction_count must be an integer of at least 1."
-        )
-    params["constitutive_readthrough_min_junction_count"] = int(junction_count)
-    raw_readthrough_support = params["constitutive_readthrough_min_replicate_support"]
-    if (
-        isinstance(raw_readthrough_support, str)
-        and raw_readthrough_support.strip().lower() == "all"
-    ):
-        params["constitutive_readthrough_min_replicate_support"] = "all"
-    else:
-        try:
-            readthrough_support = float(raw_readthrough_support)
-        except (TypeError, ValueError) as error:
-            raise PacusageError(
-                "constitutive_readthrough_min_replicate_support must be 'all' or numeric."
-            ) from error
-        if isinstance(raw_readthrough_support, bool) or not math.isfinite(readthrough_support):
-            raise PacusageError(
-                "constitutive_readthrough_min_replicate_support must be 'all' or a finite number."
-            )
-        if readthrough_support <= 0:
-            raise PacusageError(
-                "constitutive_readthrough_min_replicate_support must be greater than zero."
-            )
-        if readthrough_support >= 1 and not readthrough_support.is_integer():
-            raise PacusageError(
-                "constitutive_readthrough_min_replicate_support must be 'all', a fraction "
-                "in (0, 1), or a whole-number sample count."
-            )
-        params["constitutive_readthrough_min_replicate_support"] = (
-            readthrough_support if readthrough_support < 1 else int(readthrough_support)
-        )
-    raw_support_threshold = params["pac_min_supporting_samples"]
-    try:
-        support_threshold = float(raw_support_threshold)
-    except (TypeError, ValueError) as error:
-        raise PacusageError(
-            "pac_min_supporting_samples must be numeric."
-        ) from error
-    if isinstance(raw_support_threshold, bool) or not math.isfinite(support_threshold):
-        raise PacusageError("pac_min_supporting_samples must be a finite number.")
-    if support_threshold <= 0:
-        raise PacusageError("pac_min_supporting_samples must be greater than zero.")
-    if support_threshold >= 1 and not support_threshold.is_integer():
-        raise PacusageError(
-            "pac_min_supporting_samples must be a fraction in (0, 1) "
-            "or a whole-number sample count."
-        )
-    params["pac_min_supporting_samples"] = (
-        support_threshold if support_threshold < 1 else int(support_threshold)
-    )
-    if not isinstance(params["model_covariates"], list):
-        raise PacusageError("model_covariates must be a YAML list.")
-    if not isinstance(params["bind_paths"], list):
-        raise PacusageError("bind_paths must be a YAML list.")
-    return params
+def read_resolved_parameters(path: str | Path) -> dict[str, Any]:
+    with Path(path).open() as handle:
+        return yaml.safe_load(handle)
 
 
 def write_resolved_parameters(params: dict[str, Any], path: str | Path) -> None:
@@ -284,14 +113,21 @@ def write_resolved_parameters(params: dict[str, Any], path: str | Path) -> None:
         yaml.safe_dump(params, handle, sort_keys=True)
 
 
-def validate_against_schema(params: dict[str, Any]) -> None:
-    schema = _load_schema()
-    if schema is None:
-        return
-    errors = sorted(Draft7Validator(schema).iter_errors(params), key=lambda error: list(error.path))
-    if errors:
-        details = "; ".join(
-            f"{'.'.join(map(str, error.path)) or 'parameters'}: {error.message}"
-            for error in errors[:10]
-        )
-        raise PacusageError(f"Parameter schema validation failed: {details}")
+def _schema_properties(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        key: specification
+        for group in schema.get("definitions", {}).values()
+        for key, specification in group.get("properties", {}).items()
+    }
+
+
+def _declared_types(schema: dict[str, Any]) -> dict[str, set[str]]:
+    """The JSON types each parameter accepts."""
+    declared: dict[str, set[str]] = {}
+    for key, specification in _schema_properties(schema).items():
+        types: set[str] = set()
+        for branch in specification.get("anyOf", [specification]):
+            value = branch.get("type")
+            types.update(value if isinstance(value, list) else [value] if value else [])
+        declared[key] = types
+    return declared

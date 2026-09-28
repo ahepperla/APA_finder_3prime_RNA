@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
@@ -28,22 +29,56 @@ DEFAULT_MOTIFS = (
 )
 
 
-def load_known_pacs(path: str | Path | None) -> set[tuple[str, str, int]]:
-    if not path:
-        return set()
-    opener = gzip.open if str(path).endswith(".gz") else open
-    sites: set[tuple[str, str, int]] = set()
-    with opener(path, "rt") as handle:
-        for line in handle:
-            if not line.strip() or line.startswith("#"):
-                continue
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) < 3:
-                continue
-            strand = fields[5] if len(fields) > 5 and fields[5] in {"+", "-"} else "+"
-            coordinate = int(fields[2]) if strand == "+" else int(fields[1])
-            sites.add((fields[0], strand, coordinate))
-    return sites
+class KnownSiteIndex:
+    """Efficient lookup of known PAC sites within a specified radius."""
+
+    def __init__(self, sites: Iterable[tuple[str, str, int]] = ()) -> None:
+        """Build index from (contig, strand, coordinate) tuples.
+
+        Sites are deduplicated and sorted by coordinate for each contig/strand pair.
+        """
+        self._sites: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for contig, strand, coordinate in sites:
+            self._sites[(contig, strand)].append(coordinate)
+        for key in self._sites:
+            self._sites[key] = sorted(set(self._sites[key]))
+
+    def matches(
+        self, contig: str, strand: str, coordinate: int, radius: int
+    ) -> list[int]:
+        """Return sorted known coordinates within [coordinate - radius, coordinate + radius]."""
+        sites = self._sites.get((contig, strand), [])
+        if not sites:
+            return []
+        lower_idx = bisect_left(sites, coordinate - radius)
+        upper_idx = bisect_right(sites, coordinate + radius)
+        return sites[lower_idx:upper_idx]
+
+    def __bool__(self) -> bool:
+        """Return True if any site exists."""
+        return bool(self._sites)
+
+
+def load_known_pacs(path: str | Path | None) -> KnownSiteIndex:
+    """Load known PAC sites from a BED6 file.
+
+    Returns an empty KnownSiteIndex if path is falsy.
+    Uses field 2 (end) for + strand, field 1 (start) for - strand.
+    """
+    sites: list[tuple[str, str, int]] = []
+    if path:
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt") as handle:
+            for line in handle:
+                if not line.strip() or line.startswith("#"):
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 3:
+                    continue
+                strand = fields[5] if len(fields) > 5 and fields[5] in {"+", "-"} else "+"
+                coordinate = int(fields[2]) if strand == "+" else int(fields[1])
+                sites.append((fields[0], strand, coordinate))
+    return KnownSiteIndex(sites)
 
 
 def annotate_candidates(
@@ -61,11 +96,11 @@ def annotate_candidates(
     internal_priming_window: int,
     internal_priming_max_a_run: int,
     internal_priming_max_a_fraction: float,
-    known_sites: set[tuple[str, str, int]] | None = None,
+    known_sites: KnownSiteIndex | None = None,
     known_match_radius: int = 12,
     motif_catalog: tuple[tuple[str, str, int], ...] = DEFAULT_MOTIFS,
 ) -> list[dict[str, object]]:
-    known_sites = known_sites or set()
+    known_sites = known_sites or KnownSiteIndex()
     feature_index = FeatureIndex(features)
     fasta = pysam.FastaFile(str(fasta_path))
     rows: list[dict[str, object]] = []
@@ -116,12 +151,11 @@ def annotate_candidates(
                 longest_a > internal_priming_max_a_run
                 or a_fraction > internal_priming_max_a_fraction
             )
-            known_matches = sorted(
-                coordinate
-                for contig, strand, coordinate in known_sites
-                if contig == candidate.contig
-                and strand == candidate.strand
-                and abs(coordinate - candidate.coordinate) <= known_match_radius
+            known_matches = known_sites.matches(
+                candidate.contig,
+                candidate.strand,
+                candidate.coordinate,
+                known_match_radius,
             )
             pac_id = (
                 f"PACv1.{assembly}.{candidate.contig}.{candidate.strand}.{candidate.coordinate}"
@@ -152,9 +186,6 @@ def annotate_candidates(
                     "width_90": candidate.width_90,
                     "local_strand_enrichment": round(candidate.local_enrichment, 6),
                     "poly_a_clip_fraction": round(candidate.poly_a_clip_fraction, 6),
-                    "coordinate_interval_low": candidate.coordinate_interval_low,
-                    "coordinate_interval_high": candidate.coordinate_interval_high,
-                    "coordinate_bootstrap_successes": (candidate.coordinate_bootstrap_successes),
                     "region_start": (
                         candidate.region_start
                         if candidate.region_start is not None
@@ -203,26 +234,33 @@ def annotate_candidates(
 
 
 class FeatureIndex:
+    """Gene assignment for PAC coordinates (design section 6).
+
+    Containment is inclusive at both ends: in interbase coordinates, a 3-prime
+    boundary equals its exon's ``end``. Exons and genes are binned so a query
+    reads one bin; downstream genes are found by bisection.
+    """
+
     def __init__(self, features: Iterable[GenomicFeature], bin_size: int = 10000):
         self.bin_size = bin_size
-        self.genes: dict[tuple[str, str, str], GenomicFeature] = {}
-        self.exons: dict[tuple[str, str], list[GenomicFeature]] = defaultdict(list)
-        self.transcript_exons: dict[tuple[str, str, str], list[GenomicFeature]] = defaultdict(list)
+        genes: dict[tuple[str, str, str], GenomicFeature] = {}
+        exons: list[GenomicFeature] = []
+        transcript_exons: dict[tuple[str, str, str], list[GenomicFeature]] = defaultdict(list)
         for feature in features:
             if feature.feature_type == "gene":
-                self.genes[(feature.contig, feature.strand, feature.gene_id)] = feature
+                genes[(feature.contig, feature.strand, feature.gene_id)] = feature
             if feature.feature_type == "exon":
-                self.exons[(feature.contig, feature.strand)].append(feature)
+                exons.append(feature)
                 key = (feature.contig, feature.strand, feature.transcript_id or feature.gene_id)
-                self.transcript_exons[key].append(feature)
-        if not self.genes:
+                transcript_exons[key].append(feature)
+        if not genes:
+            # Without gene records, each gene spans its exons.
             gene_parts: dict[tuple[str, str, str], list[GenomicFeature]] = defaultdict(list)
-            for exon_list in self.exons.values():
-                for exon in exon_list:
-                    gene_parts[(exon.contig, exon.strand, exon.gene_id)].append(exon)
+            for exon in exons:
+                gene_parts[(exon.contig, exon.strand, exon.gene_id)].append(exon)
             for key, values in gene_parts.items():
                 first = values[0]
-                self.genes[key] = GenomicFeature(
+                genes[key] = GenomicFeature(
                     contig=first.contig,
                     start=min(item.start for item in values),
                     end=max(item.end for item in values),
@@ -232,69 +270,88 @@ class FeatureIndex:
                     gene_name=first.gene_name,
                 )
         self.terminal_exons: set[tuple[str, str, int, int, str]] = set()
-        for exons in self.transcript_exons.values():
+        for transcript in transcript_exons.values():
             terminal = (
-                max(exons, key=lambda item: item.end)
-                if exons[0].strand == "+"
-                else min(exons, key=lambda item: item.start)
+                max(transcript, key=lambda item: item.end)
+                if transcript[0].strand == "+"
+                else min(transcript, key=lambda item: item.start)
             )
             self.terminal_exons.add(
                 (terminal.contig, terminal.strand, terminal.start, terminal.end, terminal.gene_id)
             )
+        self.exon_bins = self._bins(exons)
+        self.gene_bins = self._bins(genes.values())
+        by_strand: dict[tuple[str, str], list[GenomicFeature]] = defaultdict(list)
+        for gene in genes.values():
+            by_strand[(gene.contig, gene.strand)].append(gene)
+        self.genes_by_end = {
+            key: sorted(values, key=lambda gene: (gene.end, gene.gene_id))
+            for key, values in by_strand.items()
+        }
+        self.gene_ends = {
+            key: [gene.end for gene in values] for key, values in self.genes_by_end.items()
+        }
+        self.genes_by_start = {
+            key: sorted(values, key=lambda gene: (gene.start, gene.gene_id))
+            for key, values in by_strand.items()
+        }
+        self.gene_starts = {
+            key: [gene.start for gene in values] for key, values in self.genes_by_start.items()
+        }
+
+    def _bins(
+        self, features: Iterable[GenomicFeature]
+    ) -> dict[tuple[str, str, int], list[GenomicFeature]]:
+        bins: dict[tuple[str, str, int], list[GenomicFeature]] = defaultdict(list)
+        for feature in features:
+            for number in range(feature.start // self.bin_size, feature.end // self.bin_size + 1):
+                bins[(feature.contig, feature.strand, number)].append(feature)
+        return bins
+
+    def _containing(
+        self,
+        bins: dict[tuple[str, str, int], list[GenomicFeature]],
+        contig: str,
+        strand: str,
+        coordinate: int,
+    ) -> list[GenomicFeature]:
+        candidates = bins.get((contig, strand, coordinate // self.bin_size), [])
+        return [item for item in candidates if item.start <= coordinate <= item.end]
 
     def assign(
         self, contig: str, strand: str, coordinate: int, maximum_downstream: int
     ) -> list[tuple[str, GenomicFeature]]:
-        exons = [
-            feature
-            for feature in self.exons.get((contig, strand), [])
-            if feature.start <= coordinate <= feature.end
-        ]
+        exons = self._containing(self.exon_bins, contig, strand, coordinate)
         terminal = [
-            feature
-            for feature in exons
-            if (feature.contig, feature.strand, feature.start, feature.end, feature.gene_id)
+            exon
+            for exon in exons
+            if (exon.contig, exon.strand, exon.start, exon.end, exon.gene_id)
             in self.terminal_exons
         ]
         if terminal:
-            return [("terminal_exon", item) for item in terminal]
+            return [("terminal_exon", exon) for exon in terminal]
         if exons:
-            return [("other_exon", item) for item in exons]
-        intronic = [
-            feature
-            for key, feature in self.genes.items()
-            if key[0] == contig and key[1] == strand and feature.start <= coordinate <= feature.end
-        ]
+            return [("other_exon", exon) for exon in exons]
+        intronic = self._containing(self.gene_bins, contig, strand, coordinate)
         if intronic:
-            return [("intronic", item) for item in intronic]
-        downstream = []
-        same_strand_genes = [
-            feature for key, feature in self.genes.items() if key[0] == contig and key[1] == strand
-        ]
-        for gene in same_strand_genes:
-            distance = coordinate - gene.end if strand == "+" else gene.start - coordinate
-            if 0 < distance <= maximum_downstream:
-                intervening = any(
-                    other.gene_id != gene.gene_id
-                    and (
-                        gene.end < other.start <= coordinate
-                        if strand == "+"
-                        else coordinate <= other.end < gene.start
-                    )
-                    for other in same_strand_genes
-                )
-                if not intervening:
-                    downstream.append(("downstream", gene))
-        if downstream:
-            nearest = min(
-                abs(coordinate - (item[1].end if strand == "+" else item[1].start))
-                for item in downstream
-            )
-            return [
-                item
-                for item in downstream
-                if abs(coordinate - (item[1].end if strand == "+" else item[1].start)) == nearest
-            ]
+            return [("intronic", gene) for gene in intronic]
+        # Downstream: the nearest same-strand gene(s) ending upstream of the
+        # PAC in transcript orientation, within maximum_downstream. No other
+        # same-strand gene can lie between them: it would either contain the
+        # PAC or end nearer to it.
+        key = (contig, strand)
+        if strand == "+":
+            ends = self.gene_ends.get(key, [])
+            upper = bisect_left(ends, coordinate)
+            if upper and coordinate - ends[upper - 1] <= maximum_downstream:
+                lower = bisect_left(ends, ends[upper - 1])
+                return [("downstream", gene) for gene in self.genes_by_end[key][lower:upper]]
+        else:
+            starts = self.gene_starts.get(key, [])
+            lower = bisect_right(starts, coordinate)
+            if lower < len(starts) and starts[lower] - coordinate <= maximum_downstream:
+                upper = bisect_right(starts, starts[lower])
+                return [("downstream", gene) for gene in self.genes_by_start[key][lower:upper]]
         return []
 
 

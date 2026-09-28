@@ -83,7 +83,7 @@ def prepare_alignment(
         destination.symlink_to(source)
         action = "reused_alignment"
     else:
-        args = ["-@", str(max(1, threads)), "-o", str(destination)]
+        args = ["-@", str(max(1, threads)), "-o", str(destination), "--no-PG"]
         if is_cram:
             args.extend(["-O", "CRAM", "--reference", str(reference)])
         args.append(str(source))

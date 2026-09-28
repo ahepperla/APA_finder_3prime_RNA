@@ -4,7 +4,7 @@ process QUANTIFY_PACS {
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: '*.quantification.tsv'
     publishDir "${params.outdir}/counts/per_sample", mode: 'copy',
-        pattern: '*.pac_counts.tsv.gz', enabled: params.save_intermediates
+        pattern: '*.pac_counts.tsv.gz', enabled: params.save_intermediates.toString() == 'true'
 
     input:
     tuple val(meta), path(evidence_tsv), path(evidence_parquet),

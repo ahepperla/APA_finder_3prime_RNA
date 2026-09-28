@@ -8,19 +8,14 @@ include { KMER_ENRICHMENT } from '../../modules/local/kmer_enrichment'
 workflow STATISTICS {
     take:
     normalized_samples
-    testable_counts
+    pac_counts
     observed_pau
     atlas
     resolved_params
+    statistics_script
 
     main:
-    // Staged as an input so that -resume reruns the statistics whenever the
-    // script changes; a path inside the command alone is not part of the
-    // task hash.
-    statistics_script = Channel.value(
-        file("${projectDir}/scripts/fit_usage_model.R", checkIfExists: true)
-    )
-    MOTIF_SCORES(observed_pau, atlas)
+    MOTIF_SCORES(observed_pau, atlas, resolved_params)
     comparison_families = normalized_samples
         .splitCsv(header: true, sep: '\t')
         .filter { row -> row.condition != row.control_condition }
@@ -30,19 +25,15 @@ workflow STATISTICS {
     FIT_USAGE_MODEL(
         comparison_families,
         normalized_samples,
-        testable_counts,
+        pac_counts,
         atlas,
         resolved_params,
         MOTIF_SCORES.out.primary,
         MOTIF_SCORES.out.sensitivity,
         statistics_script
     )
-    bootstrap_batches = FIT_USAGE_MODEL.out.bootstrap_batches
-        .flatMap { family, batch_files ->
-            def files = batch_files instanceof List ? batch_files : [batch_files]
-            files.collect { batch -> tuple(family, batch) }
-        }
-    BOOTSTRAP_USAGE_INTERVALS(bootstrap_batches, statistics_script)
+    // One task per batch file; each family writes at least one batch.
+    BOOTSTRAP_USAGE_INTERVALS(FIT_USAGE_MODEL.out.bootstrap_batches.transpose(), statistics_script)
     bootstrap_intervals = BOOTSTRAP_USAGE_INTERVALS.out.intervals
         .groupTuple()
     finalization_inputs = FIT_USAGE_MODEL.out.preliminary
@@ -52,7 +43,7 @@ workflow STATISTICS {
         .map { family, directory -> directory }
         .collect()
     MERGE_USAGE_MODELS(family_directories)
-    KMER_ENRICHMENT(MERGE_USAGE_MODELS.out.statistics, atlas)
+    KMER_ENRICHMENT(MERGE_USAGE_MODELS.out.statistics, atlas, resolved_params)
 
     emit:
     results = MERGE_USAGE_MODELS.out.statistics

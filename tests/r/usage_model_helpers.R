@@ -67,36 +67,12 @@ as_flag <- function(value) tolower(as.character(value)) %in% c("true", "t", "1")
 
 # ---- Loading the statistics script ---------------------------------------
 
-is_function_definition <- function(expression) {
-  is.call(expression) &&
-    (identical(expression[[1]], as.name("<-")) || identical(expression[[1]], as.name("="))) &&
-    is.call(expression[[3]]) &&
-    identical(expression[[3]][[1]], as.name("function"))
-}
-
-# Top-level statements that dispatch the command line are skipped. This lets
-# the tests load both the repaired script and older versions without running
-# their CLI.
-is_dispatch_expression <- function(expression) {
-  if (is_function_definition(expression)) return(FALSE)
-  if (is.call(expression) && identical(expression[[1]], as.name("switch"))) return(TRUE)
-  any(grepl("commandArgs", deparse(expression), fixed = TRUE))
-}
-
+# The script runs its command line only when Rscript runs it directly, so
+# sourcing it just defines its functions.
 load_usage_model <- function(path) {
   environment <- new.env(parent = globalenv())
-  for (expression in parse(file = path, keep.source = FALSE)) {
-    if (is_dispatch_expression(expression)) next
-    eval(expression, environment)
-  }
-  if (exists("load_statistics_packages", envir = environment, inherits = FALSE)) {
-    environment$load_statistics_packages()
-  }
-  required <- c("run_fit_mode", "run_bootstrap_mode", "run_finalize_mode", "classify_event")
-  missing <- required[!vapply(required, exists, logical(1), envir = environment)]
-  if (length(missing)) {
-    stop("The statistics script lacks: ", paste(missing, collapse = ", "))
-  }
+  sys.source(path, envir = environment)
+  environment$load_statistics_packages()
   environment
 }
 
@@ -357,9 +333,11 @@ write_usage_inputs <- function(dataset, directory) {
   dir.create(directory, recursive = TRUE, showWarnings = FALSE)
   paths <- list(
     samples = file.path(directory, "normalized_samples.tsv"),
-    counts = file.path(directory, "testable_pac_counts.tsv.gz"),
+    counts = file.path(directory, "pac_counts.tsv.gz"),
     atlas = file.path(directory, "pacs.v1.metadata.tsv.gz"),
-    params = file.path(directory, "resolved_params.yaml")
+    params = file.path(directory, "resolved_params.yaml"),
+    motif_scores = file.path(directory, "motif_scores.tsv"),
+    motif_sensitivity = file.path(directory, "motif_scores_known_rescue_sensitivity.tsv")
   )
   utils::write.table(dataset$samples, paths$samples, sep = "\t", quote = FALSE,
     row.names = FALSE, na = "")
@@ -370,7 +348,21 @@ write_usage_inputs <- function(dataset, directory) {
   utils::write.table(dataset$atlas, connection, sep = "\t", quote = FALSE, row.names = FALSE)
   close(connection)
   yaml::write_yaml(dataset$params, paths$params)
+  motif_scores <- if (is.null(dataset$motif_scores)) empty_motif_scores() else dataset$motif_scores
+  for (path in c(paths$motif_scores, paths$motif_sensitivity)) {
+    utils::write.table(motif_scores, path, sep = "\t", quote = FALSE, row.names = FALSE)
+  }
   paths
+}
+
+# The columns of pacusage motif-scores output, with no rows.
+empty_motif_scores <- function() {
+  data.frame(
+    sample_id = character(), primary_pas_motif_rna = character(),
+    primary_motif_class = character(), motif_usage = numeric(),
+    transformed_motif_usage = numeric(), informative_genes = integer(),
+    stringsAsFactors = FALSE
+  )
 }
 
 # ---- Running the three statistics modes ----------------------------------
@@ -405,6 +397,8 @@ run_statistics_in_process <- function(
     counts = paths$counts,
     atlas = paths$atlas,
     params = paths$params,
+    motif_scores = paths$motif_scores,
+    motif_sensitivity = paths$motif_sensitivity,
     model_workers = as.character(model_workers),
     bootstrap_batch_size = as.character(batch_size),
     output_dir = fit_directory
@@ -465,6 +459,7 @@ run_statistics_subprocess <- function(
     script, "--mode", "fit", "--family", family,
     "--samples", paths$samples, "--counts", paths$counts,
     "--atlas", paths$atlas, "--params", paths$params,
+    "--motif-scores", paths$motif_scores, "--motif-sensitivity", paths$motif_sensitivity,
     "--model-workers", as.character(model_workers),
     "--bootstrap-batch-size", as.character(batch_size),
     "--output-dir", fit_directory

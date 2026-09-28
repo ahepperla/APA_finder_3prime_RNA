@@ -8,7 +8,7 @@ process PREPARE_ALIGNMENT {
     publishDir "${params.outdir}/qc", mode: 'copy',
         pattern: '*.alignment_preparation.tsv'
     publishDir "${params.outdir}/prepared_alignments", mode: 'copy',
-        pattern: '*.{bam,bai,cram,crai}', enabled: params.save_prepared_alignments
+        pattern: '*.{bam,bai,cram,crai}', enabled: params.save_prepared_alignments.toString() == 'true'
 
     input:
     tuple val(meta), path(alignment)
