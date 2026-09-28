@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import build_plasmidsaurus_fixture
 import numpy as np
 import pysam
 
@@ -305,12 +306,6 @@ def main() -> None:
         handle.write("sample_id\talignment\tcondition\tcontrol\treplicate\n")
         for index, (sample_id, condition, control) in enumerate(ROWS, start=1):
             handle.write(f"{sample_id}\t{paths[sample_id]}\t{condition}\t{control}\t{index}\n")
-    with (ROOT / "samples_plasmidsaurus.tsv").open("w") as handle:
-        handle.write("sample_id\talignment\tcondition\tcontrol\tlibrary_profile\n")
-        for sample_id, condition, control in ROWS[:4]:
-            handle.write(
-                f"{sample_id}\t{paths[sample_id]}\t{condition}\t{control}\tplasmidsaurus_3prime\n"
-            )
     with (ROOT / "samples_incompatible.tsv").open("w") as handle:
         handle.write("sample_id\talignment\tcondition\tcontrol\tlibrary_profile\n")
         for index, (sample_id, condition, control) in enumerate(ROWS[:4]):
@@ -318,6 +313,9 @@ def main() -> None:
             handle.write(f"{sample_id}\t{paths[sample_id]}\t{condition}\t{control}\t{profile}\n")
     (ROOT / "genome.fa.fai").unlink(missing_ok=True)
     print(f"Wrote PACusage integration fixture to {ROOT}")
+    # The Plasmidsaurus-like run needs proximal-tag reads, which these
+    # exact-boundary alignments cannot provide; it has its own fixture.
+    build_plasmidsaurus_fixture.main()
 
 
 if __name__ == "__main__":

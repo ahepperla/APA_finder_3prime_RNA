@@ -319,7 +319,27 @@ nextflow run . -profile test,conda -resume
 checks the results. It also checks that:
 - the fixture files are unchanged afterwards;
 - a fresh run in a new work directory reproduces every published file;
-- a sample sheet mixing two protocols fails at calibration, before discovery.
+- a sample sheet mixing two protocols fails at calibration, before discovery;
+- the Plasmidsaurus-like fixture runs end to end and passes
+  `tests/verify_plasmidsaurus.py`.
+
+`build_fixture.py` also writes that Plasmidsaurus-like fixture, to
+`tests/fixtures/plasmidsaurus/`. It has its own reference and annotation, and
+its reads end 20-280 nt upstream of their PACs, so it exercises proximal-tag
+calibration, discovery, and quantification. To run it by hand, pass absolute
+paths:
+
+```bash
+nextflow run . -profile test,conda \
+  --input "$PWD/tests/fixtures/plasmidsaurus/samples.tsv" \
+  --fasta "$PWD/tests/fixtures/plasmidsaurus/genome.fa" \
+  --gtf "$PWD/tests/fixtures/plasmidsaurus/genes.gtf" \
+  --endpoint_model auto --outdir results-plasmidsaurus
+```
+
+If proximal-tag discovery accepts no PAC at all, the run stops at
+ANNOTATE_PACS. The error names `qc/pac_discovery.tsv` and
+`atlas/rejected_candidates.tsv.gz`, which explain why.
 
 The statistical process requires DRIMSeq, stageR, and limma. The supplied
 Conda files install them from Bioconda and pin DRIMSeq to 1.38.0, the version

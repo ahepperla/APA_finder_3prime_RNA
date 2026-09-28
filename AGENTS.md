@@ -89,7 +89,13 @@ The integration script:
   and validates their contents;
 - checks that the fixture files are unchanged;
 - checks that a fresh rerun reproduces every published file;
-- checks that a mixed-protocol sample sheet fails before discovery.
+- checks that a mixed-protocol sample sheet fails before discovery;
+- runs the Plasmidsaurus-like proximal-tag fixture in
+  `tests/fixtures/plasmidsaurus/`, which has its own reference and annotation.
+
+Keep that fixture's calibration genes single-ended. Its multi-PAC genes
+annotate one transcript per PAC, so alternative ends stay out of the
+calibration kernel.
 
 When running the fixture manually with Conda:
 

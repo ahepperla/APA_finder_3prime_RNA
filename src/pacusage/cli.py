@@ -1044,6 +1044,12 @@ def command_annotate(args: argparse.Namespace) -> None:
         )
         for row in read_tsv(args.candidates)
     ]
+    if not candidates:
+        raise PacusageError(
+            "No PAC candidates passed discovery, so there is no atlas to annotate. "
+            "See qc/pac_discovery.tsv for the discovery summary and "
+            "atlas/rejected_candidates.tsv.gz for each candidate's rejection reason."
+        )
     known = load_known_pacs(args.known_pacs)
     rows = annotate_candidates(
         candidates,

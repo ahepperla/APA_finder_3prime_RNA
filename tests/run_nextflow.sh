@@ -78,3 +78,18 @@ if grep -q "CLUSTER_PACS" "${incompatible_root}/trace.txt"; then
 fi
 test "$(fixture_state)" = "${fixtures_before}"
 
+# The Plasmidsaurus-like fixture runs the proximal-tag path end to end, with
+# its own reference and annotation.
+plasmidsaurus_fixture="${project_dir}/tests/fixtures/plasmidsaurus"
+plasmidsaurus_root="${scratch_root}/plasmidsaurus"
+mkdir -p "${plasmidsaurus_root}"
+(cd "${plasmidsaurus_root}" && nextflow run "${project_dir}" -profile test,local \
+  --input "${plasmidsaurus_fixture}/samples.tsv" \
+  --fasta "${plasmidsaurus_fixture}/genome.fa" \
+  --gtf "${plasmidsaurus_fixture}/genes.gtf" \
+  --endpoint_model auto \
+  --outdir "${plasmidsaurus_root}/results" \
+  -work-dir "${plasmidsaurus_root}/work" \
+  -with-trace "${plasmidsaurus_root}/trace.txt")
+python tests/verify_plasmidsaurus.py "${plasmidsaurus_root}/results"
+test "$(fixture_state)" = "${fixtures_before}"

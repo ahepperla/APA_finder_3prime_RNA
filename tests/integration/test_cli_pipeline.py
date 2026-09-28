@@ -1,12 +1,14 @@
+import json
 from pathlib import Path
 
+import pysam
 import pytest
 
 from pacusage.annotation import annotate_candidates
 from pacusage.cli import main
-from pacusage.clustering import cluster_exact_boundaries
+from pacusage.clustering import candidates_as_rows, cluster_exact_boundaries
 from pacusage.evidence import write_evidence, write_splice_continuations
-from pacusage.models import EvidenceObservation, SpliceContinuation
+from pacusage.models import EvidenceObservation, PacCandidate, SpliceContinuation
 from pacusage.quantification import build_count_outputs, quantify_exact
 from pacusage.reference import parse_annotation, prepare_reference
 from pacusage.tableio import read_tsv, write_tsv
@@ -508,3 +510,73 @@ def test_merge_statistics_orders_shards_by_family_not_task_number(tmp_path: Path
     assert [row["family"] for row in precision] == ["DMSO", "TreatmentA", "Vehicle"]
     fitted = read_tsv(output / "fitted_pau.tsv.gz")
     assert [row["control_condition"] for row in fitted] == ["DMSO", "TreatmentA", "Vehicle"]
+
+
+def _annotate_arguments(tmp_path: Path, candidates: list[PacCandidate], model: str) -> list[str]:
+    """Inputs for `pacusage annotate` around a one-gene reference."""
+    fasta = tmp_path / "genome.fa"
+    fasta.write_text(">chr1\n" + "C" * 500 + "\n")
+    pysam.faidx(str(fasta))
+    gtf = tmp_path / "genes.gtf"
+    gtf.write_text(
+        'chr1\ttest\tgene\t101\t400\t.\t+\t.\tgene_id "g1"; gene_name "G1";\n'
+        'chr1\ttest\texon\t101\t400\t.\t+\t.\tgene_id "g1"; transcript_id "t1";\n'
+    )
+    params = tmp_path / "params.json"
+    required = {"input": "samples.tsv", "assembly": "test", "fasta": str(fasta), "gtf": str(gtf)}
+    params.write_text(json.dumps(required))
+    resolution = tmp_path / "resolution.json"
+    resolution.write_text(json.dumps({"endpoint_model": model, "evidence_source": "read_3p"}))
+    # CLUSTER_PACS writes an empty table, with no header, when nothing passes.
+    accepted = tmp_path / "accepted_candidates.tsv.gz"
+    write_tsv(candidates_as_rows(candidates), accepted)
+    return [
+        "annotate",
+        "--candidates",
+        str(accepted),
+        "--reference",
+        str(fasta),
+        "--annotation",
+        str(gtf),
+        "--resolution",
+        str(resolution),
+        "--params",
+        str(params),
+        "--metadata",
+        str(tmp_path / "pacs.v1.metadata.tsv.gz"),
+        "--bed",
+        str(tmp_path / "pacs.v1.bed.gz"),
+        "--motifs",
+        str(tmp_path / "pac_motifs.tsv.gz"),
+        "--checksum",
+        str(tmp_path / "pacs.v1.sha256"),
+    ]
+
+
+def test_annotate_rejects_an_empty_candidate_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(_annotate_arguments(tmp_path, [], "proximal_tag"))
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "No PAC candidates passed discovery" in error
+    assert "qc/pac_discovery.tsv" in error
+    assert "atlas/rejected_candidates.tsv.gz" in error
+    assert not (tmp_path / "pacs.v1.metadata.tsv.gz").exists()
+
+
+def test_annotate_writes_an_atlas_for_one_candidate(tmp_path: Path) -> None:
+    candidate = PacCandidate(
+        contig="chr1",
+        strand="+",
+        coordinate=300,
+        total_count=9,
+        supporting_samples=2,
+        capped_support=2,
+        member_coordinates=(300,),
+        status="primary",
+    )
+    assert main(_annotate_arguments(tmp_path, [candidate], "exact_boundary")) == 0
+    metadata = read_tsv(tmp_path / "pacs.v1.metadata.tsv.gz")
+    assert [row["pac_id"] for row in metadata] == ["PACv1.test.chr1.+.300"]

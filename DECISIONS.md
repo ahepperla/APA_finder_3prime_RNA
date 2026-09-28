@@ -8,6 +8,56 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-27: Calibration kernels get a diagnostic, not new gene selection
+
+Status: accepted (project lead, option b of the proximal-fixture review)
+
+- **Gene selection stays as it is.** Calibration genes remain
+  annotation-defined: genes whose transcripts share one annotated end.
+- **A diagnostic is added.** It will warn, or fail, when a proximal-tag
+  profile's pooled kernel is multi-modal, or when its minimum resolvable
+  separation is far below the calibrated central interval width.
+- **Details are still open.** Its thresholds, and whether it warns or fails,
+  are planned separately.
+
+Reason: calibrating the exact-boundary fixture as Plasmidsaurus reported a
+proximal model at 0.999 reproducibility from a kernel of PAC spacings, with a
+2-nt resolution, and nothing warned. Unannotated alternative polyadenylation
+near annotated ends could broaden real kernels in the same way.
+
+## 2026-09-27: A Plasmidsaurus-like fixture with its own reference
+
+Status: accepted (project lead, by asking for it to be committed)
+
+- **Why the old sheet failed.** `samples_plasmidsaurus.tsv` reused the
+  exact-boundary alignments, whose reads end on PACs spaced 50 nt apart.
+  - Calibration measures reads against annotated distal ends, so it learned
+    that spacing: a kernel with spikes at 0, 50, and 100 nt.
+  - Every endpoint then matched several peaks about equally, so proximal
+    discovery accepted no PAC.
+  - Discovery itself recovers PACs from genuine proximal-tag reads. The sheet
+    is removed.
+- **The replacement.** `tests/fixtures/plasmidsaurus/` has its own FASTA and
+  annotation, built by `build_plasmidsaurus_fixture.py` through
+  `build_fixture.py`.
+  - 24 single-PAC genes calibrate the kernel.
+  - 18 multi-PAC genes annotate one transcript per PAC, so calibration skips
+    them.
+  - Reads end 20-280 nt upstream of their PAC, at deterministic triangular
+    quantiles.
+  - PACs sit 400 nt apart on the 25-nt discovery grid, so every read belongs
+    to exactly one PAC.
+  - Three genes shift usage in TreatmentA, and two are exact 3:2 nulls.
+- **Where it runs.** `tests/run_nextflow.sh` runs the fixture and checks it
+  with `tests/verify_plasmidsaurus.py`.
+- **Empty atlas.** An empty accepted atlas stops the run at ANNOTATE_PACS,
+  with an error naming `qc/pac_discovery.tsv` and
+  `atlas/rejected_candidates.tsv.gz`. It no longer fails later in
+  MOTIF_SCORES.
+
+Reason: the plan's integration fixture requires a successful
+Plasmidsaurus-like SE run, which exact-boundary reads cannot provide.
+
 ## 2026-09-27: Implementation choices in the BAM pass cleanup
 
 Status: accepted (project lead)
