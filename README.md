@@ -503,4 +503,4 @@ and runs the R tests, then runs the `test` profile and checks:
 | `tests/r/` | R tests for the statistics |
 | `tests/pipeline/` | The end-to-end script and its result checks |
 | `tests/fixtures/` | Synthetic references and alignments, and their builders |
-| `docs/` | The design and the decisions log |
+| `docs/` | The design, the decisions log, and the methods document for peer review (`docs/methods.html`) |

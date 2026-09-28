@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PACusage Methods and Rationale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Schibsted+Grotesk:wght@500;600;700&display=swap">
+<style>
+:root {
+  --bg: #f5f7f4;
+  --surface: #ffffff;
+  --ink: #16201b;
+  --muted: #56635c;
+  --rule: #d5ddd7;
+  --accent: #1c6a46;
+  --accent-strong: #134f33;
+  --accent-soft: #e1ede6;
+  --on-accent: #ffffff;
+  --warn: #875400;
+  --warn-soft: #f4e9d4;
+  --code-bg: #e9eeea;
+  --focus: #1c6a46;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1311;
+    --surface: #151c19;
+    --ink: #e2e9e5;
+    --muted: #9ca9a2;
+    --rule: #2a352f;
+    --accent: #6cc496;
+    --accent-strong: #93d8b2;
+    --accent-soft: #1a2c22;
+    --on-accent: #0e1311;
+    --warn: #e3b662;
+    --warn-soft: #2a2416;
+    --code-bg: #1c2520;
+    --focus: #93d8b2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1311;
+  --surface: #151c19;
+  --ink: #e2e9e5;
+  --muted: #9ca9a2;
+  --rule: #2a352f;
+  --accent: #6cc496;
+  --accent-strong: #93d8b2;
+  --accent-soft: #1a2c22;
+  --on-accent: #0e1311;
+  --warn: #e3b662;
+  --warn-soft: #2a2416;
+  --code-bg: #1c2520;
+  --focus: #93d8b2;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Literata", Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  line-height: 1.62;
+  font-variant-numeric: lining-nums;
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-inline: 20px;
+  padding-block: 44px 96px;
+}
+h1, h2, h3, h4, .label, .toc, table, figcaption, .meta, .stepper {
+  font-family: "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+h1, h2, h3, h4 { text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(2rem, 4.2vw, 2.75rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.55rem; font-weight: 700; }
+h3 { font-size: 1.1rem; font-weight: 600; }
+h4 { font-size: 0.98rem; font-weight: 600; }
+p { margin: 0; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { color: var(--accent-strong); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.84em;
+  background: var(--code-bg);
+  padding: 0.06em 0.32em;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+em { font-style: italic; }
+
+/* Header */
+.masthead { display: grid; gap: 18px; padding-block: 0 36px; border-bottom: 1px solid var(--rule); margin-bottom: 40px; }
+.label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.lede { font-size: 1.12rem; max-width: 64ch; color: var(--ink); }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.86rem; color: var(--muted); }
+.meta span strong { color: var(--ink); font-weight: 600; }
+
+/* Layout */
+.layout { display: grid; gap: 40px; }
+.toc { font-size: 0.9rem; }
+.toc h2 { font-size: 0.74rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-bottom: 10px; }
+.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.toc a { display: grid; grid-template-columns: 2.1em 1fr; gap: 4px; padding: 3px 0; color: var(--ink); text-decoration: none; }
+.toc a:hover { color: var(--accent); }
+.toc .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.toc .group { margin-top: 10px; }
+@media (min-width: 980px) {
+  .layout { grid-template-columns: 220px minmax(0, 1fr); gap: 60px; }
+  .toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; max-height: calc(100vh - 48px); overflow-y: auto; padding-right: 4px; }
+}
+@media (max-width: 979px) {
+  .toc { border: 1px solid var(--rule); border-radius: 8px; padding: 16px 18px; background: var(--surface); }
+  .toc ol { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); column-gap: 18px; }
+}
+
+article { min-width: 0; max-width: 72ch; display: grid; gap: 64px; }
+section { display: grid; gap: 16px; scroll-margin-top: 20px; }
+.section-head { display: grid; gap: 6px; }
+.prose { display: grid; gap: 14px; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: grid; gap: 8px; }
+.prose li::marker { color: var(--muted); }
+
+.block { display: grid; gap: 10px; }
+.block > .label { color: var(--muted); }
+
+.callout {
+  background: var(--warn-soft);
+  border-radius: 8px;
+  padding: 14px 18px;
+  display: grid;
+  gap: 8px;
+}
+.callout .label { color: var(--warn); }
+.callout ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.callout.info { background: var(--accent-soft); }
+.callout.info .label { color: var(--accent); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; line-height: 1.45; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th { font-weight: 600; color: var(--muted); font-size: 0.76rem; letter-spacing: 0.06em; text-transform: uppercase; background: var(--bg); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td code { font-size: 0.82em; }
+caption { caption-side: top; text-align: left; padding: 10px 12px; font-weight: 600; font-size: 0.86rem; color: var(--ink); border-bottom: 1px solid var(--rule); }
+
+/* Stepper */
+.stepper { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: stage; }
+.stepper li { display: grid; grid-template-columns: 2.4rem 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid var(--rule); }
+.stepper li:first-child { border-top: 0; }
+.stepper .num { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 1rem; line-height: 1.5; }
+.stepper .name { font-weight: 600; }
+.stepper .what { color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+.stepper a { color: inherit; text-decoration: none; }
+.stepper a:hover .name { color: var(--accent); }
+
+.principles { display: grid; gap: 14px; }
+.principle { display: grid; gap: 6px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+
+/* Figure */
+figure { margin: 0; display: grid; gap: 10px; }
+.figure-frame { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 10px 8px; }
+.figure-frame svg { display: block; width: 100%; min-width: 560px; height: auto; }
+figcaption { font-size: 0.84rem; color: var(--muted); line-height: 1.5; }
+svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
+.s-ink { fill: var(--ink); }
+.s-muted { fill: var(--muted); }
+.s-line { stroke: var(--ink); }
+.s-rule { stroke: var(--muted); }
+.s-scan { fill: var(--accent-soft); stroke: var(--accent); }
+.s-core { fill: var(--accent); }
+.s-core-text { fill: var(--on-accent); }
+.s-warn { fill: var(--warn-soft); stroke: var(--warn); }
+.s-accent-stroke { stroke: var(--accent); }
+.s-warn-stroke { stroke: var(--warn); }
+.s-accent-fill { fill: var(--accent); }
+
+.formula { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; overflow-x: auto; white-space: pre; line-height: 1.7; }
+
+.refs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 0.9rem; line-height: 1.5; }
+.refs li { scroll-margin-top: 20px; padding-left: 1.4em; text-indent: -1.4em; }
+.refs li:target { background: var(--accent-soft); border-radius: 4px; }
+.cite { white-space: nowrap; }
+.footer-note { font-size: 0.86rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 18px; }
+
+@media (max-width: 520px) {
+  body { font-size: 16px; }
+  th, td { padding: 8px 9px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <p class="label">Methods document for peer review</p>
+    <h1>PACusage methods and rationale</h1>
+    <p class="lede">PACusage finds polyadenylation site clusters (PACs) in 3′-end RNA-seq alignments, counts the reads at each one, and tests every treatment against its declared control for changes in how a gene's reads are shared among its PACs. This document goes through the pipeline in the order it runs. For each step it says what the step does, which defaults it uses, and why, with the statistical result, biological observation, or community standard behind the choice. Limitations and open questions for reviewers are collected at the end.</p>
+    <div class="meta">
+      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA, commit <code>e5594d6</code></span>
+      <span><strong>Date</strong> 28 September 2026</span>
+      <span><strong>Statistics</strong> DRIMSeq 1.38.0 (pinned), stageR, limma</span>
+      <span><strong>Execution</strong> Nextflow DSL2, Apptainer, Slurm</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Contents">
+      <h2>Contents</h2>
+      <ol>
+        <li><a href="#principles"><span class="n">A</span><span>Design principles</span></a></li>
+        <li><a href="#conventions"><span class="n">B</span><span>Terms and conventions</span></a></li>
+        <li><a href="#overview"><span class="n">C</span><span>The pipeline at a glance</span></a></li>
+        <li class="group"><a href="#step-1"><span class="n">1</span><span>Validate inputs</span></a></li>
+        <li><a href="#step-2"><span class="n">2</span><span>Prepare reference and alignments</span></a></li>
+        <li><a href="#step-3"><span class="n">3</span><span>Layout and strandedness</span></a></li>
+        <li><a href="#step-4"><span class="n">4</span><span>Scan and calibrate</span></a></li>
+        <li><a href="#step-5"><span class="n">5</span><span>Discover PACs</span></a></li>
+        <li><a href="#step-6"><span class="n">6</span><span>Annotate and freeze the atlas</span></a></li>
+        <li><a href="#step-7"><span class="n">7</span><span>Count reads at PACs</span></a></li>
+        <li><a href="#step-8"><span class="n">8</span><span>Filter testable PACs</span></a></li>
+        <li><a href="#step-9"><span class="n">9</span><span>Model differential usage</span></a></li>
+        <li><a href="#step-10"><span class="n">10</span><span>Call events</span></a></li>
+        <li><a href="#step-11"><span class="n">11</span><span>Motif preference and k-mers</span></a></li>
+        <li><a href="#step-12"><span class="n">12</span><span>Report and provenance</span></a></li>
+        <li class="group"><a href="#validation"><span class="n">D</span><span>How the pipeline is tested</span></a></li>
+        <li><a href="#limitations"><span class="n">E</span><span>Limitations and open questions</span></a></li>
+        <li><a href="#references"><span class="n">F</span><span>References</span></a></li>
+      </ol>
+    </nav>
+
+    <article>
+
+      <section id="principles">
+        <div class="section-head">
+          <p class="label">A</p>
+          <h2>Design principles</h2>
+        </div>
+        <div class="prose">
+          <p>Four rules shape the pipeline. Each later step follows from one or more of them.</p>
+        </div>
+        <div class="principles">
+          <div class="principle">
+            <h3>Calibrate the protocol before calling any PAC</h3>
+            <p>3′-end protocols place read ends differently relative to the cleavage site. Assays that keep the transcript–poly(A) junction report the site at nucleotide resolution. Oligo(dT)-primed tag protocols such as QuantSeq <a class="cite" href="#ref-moll2014">(Moll et al., 2014)</a> produce reads that end upstream of the site, with a protocol-specific spread, and PACusage's Plasmidsaurus profile treats that assay the same way. PACusage measures this behavior against annotated transcript ends in each run and uses the measured offset distribution, instead of assuming one.</p>
+          </div>
+          <div class="principle">
+            <h3>Define the features once, freeze them, then count and test</h3>
+            <p>One PAC atlas is built from all samples, annotated, checksummed, and frozen before any sample is counted or tested. Discovery never uses the treatment–control contrasts, effect sizes, or PAS motifs. Choosing features with the same contrast that is later tested inflates false positives (circular analysis, <a class="cite" href="#ref-kriegeskorte2009">Kriegeskorte et al., 2009</a>). Discovery does use condition labels in one symmetric way: a PAC must be supported by replicates within the condition that supports it. The project lead chose to keep this rule (Step 5; open question 1).</p>
+          </div>
+          <div class="principle">
+            <h3>Compare each treatment only with its declared control</h3>
+            <p>Every condition names its control in the sample sheet, and comparisons follow those links, including chains such as <code>WT → disease_vehicle → disease_drug</code>. Each test then isolates one intervention against the baseline it was designed against. There are no treatment-versus-treatment tests.</p>
+          </div>
+          <div class="principle">
+            <h3>Infer from raw counts, interpret with PAU, and never add pseudocounts</h3>
+            <p>The model is fitted to integer read counts. PAC usage (PAU) is reported for interpretation: a PAC's count divided by its gene's total in that sample. Pseudocounts pull low-count genes toward equal usage and distort effect sizes, so zeros are handled inside the model (Step 9) and never by editing the counts.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="conventions">
+        <div class="section-head">
+          <p class="label">B</p>
+          <h2>Terms and conventions</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr><th scope="row">End observation</th><td>A transcript-oriented read or fragment end used as 3′ evidence. It is not assumed to be a cleavage site.</td></tr>
+              <tr><th scope="row">PAC</th><td>A polyadenylation site cluster. Exact-boundary PACs have nucleotide coordinates. Proximal-tag PACs have an estimated coordinate and a resolution region.</td></tr>
+              <tr><th scope="row">PAU</th><td>For gene <em>g</em>, PAC <em>p</em>, and sample <em>s</em>: PAU<sub>gps</sub> = y<sub>gps</sub> / n<sub>gs</sub>, where y is the raw PAC count and n the gene total. It is undefined when n<sub>gs</sub> = 0.</td></tr>
+              <tr><th scope="row">Coordinates</th><td>Zero-based and interbase, as in BED. PAC IDs read <code>PACv1.&lt;assembly&gt;.&lt;contig&gt;.&lt;strand&gt;.&lt;coordinate&gt;</code>. Every PAC table starts with <code>pac_id, gene_id, gene_name, chrom, start, end, strand, locus</code>. <code>start</code> and <code>end</code> are the PAC's BED interval: <code>[c, c+1)</code> for an exact PAC, the resolution region for a proximal-tag PAC. <code>locus</code> is the same interval 1-based, for pasting into a genome browser.</td></tr>
+              <tr><th scope="row">Gene names</th><td>Each gene's name comes from its gene record in the annotation (<code>gene_name</code>, a GFF3 gene's <code>Name</code>, or NCBI's <code>gene</code>), and falls back to its <code>gene_id</code>. Every gene-keyed table carries it next to <code>gene_id</code>.</td></tr>
+              <tr><th scope="row">Comparison family</th><td>A control condition plus every condition that names it. Each family is fitted as one model.</td></tr>
+              <tr><th scope="row">Defaults</th><td>Values quoted here are the defaults in <code>nextflow_schema.json</code> at this commit. Each run records its resolved values in <code>manifest/resolved_params.yaml</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="overview">
+        <div class="section-head">
+          <p class="label">C</p>
+          <h2>The pipeline at a glance</h2>
+        </div>
+        <div class="prose">
+          <p>The steps run in this order. Alignment preparation, strandedness inference, the scan, and counting run per sample in parallel. Validation, calibration aggregation, discovery, and annotation run once. Modeling runs once per comparison family, and its bootstrap is split into batch jobs.</p>
+        </div>
+        <ol class="stepper">
+          <li><span class="num">1</span><a href="#step-1"><span class="name">Validate inputs</span><br><span class="what">Parameters, sample sheet, control graph, references, contigs, and R packages are checked before any heavy work.</span></a></li>
+          <li><span class="num">2</span><a href="#step-2"><span class="name">Prepare reference and alignments</span><br><span class="what">Link, index, or sort without touching sources. Hash every input.</span></a></li>
+          <li><span class="num">3</span><a href="#step-3"><span class="name">Layout and strandedness</span><br><span class="what">Detect SE or PE and infer the strand protocol from reads over unambiguous exons.</span></a></li>
+          <li><span class="num">4</span><a href="#step-4"><span class="name">Scan and calibrate</span><br><span class="what">Read each alignment once, filter reads, collect ends for every evidence source, and calibrate against annotated ends.</span></a></li>
+          <li><span class="num">5</span><a href="#step-5"><span class="name">Discover PACs</span><br><span class="what">Cluster exact boundaries, or find kernel-matched peaks for proximal tags, and require replicate support.</span></a></li>
+          <li><span class="num">6</span><a href="#step-6"><span class="name">Annotate and freeze the atlas</span><br><span class="what">Genes, PAS motifs, internal-priming flags, known sites, and a checksum.</span></a></li>
+          <li><span class="num">7</span><a href="#step-7"><span class="name">Count reads at PACs</span><br><span class="what">Recount every sample against the frozen atlas and compute PAU.</span></a></li>
+          <li><span class="num">8</span><a href="#step-8"><span class="name">Filter testable PACs</span><br><span class="what">Label-blind count and usage thresholds, per comparison family.</span></a></li>
+          <li><span class="num">9</span><a href="#step-9"><span class="name">Model differential usage</span><br><span class="what">DRIMSeq Dirichlet-multinomial fits, stageR stage-wise testing, zero-count stabilization, and bootstrap intervals.</span></a></li>
+          <li><span class="num">10</span><a href="#step-10"><span class="name">Call events</span><br><span class="what">Gained, lost, increased or decreased usage, dominant switches, and complexity changes.</span></a></li>
+          <li><span class="num">11</span><a href="#step-11"><span class="name">Motif preference and k-mers</span><br><span class="what">A limma test of PAS-motif usage and an exploratory Cochran–Mantel–Haenszel k-mer scan.</span></a></li>
+          <li><span class="num">12</span><a href="#step-12"><span class="name">Report and provenance</span><br><span class="what">A static HTML report, checksums, versions, and byte-identical reruns.</span></a></li>
+        </ol>
+      </section>
+
+      <!-- Step 1 -->
+      <section id="step-1">
+        <div class="section-head">
+          <p class="label">Step 1</p>
+          <h2>Validate inputs</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <p>The first task validates every parameter once against the JSON schema, which defines each parameter's type, range, allowed values, and default. Later steps read the resolved file and never re-derive defaults. The same task checks the sample sheet, confirms that every file exists and can be read, and compares each alignment's contig names and lengths with the FASTA. The annotation must share contigs with the alignment. A separate job loads the R statistics packages at the same time, so a missing dependency stops the run within minutes, before any alignment is read.</p>
+            <p>The sample sheet rules:</p>
+            <ul>
+              <li>Sample IDs are unique and filesystem-safe.</li>
+              <li>Each condition names one control, consistently across its samples. A genuinely empty <code>control</code> field marks a control condition.</li>
+              <li>Every named control exists, and every control is used by at least one treatment. A condition cannot name itself, and the control graph must be acyclic.</li>
+              <li>Each modeled condition has at least 2 biological replicates. With <code>insufficient_replicates_policy: warn</code>, the run continues as explicitly exploratory. Every affected comparison is then marked, and gained or lost calls are demoted to candidates.</li>
+              <li>Covariates named in <code>model_covariates</code> must be complete within each family, and they enter the model as categorical factors.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>On a cluster, an error found in the first minutes costs minutes. The same error found after the alignment scan costs hours.</li>
+              <li>Two replicates is the minimum for estimating between-replicate variability, which the Dirichlet-multinomial model needs (Step 9). Power and error control improve substantially with more replicates <a class="cite" href="#ref-schurch2016">(Schurch et al., 2016)</a>, so fewer than two is allowed only as a labeled exploratory run.</li>
+              <li>An acyclic control graph gives every comparison one well-defined baseline.</li>
+              <li>Comparing contig names and lengths catches alignments made against a different build or naming scheme, which would otherwise fail silently or misplace reads. Contig name differences can be bridged with <code>chromosome_aliases</code>.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 2 -->
+      <section id="step-2">
+        <div class="section-head">
+          <p class="label">Step 2</p>
+          <h2>Prepare reference and alignments</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <p>The FASTA must be uncompressed. It is symbolically linked into the task's work directory and indexed there with <code>samtools faidx</code>. An alignment whose header declares coordinate order (<code>@HD SO:coordinate</code>) is linked, not copied. Its existing index is reused if it opens and works; otherwise a new index is built in the work directory. Any other alignment is sorted into the work directory with <code>samtools sort --no-PG</code> and indexed. BAM stays BAM and CRAM stays CRAM.</p>
+            <p>Each source is hashed once (SHA-256), and its size and modification time are recorded. Every later step that reads an alignment checks both before and after its pass.</p>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>The <code>@HD SO</code> tag is the SAM specification's declaration of sort order <a class="cite" href="#ref-li2009">(Li et al., 2009)</a>. Coordinate order plus an index gives region access in the samtools/htslib toolchain <a class="cite" href="#ref-danecek2021">(Danecek et al., 2021)</a>.</li>
+              <li>Sources are often shared, read-only, or archived. htslib writes a missing <code>.fai</code> next to whatever path it is given, so the pipeline indexes a link inside the work directory, which guarantees that nothing is written next to the source.</li>
+              <li>Checksums tie every result to exact inputs, and the size and time checks catch a source being replaced mid-run.</li>
+              <li><code>--no-PG</code> keeps the task's absolute path out of the sorted file's header, which reruns need in order to be byte-identical.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout info">
+          <p class="label">Upstream of the pipeline</p>
+          <p>Trimming, alignment, and duplicate handling happen before PACusage. The pipeline drops only reads already flagged as duplicates (SAM flag 0x400). For 3′ tag libraries, flag duplicates only with UMIs, for example with UMI-tools <a class="cite" href="#ref-smith2017">(Smith et al., 2017)</a>. Many independent molecules end at the same 3′ position in a highly expressed gene, so duplicate marking by position alone removes genuine reads and flattens the signal the pipeline measures.</p>
+        </div>
+      </section>
+
+      <!-- Step 3 -->
+      <section id="step-3">
+        <div class="section-head">
+          <p class="label">Step 3</p>
+          <h2>Layout and strandedness</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <p><strong>Layout</strong> (SE or PE) is detected from the flags of the first 10,000 records, or set by the user. A set layout must agree with the file, or the run stops.</p>
+            <p><strong>Strandedness</strong> is inferred from a reservoir sample of up to 200,000 primary alignments (read 1 for paired data) that overlap exons of exactly one gene on one strand. Reads in antisense overlaps or multi-gene regions are skipped. At least 10,000 informative reads are required. The sample is called <code>forward</code> or <code>reverse</code> when at least 80% of reads agree, and ambiguous otherwise. An ambiguous call stops the run unless the strandedness is set by the user or the library profile. A strandedness set by the user or implied by a library profile is still compared with the inferred one, and a conflict stops the run. Reads on excluded contigs, which are the mitochondrial ones by default, are skipped here as well.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>strand_max_sampled_fragments</code></td><td class="num">200,000</td><td>Reservoir size</td></tr>
+              <tr><td><code>strand_min_informative_fragments</code></td><td class="num">10,000</td><td>Reads needed for a call</td></tr>
+              <tr><td><code>strand_decision_fraction</code></td><td class="num">0.80</td><td>Agreement needed to call a strand</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>Strand decides which end of a read is its 3′ end and which gene a PAC belongs to. A mislabeled library would place every PAC on the wrong strand.</li>
+              <li>The approach follows RSeQC's <code>infer_experiment</code> <a class="cite" href="#ref-wang2012">(Wang et al., 2012)</a>, which by default uses the first 200,000 usable reads over annotated genes. The 0.8 cutoff matches the default stranded threshold of the nf-core/rnaseq pipeline.</li>
+              <li>Reservoir sampling gives a uniform sample in one pass whatever the file order <a class="cite" href="#ref-vitter1985">(Vitter, 1985)</a>, so the call is not dominated by the first chromosomes. The seed is fixed, so the call is reproducible.</li>
+              <li>Restricting to exons of a single gene on a single strand removes reads whose orientation can't be attributed to one transcript.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 4 -->
+      <section id="step-4">
+        <div class="section-head">
+          <p class="label">Step 4</p>
+          <h2>Scan alignments and calibrate the protocol</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does: the scan</p>
+          <div class="prose">
+            <p>Each alignment is read once for evidence. Together with the strandedness pass, that makes two full reads per alignment. The scan collects end observations for every evidence source the profile allows, so calibration can compare them without rereading the file.</p>
+            <ul>
+              <li><strong>Read filters.</strong> Unmapped, secondary, supplementary, QC-failed, and duplicate-flagged reads are dropped, as are reads with MAPQ below 20, reads on excluded contigs, and reads whose <code>NH</code> tag reports more than one alignment. Every exclusion is counted by reason.</li>
+              <li><strong>Pairs.</strong> Paired data are name-collated once (<code>samtools collate</code>), and each pair counts as one fragment. Both mates must pass the filters, map to the same contig, and carry the proper-pair flag. No insert-size limit is applied, because spliced fragments can span long introns.</li>
+              <li><strong>Coordinates.</strong> The 3′ end on the plus strand is the largest aligned reference end, and on the minus strand the smallest aligned start, in interbase coordinates. Soft-clipped bases do not extend the boundary.</li>
+              <li><strong>Evidence sources.</strong> <code>read_3p</code> and <code>read_5p</code> are the transcript-oriented ends of the selected read. <code>fragment_3p</code> is the outer 3′ end of a proper pair. <code>polyA_junction</code> is the genomic boundary next to a terminal soft clip that looks like a poly(A) tail: at least 6 nt, at least 80% A.</li>
+              <li><strong>Splice continuations.</strong> For proximal-tag runs, the scan also records reads that splice directly from one exon block to the next (CIGAR <code>N</code>), for the readthrough filter in Step 5.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>MAPQ is the phred-scaled probability that a read is misplaced <a class="cite" href="#ref-li2008">(Li, Ruan and Durbin, 2008)</a>, so MAPQ 20 means a misplacement probability of at most 1%. Aligners scale MAPQ differently, so the <code>NH</code> tag, which counts reported alignments, removes multimappers explicitly when the aligner writes it.</li>
+              <li>Counting one fragment per pair is the standard for paired-end counting, as in featureCounts <a class="cite" href="#ref-liao2014">(Liao, Smyth and Shi, 2014)</a>. Counting both mates would double-count molecules.</li>
+              <li>Name collation rebuilds pairs in a single streaming pass, which avoids random-access mate lookups in a coordinate-sorted file.</li>
+              <li>Soft-clipped bases are not aligned to the genome, so they cannot define a genomic boundary. An untemplated A-rich clip at the read end is direct evidence of the cleavage site, and it is kept as its own evidence source.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">What it does: calibration</p>
+          <div class="prose">
+            <ul>
+              <li><strong>Calibration genes.</strong> These are genes whose annotated transcripts all end at one coordinate. A read end counts toward the nearest such end on the same strand, if it lies within 1,000 nt. A gene needs at least 2 such ends, and each sample needs at least 100 such genes.</li>
+              <li><strong>Per-sample kernel.</strong> For each evidence source, read ends are tallied by offset from the annotated end, with positive offsets upstream. The histogram is smoothed once with weights [1, 2, 3, 2, 1] and normalized to sum to one.</li>
+              <li><strong>Reproducibility.</strong> Each sample's kernel is correlated (Pearson) with the equal-weight mean of all the other samples' kernels. At least 0.8 is required.</li>
+              <li><strong>Classification.</strong> A sample is <em>exact</em> when its median absolute offset is at most 2 nt, its central 90% interval (5th to 95th percentile) is at most 12 nt wide, and at least half its ends lie within 1 nt of the annotated end. It is <em>proximal</em> when the median offset is at least 3 nt upstream and the central interval lies within ±1,000 nt. Otherwise it is <em>ambiguous</em>.</li>
+              <li><strong>Choice.</strong> The <code>generic_3prime</code> profile picks the evidence source with the best median correlation, and requires it to beat the runner-up by at least 0.1. The <code>plasmidsaurus_3prime</code> profile fixes <code>read_3p</code>. The <code>exact_boundary</code> profile uses <code>polyA_junction</code> when every sample has enough calibration genes for it, and otherwise <code>fragment_3p</code> for paired data or <code>read_3p</code>. Explicit settings fix the source or endpoint model, which must still pass the gene-count and reproducibility thresholds.</li>
+              <li><strong>One model per run.</strong> All samples must resolve to the same profile, evidence source, and endpoint model, or the run stops and asks for separate runs.</li>
+              <li><strong>Pooled kernel and diagnostics.</strong> The run's kernel is the equal-weight mean of the sample kernels. For proximal-tag runs, a warning is raised (the run continues) when the kernel, smoothed with a centered moving average as wide as δ* (rounded down to an odd width), has more than one separated mode, or when the median central interval is more than six times the kernel's minimum resolvable separation (defined in Step 5). A mode must reach a quarter of the highest one, and neighboring modes stay separate only if the valley between them falls below half the lower one.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>min_mapq</code></td><td class="num">20</td><td>Minimum mapping quality</td></tr>
+              <tr><td><code>require_unique</code> / <code>require_proper_pair</code> / <code>exclude_duplicates</code></td><td class="num">true</td><td>Read filters</td></tr>
+              <tr><td><code>excluded_contigs</code></td><td class="num">chrM, MT, chrMT</td><td>Contigs ignored by every step</td></tr>
+              <tr><td><code>calibration_max_distance</code></td><td class="num">1,000 nt</td><td>Window around annotated ends; kernel half-width</td></tr>
+              <tr><td><code>calibration_min_genes</code></td><td class="num">100</td><td>Calibration genes per sample</td></tr>
+              <tr><td><code>calibration_min_kernel_correlation</code></td><td class="num">0.80</td><td>Leave-one-out kernel correlation</td></tr>
+              <tr><td><code>calibration_min_model_margin</code></td><td class="num">0.10</td><td>Winning margin between sources</td></tr>
+              <tr><td><code>exact_max_median_abs_offset</code> / <code>exact_max_central_width</code> / <code>exact_min_boundary_fraction</code></td><td class="num">2 nt / 12 nt / 0.5</td><td>Exact-boundary criteria</td></tr>
+              <tr><td><code>proximal_min_median_upstream_offset</code></td><td class="num">3 nt</td><td>Proximal-tag criterion</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>The offset distribution against known ends is the protocol's empirical point-spread function. Measuring it per run replaces a vendor or literature assumption with data, and exposes a library that does not behave as its label says.</li>
+              <li>Genes with a single annotated end make the true end unambiguous. Unannotated alternative ends near a calibration gene's end still add spread or extra modes, which is what the kernel diagnostics look for.</li>
+              <li>Leaving each sample out of the reference it is compared with prevents it from correlating with itself. Equal sample weight stops one deep library from defining the kernel for everyone.</li>
+              <li>A single frozen atlas needs a single resolution model. Libraries made with different chemistries have different point-spread functions, and a batch term cannot reconcile them, so mixed protocols must be analyzed separately.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout">
+          <p class="label">Limit</p>
+          <p>Offsets are weighted by reads, so the most highly expressed calibration genes carry the most weight. Mitochondrial transcripts are single-end genes in standard annotations, extremely abundant, and packed end to end, and their 3′ ends come from tRNA punctuation processing rather than CPSF cleavage <a class="cite" href="#ref-ojala1981">(Ojala, Montoya and Attardi, 1981)</a>. They would therefore distort the kernel, so mitochondrial contigs are excluded by default (<code>chrM</code>, <code>MT</code>, <code>chrMT</code>, matched by alignment name or alias). That also keeps mitochondrial sites out of the atlas and the counts. A mitochondrial contig under another name, such as <code>M</code>, has to be listed or aliased.</p>
+        </div>
+      </section>
+
+      <!-- Step 5 -->
+      <section id="step-5">
+        <div class="section-head">
+          <p class="label">Step 5</p>
+          <h2>Discover PACs</h2>
+        </div>
+        <div class="block">
+          <p class="label">The support rule, shared by both strategies</p>
+          <div class="prose">
+            <p>A candidate needs at least 10 reads in total. A sample supports it with at least 2 reads. The number of supporting samples must reach <code>pac_min_supporting_samples</code> (default 2) within at least one condition. A value between 0 and 1 is read as a share of that condition's samples, rounded up. Samples from different conditions cannot be combined to admit a candidate.</p>
+            <p><strong>Why.</strong> Requiring agreement between biological replicates before calling a feature guards against sites created by one library's noise. Applying the rule within a condition lets condition-specific PACs, the ones that become gained or lost events, enter the atlas, while samples from unrelated conditions cannot jointly admit a site that no condition reproduces. The rule treats every condition the same way, and it uses no contrast, direction, or effect size. Open question 1 discusses its interaction with later testing.</p>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Exact-boundary clustering</p>
+          <div class="prose">
+            <ul>
+              <li>For every observed coordinate, the pipeline measures support within ±2 nt: the number of samples with reads there, the sum of per-sample counts capped at 3, and the raw count.</li>
+              <li>Seeds are ranked by supporting samples, then capped support, then raw support, then coordinate, so ties resolve deterministically.</li>
+              <li>The strongest unassigned seed claims every unassigned end within ±12 nt. This repeats until every end is assigned.</li>
+              <li>With a known-PAC BED (<code>known_pacs</code>), a candidate within 12 nt of a known site is kept with at least 5 reads, under the same support rule. It is labeled <code>known_rescue_only</code> and kept out of the motif and k-mer analyses.</li>
+            </ul>
+            <p><strong>Why.</strong> Cleavage for one poly(A) signal is heterogeneous, mostly within a few nucleotides but with a tail reaching tens of nucleotides <a class="cite" href="#ref-pauws2001">(Pauws et al., 2001</a>; <a class="cite" href="#ref-tian2005">Tian et al., 2005)</a>. A ±12 nt cluster spans 25 nt, in line with the 24-nt window Tian et al. (2005) used to merge heterogeneous cleavage sites into one site. Ranking by the number of supporting samples before depth, and capping each sample's contribution at 3, keeps one deep library or PCR stack from creating a seed. Known sites from an independent atlas such as PolyASite 2.0 <a class="cite" href="#ref-herrmann2020">(Herrmann et al., 2020)</a> justify a lower read threshold. Sites admitted that way are kept out of the motif tests, so prior annotation can't shape the motif results.</p>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Proximal-tag peak discovery</p>
+          <div class="prose">
+            <ul>
+              <li>δ*, the kernel's minimum resolvable separation, is the smallest shift at which the kernel's overlap with a shifted copy of itself, O(δ) = Σ<sub>d</sub> min(K(d), K(d − δ)), falls to 0.5 or below.</li>
+              <li>Read ends are binned in transcript orientation at the smaller of 25 nt (<code>proximal_bin_size</code>) and δ*, and each sample's count at a position is capped at 3.</li>
+              <li>The binned signal is convolved with the binned pooled kernel (FFT-based) to give a matched score at every implied PAC position.</li>
+              <li>Local maxima of the score are ranked by score, then coordinate. A maximum closer than δ* to a stronger one is merged into it, and its position is kept in the PAC's list of merged maxima.</li>
+              <li>Each read end is assigned to a peak by kernel likelihood, with the rule used in Step 7. The support rule is then applied to the resulting counts.</li>
+              <li>Each PAC reports its representative coordinate, a region of width δ* around it, <code>resolution_nt</code> = δ*, and <code>coordinate_precision: estimated</code>.</li>
+            </ul>
+            <p><strong>Why.</strong> Correlating the signal with its known spread function follows the matched-filter principle <a class="cite" href="#ref-turin1960">(Turin, 1960)</a>, with the calibrated kernel as the known shape. The classical optimality result assumes additive white noise, which read counts are not, so here the score is a well-motivated heuristic rather than an optimal detector. Capping per-sample counts limits the influence of any one library. Two sites whose spread functions overlap by more than half are treated as unresolvable, an overlap-based resolution criterion, so closer maxima are reported as one PAC with its region. PAS motifs are never used to place or select proximal-tag PACs, which keeps the motif-preference test in Step 11 from being circular.</p>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Constitutive-readthrough filter (proximal-tag runs only)</p>
+          <div class="prose">
+            <p>A candidate inside an exon block from which reads splice directly onward is rejected when, in <em>every</em> condition, the required number of replicates each have at least 2 such splice reads. By default every replicate is required (<code>constitutive_readthrough_min_replicate_support: all</code>); a fraction between 0 and 1 is rounded up per condition.</p>
+            <p><strong>Why.</strong> Oligo(dT) primes internally at A-rich sequence inside transcripts <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. If reads consistently splice out of an exon into the next one in every condition, that exon is not a transcript end in any condition, and a tag cluster inside it is more likely internal priming than a PAC. Requiring this in every condition protects sites that are ends in some condition: one condition without consistent continuation keeps the candidate. Intronic sites are not inside spliced exon blocks, so the filter leaves them alone.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>pac_min_total_count</code></td><td class="num">10</td><td>Reads across all samples</td></tr>
+              <tr><td><code>pac_min_sample_count</code></td><td class="num">2</td><td>Reads for a sample to count as supporting</td></tr>
+              <tr><td><code>pac_min_supporting_samples</code></td><td class="num">2</td><td>Supporting samples within one condition</td></tr>
+              <tr><td><code>pac_seed_radius</code> / <code>pac_cluster_radius</code></td><td class="num">2 nt / 12 nt</td><td>Exact-boundary seed and cluster radii</td></tr>
+              <tr><td><code>known_pac_rescue_total</code> / <code>known_pac_match_radius</code></td><td class="num">5 / 12 nt</td><td>Known-site rescue</td></tr>
+              <tr><td><code>proximal_bin_size</code></td><td class="num">25 nt</td><td>Largest bin width for peak discovery; bins are never wider than δ*</td></tr>
+              <tr><td><code>proximal_kernel_overlap_threshold</code></td><td class="num">0.5</td><td>Overlap defining δ*</td></tr>
+              <tr><td><code>proximal_assignment_likelihood_ratio</code></td><td class="num">3</td><td>Best-to-next likelihood ratio for assigning a read</td></tr>
+              <tr><td><code>constitutive_readthrough_min_junction_count</code></td><td class="num">2</td><td>Splice reads per qualifying sample</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Step 6 -->
+      <section id="step-6">
+        <div class="section-head">
+          <p class="label">Step 6</p>
+          <h2>Annotate and freeze the atlas</h2>
+        </div>
+        <figure>
+          <div class="figure-frame">
+            <svg viewBox="0 0 720 232" role="img" aria-labelledby="fig1-title fig1-desc">
+              <title id="fig1-title">Sequence windows around a PAC</title>
+              <desc id="fig1-desc">A to-scale axis from 60 nt upstream to 30 nt downstream of the PAC coordinate. The PAS scan window runs from 50 to 5 nt upstream, the core window from 35 to 10 nt, with the canonical signal typically near 20 nt upstream. The internal-priming window covers the 20 nt downstream. An exact-boundary cluster spans 12 nt either side.</desc>
+              <text x="70" y="22" class="s-muted" font-size="12">5′</text>
+              <text x="700" y="22" class="s-muted" font-size="12" text-anchor="end">3′</text>
+              <line x1="70" y1="40" x2="696" y2="40" class="s-line" stroke-width="2"/>
+              <polygon points="696,34 708,40 696,46" class="s-ink"/>
+              <line x1="490" y1="30" x2="490" y2="200" class="s-rule" stroke-width="1.2" stroke-dasharray="4 4"/>
+              <text x="140" y="58" class="s-ink" font-size="12.5" font-weight="600">PAS scan window, 50 to 5 nt upstream</text>
+              <rect x="140" y="64" width="315" height="16" rx="2" class="s-scan" stroke-width="1"/>
+              <rect x="245" y="64" width="175" height="16" rx="2" class="s-core"/>
+              <text x="332.5" y="76" class="s-core-text" font-size="11" font-weight="600" text-anchor="middle">core window, 35 to 10 nt</text>
+              <polygon points="350,84 345,93 355,93" class="s-accent-fill"/>
+              <text x="350" y="108" class="s-muted" font-size="11.5" text-anchor="middle">AAUAAA usually near −20</text>
+              <text x="496" y="124" class="s-ink" font-size="12.5" font-weight="600">internal-priming window, 20 nt</text>
+              <rect x="490" y="130" width="140" height="16" rx="2" class="s-warn" stroke-width="1"/>
+              <line x1="406" y1="176" x2="574" y2="176" class="s-accent-stroke" stroke-width="2"/>
+              <line x1="406" y1="169" x2="406" y2="183" class="s-accent-stroke" stroke-width="2"/>
+              <line x1="574" y1="169" x2="574" y2="183" class="s-accent-stroke" stroke-width="2"/>
+              <text x="398" y="180" class="s-ink" font-size="12.5" font-weight="600" text-anchor="end">exact-boundary cluster, ±12 nt</text>
+              <line x1="70" y1="200" x2="700" y2="200" class="s-rule" stroke-width="1"/>
+              <g class="s-rule" stroke-width="1">
+                <line x1="140" y1="200" x2="140" y2="206"/>
+                <line x1="245" y1="200" x2="245" y2="206"/>
+                <line x1="350" y1="200" x2="350" y2="206"/>
+                <line x1="420" y1="200" x2="420" y2="206"/>
+                <line x1="455" y1="200" x2="455" y2="206"/>
+                <line x1="490" y1="200" x2="490" y2="206"/>
+                <line x1="630" y1="200" x2="630" y2="206"/>
+              </g>
+              <g class="s-muted" font-size="11.5" text-anchor="middle">
+                <text x="140" y="220">−50</text>
+                <text x="245" y="220">−35</text>
+                <text x="350" y="220">−20</text>
+                <text x="420" y="220">−10</text>
+                <text x="455" y="220">−5</text>
+                <text x="490" y="220">0</text>
+                <text x="630" y="220">+20</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>Figure 1. Sequence windows around a PAC, drawn to scale in transcript orientation. Positions are nucleotides relative to the PAC coordinate (dashed line). A proximal-tag PAC also carries a resolution region of width δ*, which comes from each run's calibration and is not drawn.</figcaption>
+        </figure>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <ul>
+              <li><strong>Gene assignment</strong>, on the same strand, in this order: terminal exon of any transcript, then another exon, then an intron, then downstream of a gene's end within 5,000 nt, then intergenic. Downstream assignment goes to the nearest same-strand gene end upstream of the PAC, so no other gene can lie between them. Containment is inclusive (start ≤ c ≤ end), because in interbase coordinates a 3′ boundary equals its exon's end. When more than one gene qualifies at the chosen level, the PAC is <em>ambiguous</em>: it stays in the atlas and is never tested.</li>
+              <li><strong>Gene names</strong> come from one name per gene: its gene record's name, else the first name on its other records, else its ID. An ambiguous PAC lists its genes' names in the order of their IDs.</li>
+              <li><strong>PAS motifs</strong> are searched from 50 to 5 nt upstream, and flagged when they fall in the core window from 35 to 10 nt. The built-in catalog has the canonical AATAAA, its common variant ATTAAA, and eight other variants: TATAAA, AGTAAA, AAGAAA, AATACA, CATAAA, GATAAA, AATATA, and AATAGA. The primary motif is the highest-priority match, preferring a copy in the core window and nearest 20 nt upstream. All matches are kept. The catalog can be replaced with <code>pas_motif_catalog</code>.</li>
+              <li><strong>Internal priming</strong> is flagged when the 20 nt downstream of the PAC contain a run of 7 or more A's or are more than 60% A. The flag does not remove the PAC.</li>
+              <li><strong>Known sites</strong> are matched within 12 nt. A known-PAC BED record's site is its 3′ edge in transcript orientation: <code>end</code> on the plus strand, <code>start</code> on the minus strand.</li>
+              <li><strong>Confidence</strong> is <em>low</em> for an ambiguous gene or an internal-priming flag. It is <em>high</em> for a match to a known site with at least 2 supporting samples, and <em>moderate</em> otherwise, including rescued sites.</li>
+              <li>PACs are ranked proximal to distal within each gene. The atlas is then written, checksummed, and frozen. Its checksum seeds every random step downstream.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>The assignment order follows where functional PACs usually lie. Tandem 3′ UTR sites in terminal exons are the most common form of APA. Sites in internal exons and introns produce alternative last exons and truncated transcripts <a class="cite" href="#ref-tian2017">(Tian and Manley, 2017)</a>. Intronic polyadenylation is a regulated outcome in its own right, suppressed for example by CDK12 <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>, so intronic PACs are kept as a class instead of being discarded.</li>
+              <li>Annotations often end 3′ UTRs short, and extended 3′ UTRs are widespread, especially in the brain <a class="cite" href="#ref-miura2013">(Miura et al., 2013)</a>. The 5 kb downstream window captures these, and the nearest-gene rule stops a PAC from being assigned past another gene.</li>
+              <li>The canonical hexamer lies about 10 to 30 nt upstream of the cleavage site, most often near 20 nt <a class="cite" href="#ref-proudfoot2011">(Proudfoot, 2011</a>; <a class="cite" href="#ref-tian2005">Tian et al., 2005)</a>. AATAAA and ATTAAA account for most sites in human <a class="cite" href="#ref-beaudoing2000">(Beaudoing et al., 2000)</a> and in human and mouse <a class="cite" href="#ref-tian2005">(Tian et al., 2005)</a>, and single-nucleotide variants account for much of the rest. The windows and priorities follow those observations.</li>
+              <li>Downstream A-rich sequence is the classic signature of internal oligo(dT) priming <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. Flagging instead of removing keeps the decision visible: gained and lost calls require no flag (Step 10), and reviewers can see how many flagged sites take part in other results.</li>
+              <li>Freezing and checksumming the atlas before counting fixes the feature set, gives it a version, and makes every downstream result traceable to it.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>max_downstream_distance</code></td><td class="num">5,000 nt</td><td>Downstream gene assignment</td></tr>
+              <tr><td><code>pas_scan_upstream_far</code> / <code>pas_scan_upstream_near</code></td><td class="num">50 / 5 nt</td><td>Motif search window</td></tr>
+              <tr><td><code>pas_core_upstream_far</code> / <code>pas_core_upstream_near</code></td><td class="num">35 / 10 nt</td><td>Core window</td></tr>
+              <tr><td><code>internal_priming_window</code></td><td class="num">20 nt</td><td>Downstream window checked</td></tr>
+              <tr><td><code>internal_priming_max_a_run</code> / <code>internal_priming_max_a_fraction</code></td><td class="num">6 / 0.6</td><td>Flag when exceeded</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Step 7 -->
+      <section id="step-7">
+        <div class="section-head">
+          <p class="label">Step 7</p>
+          <h2>Count reads at PACs</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <ul>
+              <li>Every sample's ends are recounted against the frozen atlas.</li>
+              <li><strong>Exact-boundary:</strong> each end goes to the nearest PAC within 12 nt, with ties to the lower coordinate. Ends farther away stay unassigned.</li>
+              <li><strong>Proximal-tag:</strong> for each end, the likelihood of each nearby PAC is the pooled kernel's weight at the offset that PAC implies. The end is assigned to the most likely PAC only when that likelihood is at least 3 times the next best. Otherwise it is ambiguous, is not counted, and is reported per sample.</li>
+              <li>Counts stay integers. Gene totals use only PACs with one unambiguous gene. PAU = count / gene total, and is missing when the total is zero.</li>
+              <li>Three invariants are checked for every sample: accepted fragments equal assigned plus unassigned, PAC counts sum to gene totals, and PAU sums to one for every gene with reads.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>The Dirichlet-multinomial likelihood (Step 9) needs integer counts, so fractional allocation of ambiguous reads, as expectation-maximization would produce, is not an option.</li>
+              <li>With equal prior weight on two candidate PACs, a likelihood ratio of 3 means a posterior probability of at least 0.75 for the chosen one. Weaker evidence is left unassigned instead of guessed.</li>
+              <li>The assignment rule depends only on positions and the pooled kernel. It is identical for every condition, so it cannot create a difference between conditions.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 8 -->
+      <section id="step-8">
+        <div class="section-head">
+          <p class="label">Step 8</p>
+          <h2>Filter testable PACs and genes</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <p>Each comparison family is filtered on its own samples. Counts are pooled across the family's samples regardless of condition.</p>
+            <ul>
+              <li>A PAC needs at least 5 reads, at least 1% of its gene's reads, and reads in at least 2 samples.</li>
+              <li>A gene needs at least 20 reads and at least 2 PACs that pass.</li>
+              <li>PACs with no gene or an ambiguous gene are never tested.</li>
+              <li>Every PAC gets a row in <code>statistics/FAMILY.statistical_filtering.tsv.gz</code>: tested, or the reasons it was not.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>Removing low-count and low-usage features before a DTU test improves both power and error control for DRIMSeq <a class="cite" href="#ref-soneson2016">(Soneson et al., 2016)</a>. The thresholds are similar in spirit to the <code>dmFilter</code> settings in the DRIMSeq workflow of <a class="cite" href="#ref-love2018">Love, Soneson and Patro (2018)</a>.</li>
+              <li>The filter statistics are totals pooled over the family without condition labels. Under a null where the labels are exchangeable, they are independent of any statistic computed by permuting labels, and approximately independent of the Dirichlet-multinomial test. That is the condition under which independent filtering raises power without inflating type I error <a class="cite" href="#ref-bourgon2010">(Bourgon, Gentleman and Huber, 2010)</a>; their exact result covers simpler cases, such as the overall mean with a t-test.</li>
+              <li>Filtering per family means a PAC is judged on the samples in its own test, not on unrelated conditions.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 9 -->
+      <section id="step-9">
+        <div class="section-head">
+          <p class="label">Step 9</p>
+          <h2>Model differential PAC usage</h2>
+        </div>
+        <div class="block">
+          <p class="label">The model</p>
+          <div class="prose">
+            <p>For gene <em>g</em> with <em>K<sub>g</sub></em> PACs and sample <em>s</em>, DRIMSeq <a class="cite" href="#ref-nowicka2016">(Nowicka and Robinson, 2016)</a> fits:</p>
+          </div>
+          <div class="formula">y_gs | p_gs ~ Multinomial(n_gs, p_gs)
+p_gs      ~ Dirichlet(κ_g · π_gs)
+design:     ~ model_covariates + condition   (control = reference level)</div>
+          <div class="prose">
+            <p>π<sub>gs</sub> is the expected usage and κ<sub>g</sub> is a gene-level precision shared across conditions. Lower precision means more variation between replicates than the multinomial allows. One model is fitted per comparison family, so the control and the precision are estimated from all of the family's samples. Covariates are categorical, and a rank-deficient (confounded) design stops the run with an explanation.</p>
+            <p>Precision uses DRIMSeq's defaults. The profile likelihood is Cox–Reid adjusted <a class="cite" href="#ref-cox1987">(Cox and Reid, 1987</a>; <a class="cite" href="#ref-mccarthy2012">McCarthy, Chen and Smyth, 2012)</a>, and a starting common precision is estimated from a seeded random 10% of genes. Gene-wise estimates are then moderated toward a trend in mean expression, with a prior weight that DRIMSeq estimates from the data. When fewer than about ten genes reach the upper boundary of DRIMSeq's precision grid, no weight can be estimated and DRIMSeq falls back to its default weight of zero, which leaves the gene-wise estimates unmoderated. Families with thousands of genes are normally moderated; the 40- and 60-gene simulated families in section D were not.</p>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">The tests</p>
+          <div class="prose">
+            <ul>
+              <li><strong>Family omnibus:</strong> a likelihood-ratio test of all condition coefficients at once. It is reported for description only and gates nothing.</li>
+              <li><strong>Per comparison:</strong> the treatment's own coefficient is tested. The gene-level Dirichlet-multinomial likelihood-ratio test is the <em>screen</em>. DRIMSeq's PAC-level beta-binomial tests, each PAC against the rest of its gene, are the <em>confirmation</em>.</li>
+              <li><strong>Gene FDR:</strong> Benjamini–Hochberg over the comparison's genes <a class="cite" href="#ref-bh1995">(Benjamini and Hochberg, 1995)</a>, threshold <code>gene_fdr</code> = 0.05.</li>
+              <li><strong>PAC FDR:</strong> stageR's <code>dtu</code> stage-wise procedure at <code>site_fdr</code> = 0.05 <a class="cite" href="#ref-vandenberge2017">(Van den Berge et al., 2017)</a>. The screen is a BH step over genes. Within screened genes, PACs are confirmed with an adjusted Holm–Shaffer procedure <a class="cite" href="#ref-holm1979">(Holm, 1979</a>; <a class="cite" href="#ref-shaffer1986">Shaffer, 1986)</a> at a level scaled by the share of genes that passed. A usage change needs at least two PACs to move, so the first two PACs share one correction. A two-PAC gene that passes the screen therefore has both PACs confirmed, with <code>pac_fdr</code> 0 by construction; for such genes the gene screen is the whole test.</li>
+              <li>A PAC is significant when its gene passes <code>gene_fdr</code> and the PAC passes <code>site_fdr</code>. The correction family is one declared treatment–control comparison. No correction is made across comparisons.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>The Dirichlet-multinomial is the established model for relative usage of features within a gene when biological replicates are overdispersed <a class="cite" href="#ref-nowicka2016">(Nowicka and Robinson, 2016)</a>. A plain multinomial ignores replicate variability and is anticonservative.</li>
+              <li>Modeling proportions separates APA from expression: scaling all of a gene's counts leaves the usage test unchanged. The simulations check this (check S5 in section D).</li>
+              <li>Screening genes and then confirming features within them controls the gene-level FDR while still naming the PACs that changed. It respects the constraint that a gene's usage sums to one, which testing each PAC in isolation ignores. This combination of DRIMSeq and stageR is the workflow recommended for differential transcript usage <a class="cite" href="#ref-love2018">(Love, Soneson and Patro, 2018)</a>.</li>
+              <li>Each treatment's PAC calls rest on that treatment's own gene-level test, so significance for the family as a whole never carries over to a treatment.</li>
+              <li>Moderating precision shares information across genes, the standard remedy for unstable gene-wise dispersion with few replicates. It applies only when DRIMSeq's data-estimated prior weight is positive (see above).</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Genes with a group without reads</p>
+          <div class="prose">
+            <p>A gene is a <em>boundary</em> gene when its unmodified fit is non-finite anywhere, or when a PAC has no reads across all samples of a condition or covariate level. The maximum-likelihood usage then sits at exactly zero, and the likelihood-ratio test is not defined there. For these genes:</p>
+            <ul>
+              <li>Zeros are replaced with draws from U(0, 0.1), DRIMSeq's documented <code>add_uniform</code> rule, seeded from <code>random_seed</code>, the atlas checksum, the family, the gene, and the repeat number.</li>
+              <li>Precision, the full model, and every null model are fitted to the same perturbed counts, using the unmodified fit's common precision. DRIMSeq's own flag is not used, because <code>dmTest</code> would refit the null model to the original counts.</li>
+              <li>The fit is repeated 5 times. Medians of proportions, precision, and likelihood ratios are written back, and p-values come from the median likelihood ratio. At least 80% of repeats must succeed.</li>
+              <li>A PAC is flagged <code>zero_boundary_unstable</code> and left untested when its effect changes sign beyond ±0.001, fewer than 80% of fits converge, or its change in PAU spans more than 0.02 across repeats.</li>
+              <li>A condition with no reads at all for a gene leaves that gene untested in every comparison using that condition (<code>group_without_counts</code>).</li>
+              <li>Perturbed values never appear in any count or PAU output.</li>
+            </ul>
+            <p><strong>Why.</strong> This is DRIMSeq's own remedy for the boundary case, applied consistently to the full and null fits. Repeating it shows whether a result depends on the random perturbation, and unstable results are flagged instead of reported.</p>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Bootstrap intervals for the change in PAU</p>
+          <div class="prose">
+            <p>For genes that pass the screen, and for gained or lost detection candidates (included because <code>dm_bootstrap_include_candidates</code> defaults to true), counts are simulated from the fitted Dirichlet-multinomial at each sample's observed total and design row. Proportions are refitted with each gene's precision fixed at the family estimate, zeros are perturbed as in the family fit, and the change in PAU is recomputed for every comparison of the family from the same draw. There are 200 replicates, seeded per gene and replicate so that results do not depend on batching or worker count. Intervals are the 2.5th and 97.5th percentiles, and are reported only when at least 80% of replicates succeed.</p>
+            <p><strong>Why.</strong> A parametric bootstrap from the fitted model is the standard route to an interval for a derived quantity that has no closed-form variance <a class="cite" href="#ref-efron1993">(Efron and Tibshirani, 1993)</a>.</p>
+          </div>
+        </div>
+        <div class="callout">
+          <p class="label">Limits</p>
+          <ul>
+            <li>For stabilized genes, precision and p-values can move by orders of magnitude with a different seed, while the change in PAU barely moves. Read them with <code>model_status = drimseq_add_uniform</code>. Seeds are fixed, so reruns reproduce them exactly.</li>
+            <li>Intervals are conditional on precision and so omit its uncertainty. In the current simulation they covered the true change in 83% of cases at a nominal 95% (section D), measured with 100 replicates in a 60-gene family whose precision was unmoderated. The figure moves with the seed; across earlier seeds it ranged from 80% to 93%. At the default of 200 replicates, each percentile endpoint rests on about 5 draws in its tail. At least 1,000 replicates is the usual recommendation for percentile intervals <a class="cite" href="#ref-efron1993">(Efron and Tibshirani, 1993)</a>. Treat the intervals as approximate.</li>
+          </ul>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>gene_fdr</code> / <code>site_fdr</code></td><td class="num">0.05 / 0.05</td><td>Screen and confirmation thresholds</td></tr>
+              <tr><td><code>dm_zero_sensitivity_repeats</code></td><td class="num">5</td><td>Refits for boundary genes</td></tr>
+              <tr><td><code>dm_zero_max_delta_pau_spread</code></td><td class="num">0.02</td><td>Largest spread before a PAC is unstable</td></tr>
+              <tr><td><code>dm_bootstrap_replicates</code></td><td class="num">200</td><td>Bootstrap replicates; 0 skips intervals</td></tr>
+              <tr><td><code>dm_bootstrap_min_success_fraction</code></td><td class="num">0.8</td><td>Successful replicates needed</td></tr>
+              <tr><td><code>dm_bootstrap_include_candidates</code></td><td class="num">true</td><td>Also bootstrap gained and lost detection candidates</td></tr>
+              <tr><td><code>random_seed</code></td><td class="num">1729</td><td>Base seed for every random step</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Step 10 -->
+      <section id="step-10">
+        <div class="section-head">
+          <p class="label">Step 10</p>
+          <h2>Call events</h2>
+        </div>
+        <div class="prose">
+          <p>Each tested PAC in a comparison gets one event label. "Detected in a group" means at least 2 of that group's samples have reads at the PAC. Fitted PAU is the mean of the fitted sample proportions in a group.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Event</th><th>Rule</th></tr></thead>
+            <tbody>
+              <tr><td><code>gained</code></td><td>Not detected in the control, with fitted control PAU ≤ 0.01. Detected in the treatment, with fitted treatment PAU ≥ 0.05. The control samples together have at least 20 reads at the gene (<code>min_gene_total</code>). Change in PAU ≥ 0.1. Gene FDR and PAC FDR ≤ 0.05. Not <code>zero_boundary_unstable</code>, not low confidence (so not ambiguous and not flagged for internal priming), and not in an exploratory comparison.</td></tr>
+              <tr><td><code>gained_candidate</code></td><td>The detection and effect-size rules for <code>gained</code> hold, but significance, stability, or confidence does not. Not a confirmed call.</td></tr>
+              <tr><td><code>lost</code>, <code>lost_candidate</code></td><td>The mirror image of <code>gained</code>. The treatment samples are the ones that must cover the gene.</td></tr>
+              <tr><td><code>increased_usage</code>, <code>decreased_usage</code></td><td>Detected in both groups, gene FDR and PAC FDR ≤ 0.05, and change in PAU ≥ 0.1 in the named direction.</td></tr>
+              <tr><td><code>dominant_switch</code></td><td>In a gene that passes the gene screen, the PAC with the highest fitted usage differs between the groups. The label goes on the treatment's dominant PAC when that PAC has no other label; the switch always shows in the <code>dominant_pac_control</code> and <code>dominant_pac_treatment</code> columns.</td></tr>
+              <tr><td><code>complexity_gain</code>, <code>complexity_loss</code></td><td>In a gene that passes the gene screen, the number of the gene's tested PACs with fitted PAU ≥ 0.05 differs between the groups. The label goes on every PAC of the gene that has no other label.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>Requiring both significance and a minimum effect focuses calls on shifts large enough to matter biologically. The minimum of 0.1 (10 percentage points of a gene's reads) is the project's chosen threshold, set with <code>min_abs_delta_pau</code>.</li>
+              <li>The label is "gained" rather than "de novo". No reads in the control means the site is not detectably used at this depth; it does not show that the site is absent.</li>
+              <li>Candidate labels keep detection-supported but statistically unconfirmed changes visible, without mixing them into confirmed counts.</li>
+              <li>Gained and lost calls exclude internal-priming flags and ambiguous genes, because a site that appears only in one condition is where an artifact would do the most damage.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout">
+          <p class="label">Limit</p>
+          <p>Increased and decreased usage calls do not exclude PACs flagged for internal priming. The <code>internal_priming_flag</code> and <code>confidence</code> columns show which ones are flagged.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>min_abs_delta_pau</code></td><td class="num">0.1</td><td>Minimum change in PAU</td></tr>
+              <tr><td><code>event_min_treatment_pau</code> / <code>event_max_control_pau</code></td><td class="num">0.05 / 0.01</td><td>Fitted usage for gained or lost</td></tr>
+              <tr><td><code>event_min_supporting_samples</code></td><td class="num">2</td><td>Samples with reads to count as detected</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Step 11 -->
+      <section id="step-11">
+        <div class="section-head">
+          <p class="label">Step 11</p>
+          <h2>Motif-class preference and exploratory k-mer enrichment</h2>
+        </div>
+        <div class="block">
+          <p class="label">Motif preference: what it does</p>
+          <div class="prose">
+            <ul>
+              <li>The gene set is fixed before any test: genes with at least 20 reads (<code>min_gene_total</code>) in every sample of the run. Rescued sites are removed, usage is renormalized over the remaining PACs, and a gene needs at least 2 of them.</li>
+              <li>For each sample and each primary motif (each catalog hexamer, and "no motif"), the score is the average, over genes that have a PAC with that motif, of the share of the gene's reads at those PACs. Every gene counts equally.</li>
+              <li>The same scores are also built for each motif class (canonical, the common ATTAAA variant, other variants, and no motif), pooling the hexamers of a class within each gene. Both are tested: one table per primary hexamer (<code>.preference</code>) and one per class (<code>.preference_class</code>).</li>
+              <li>Scores are transformed with asin(√score). One limma model <a class="cite" href="#ref-smyth2004">(Smyth, 2004</a>; <a class="cite" href="#ref-ritchie2015">Ritchie et al., 2015)</a> is fitted per family on the main model's design, covariates included. Each treatment coefficient is tested, with BH adjustment across motifs within the comparison.</li>
+              <li>A motif is tested in a comparison only when every sample in it has at least 50 informative genes for that motif.</li>
+              <li>A sensitivity table repeats the summaries with rescued sites included. It is descriptive only.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <ul>
+              <li>Poly(A) signal strength shapes site choice. Distal sites carry the canonical hexamer more often than proximal ones <a class="cite" href="#ref-tian2005">(Tian et al., 2005)</a>, and changes in core 3′-processing factors shift usage between strong and weak sites <a class="cite" href="#ref-tian2017">(Tian and Manley, 2017)</a>. A shift toward PACs with a given motif therefore points to a mechanism.</li>
+              <li>Equal gene weight stops a few highly expressed genes from dominating the score. The condition-blind gene set avoids selecting genes on the outcome being tested.</li>
+              <li>The arcsine square root is the classical variance-stabilizing transform for proportions <a class="cite" href="#ref-anscombe1948">(Anscombe, 1948)</a>, and it accepts exact 0 and 1 without pseudocounts. limma's moderated t-statistic borrows variance information across the motif rows. With about ten rows that moderation is weak, so the test is close to an ordinary linear-model t-test.</li>
+              <li>Using the main model's design keeps the covariate handling consistent between the usage and motif tests.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">k-mer enrichment: what it does</p>
+          <div class="prose">
+            <p>For each comparison, the event PACs are those called gained or increased usage. The background is every other PAC of the same genes that was tested in that comparison, excluding rescued, ambiguous, and unassigned PACs. Each 6-mer's presence or absence in the upstream sequence (50 to 5 nt) forms one 2×2 table per gene. Genes are kept only if they have both event and background PACs and the k-mer varies within them. A Cochran–Mantel–Haenszel test combines the genes <a class="cite" href="#ref-mantel1959">(Mantel and Haenszel, 1959)</a>. It reports the common odds ratio with a 95% interval from the Robins–Breslow–Greenland variance <a class="cite" href="#ref-rbg1986">(Robins, Breslow and Greenland, 1986)</a> and a χ² p-value without continuity correction, with BH adjustment across k-mers.</p>
+            <p><strong>Why.</strong> Stratifying by gene compares PACs within the same gene, which controls for gene-level sequence composition and expression. The CMH test is the standard for a common association across many 2×2 strata. The Robins–Breslow–Greenland variance stays consistent both with many sparse strata and with a few large ones, which suits many genes with few PACs each. The analysis is labeled exploratory because PAC position (proximal versus distal) and event selection can confound sequence effects.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th class="num">Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>motif_preference_min_genes</code></td><td class="num">50</td><td>Informative genes per sample for a motif to be tested</td></tr>
+              <tr><td><code>motif_kmer_length</code></td><td class="num">6</td><td>k for the k-mer scan</td></tr>
+              <tr><td><code>run_kmer_enrichment</code></td><td class="num">true</td><td>Run the exploratory scan</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Step 12 -->
+      <section id="step-12">
+        <div class="section-head">
+          <p class="label">Step 12</p>
+          <h2>Report and provenance</h2>
+        </div>
+        <div class="block">
+          <p class="label">What it does</p>
+          <div class="prose">
+            <ul>
+              <li>A self-contained HTML report that works offline shows preparation actions, read exclusions, strandedness, calibration and kernel warnings, discovery and annotation summaries, filtering, model status, stabilization and bootstrap summaries, events, and per-gene plots of positions, raw counts, and observed and fitted PAU. PAU correlation and PCA use the genes with at least 20 reads in every sample, with all their PACs and no zero-filling.</li>
+              <li>Every table with one row per PAC starts with the same identity columns: <code>pac_id</code>, <code>gene_id</code>, <code>gene_name</code>, <code>chrom</code>, <code>start</code>, <code>end</code>, <code>strand</code>, and <code>locus</code>. Gene-level tables start with <code>gene_id</code> and <code>gene_name</code>. The remaining columns run from the answer to the evidence: comparison and call, then effect, significance, annotation, the data behind the call, and model diagnostics. The atlas BED scores are capped at 1000, the BED maximum.</li>
+              <li>The <code>manifest/</code> folder records the resolved parameters, the normalized sample sheet, SHA-256 checksums of every input, the software versions (Python, pysam and htslib, R, DRIMSeq, stageR, limma, and BiocParallel), and a run manifest with the atlas checksum.</li>
+              <li>Published gzip files carry no timestamps, and every random step is seeded from <code>random_seed</code>, the atlas checksum, and its context. A fresh rerun with the same inputs and software reproduces every published file byte for byte. The only exception is Nextflow's own execution reports in <code>pipeline_info/</code>, which record the run's times.</li>
+              <li>Execution uses Nextflow DSL2 <a class="cite" href="#ref-ditommaso2017">(Di Tommaso et al., 2017)</a> with an Apptainer (Singularity) image <a class="cite" href="#ref-kurtzer2017">(Kurtzer, Sochat and Bauer, 2017)</a> on Slurm. A task killed for memory or time (exit 137, 140, or 143) is retried up to twice with scaled resources.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="block">
+          <p class="label">Why</p>
+          <div class="prose">
+            <p>A workflow manager, a fixed container, recorded checksums and versions, a parameter schema in the nf-core style <a class="cite" href="#ref-ewels2020">(Ewels et al., 2020)</a>, and seeded randomness together let a reviewer rerun the analysis and get the same files. The integration test checks the byte-identical rerun on every change.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="validation">
+        <div class="section-head">
+          <p class="label">D</p>
+          <h2>How the pipeline is tested</h2>
+        </div>
+        <div class="prose">
+          <ul>
+            <li><strong>Unit tests</strong> (188 pytest tests and 29 R model tests) cover coordinates on both strands, CIGAR handling, every read filter, calibration and kernel diagnostics, deterministic clustering, gene assignment, count invariants, the use of stageR, zero-count stabilization, and bootstrap reproducibility.</li>
+            <li><strong>End-to-end runs</strong> on synthetic fixtures check an exact-boundary data set, a Plasmidsaurus-like proximal-tag data set with its own reference, a mixed-protocol sample sheet that must stop before discovery, and exact-boundary reads run under the Plasmidsaurus profile, which must warn at calibration. They also check that a fresh rerun reproduces all 142 compared published files byte for byte.</li>
+            <li><strong>A statistical simulation</strong> fits five simulated comparison families, all with 3 PACs per gene. It starts from count tables, so it tests the statistics, not discovery.
+                <ul>
+                  <li>Checks S1 to S4 use a 162-gene family with a control of 4 replicates and treatments of 4 and 3. Null and shifted genes have 40 or 400 reads per sample and precision 20 or 200; gained and lost genes have 60 or 300 reads and precision 100. This family is fitted without the bootstrap.</li>
+                  <li>Check S5 uses three 40-gene families (4 control and 4 treatment replicates, 200 reads per sample, precision 100).</li>
+                  <li>Check S6 uses a 60-gene family (4 and 4 replicates, 30 gained and 30 shifted genes, 200 reads, precision 100) with 100 bootstrap replicates.</li>
+                </ul>
+                Measured values from the current code (seed 11):</li>
+          </ul>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Check</th><th class="num">Measured</th><th class="num">Nominal</th></tr></thead>
+            <tbody>
+              <tr><td>S1. Null genes (120) with gene p ≤ 0.05, T1 and T2 vs control</td><td class="num">7.5%, 7.5%</td><td class="num">5%</td></tr>
+              <tr><td>S1. Null genes with gene p ≤ 0.01</td><td class="num">3.3%, 3.3%</td><td class="num">1%</td></tr>
+              <tr><td>S1. Median null gene p-value</td><td class="num">0.60, 0.56</td><td class="num">0.5</td></tr>
+              <tr><td>S1. Null PAC tests with p ≤ 0.05</td><td class="num">6.1%, 5.8%</td><td class="num">5%</td></tr>
+              <tr><td>S2. Mean change in PAU, shifted PAC (true +0.20) and its partner (true −0.20)</td><td class="num">+0.17, −0.20</td><td class="num">±0.20</td></tr>
+              <tr><td>S3. Gained (T1, T2) and lost (T1) PACs recovered</td><td class="num">6/6, 6/6, 6/6</td><td class="num">all</td></tr>
+              <tr><td>S4. False discovery proportion among 60 T1 PAC calls</td><td class="num">8.3%</td><td class="num">5%</td></tr>
+              <tr><td>S4. Null genes with any PAC called, T1 and T2</td><td class="num">4, 2 of 120</td><td class="num">test limit 8, 5</td></tr>
+              <tr><td>S5. Largest change in PAU after scaling all of a gene's counts</td><td class="num">0.005</td><td class="num">0</td></tr>
+              <tr><td>S6. 95% interval coverage: all PACs (stabilized gained, shifted)</td><td class="num">83% (80%, 87%)</td><td class="num">95%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="prose">
+          <p>The pass thresholds in these tests sit at two to seven times the nominal error rates, because DRIMSeq was found to be somewhat liberal for overdispersed genes at 3 to 4 replicates during development (<code>docs/decisions.md</code>). The measured rates above are within those thresholds but above nominal, and they come from one simulated data set of modest size.</p>
+        </div>
+      </section>
+
+      <section id="limitations">
+        <div class="section-head">
+          <p class="label">E</p>
+          <h2>Limitations and open questions for reviewers</h2>
+        </div>
+        <div class="prose">
+          <ol>
+            <li><strong>Discovery uses condition labels.</strong> A PAC must be supported by replicates within the condition that supports it, a rule the project lead chose to keep. This selection is not independent of the later between-condition test under the null: a PAC whose support happens to concentrate in one condition is more likely to be admitted and to look different. The simulations start from count tables, so the end-to-end false-positive rate including this selection has not been measured. Is the trade-off (condition-specific PACs can be discovered, but selection is mildly outcome-dependent) acceptable, or should a pooled, label-blind support rule be offered?</li>
+            <li><strong>Error control at small n.</strong> At 3 to 4 replicates, null gene p-values fell at or below 0.05 in 7.5% of genes, and the PAC-level false discovery proportion was 8.3% at a nominal 5%. Precision is shared across conditions, so a treatment that changes replicate variability could worsen this. Precision moderation is estimated from the data and can fall back to none in small families (Step 9).</li>
+            <li><strong>Stabilized genes.</strong> Their p-values are seed-sensitive (Step 9). Results rest on DRIMSeq's documented <code>add_uniform</code> remedy, applied five times.</li>
+            <li><strong>Interval coverage.</strong> The bootstrap is conditional on precision. It keeps its default of 200 replicates for this release, a lead decision to be revisited. Coverage was 83% at a nominal 95% in the current simulation, which used 100 replicates in a 60-gene family, and 80% to 93% across earlier seeds.</li>
+            <li><strong>Proximal-tag resolution.</strong> Sites closer than δ* are merged. Reads that fall between two resolvable PACs without a 3-fold likelihood margin are discarded. That biases the absolute PAU of closely spaced PACs, equally in every condition. The PAS scan and internal-priming windows are measured from an estimated coordinate whose uncertainty is on the order of δ*.</li>
+            <li><strong>Calibration weighting.</strong> The kernel is read-weighted and depends on the annotation's single-end genes. Unannotated alternative ends near annotated ones broaden it, and the diagnostics warn but never stop a run. Mitochondrial contigs are excluded by default only under their common names (Step 4).</li>
+            <li><strong>PAS catalog.</strong> The built-in catalog has ten hexamers. Other reported variants, such as ACTAAA, AAAAAG, and AATGAA, are not included by default, but can be supplied with <code>pas_motif_catalog</code>.</li>
+            <li><strong>Internal priming is a flag.</strong> Flagged PACs are tested and can take part in increased and decreased usage calls, though not in gained or lost calls.</li>
+            <li><strong>Motif preference unit.</strong> Motif preference is tested per primary hexamer and per class. Rarer hexamers have fewer informative genes, and with about ten rows, or four classes, limma's moderation adds little. The arcsine transform is sometimes criticized for binomial data, where a GLM is preferred <a class="cite" href="#ref-warton2011">(Warton and Hui, 2011)</a>. Here the response is a gene-averaged usage rather than a binomial count.</li>
+            <li><strong>Multiple comparisons.</strong> FDR is controlled within each treatment–control comparison. Nothing is corrected across comparisons.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="references">
+        <div class="section-head">
+          <p class="label">F</p>
+          <h2>References</h2>
+        </div>
+        <ol class="refs">
+          <li id="ref-anscombe1948">Anscombe FJ (1948). The transformation of Poisson, binomial and negative-binomial data. <em>Biometrika</em> 35:246–254.</li>
+          <li id="ref-beaudoing2000">Beaudoing E, Freier S, Wyatt JR, Claverie JM, Gautheret D (2000). Patterns of variant polyadenylation signal usage in human genes. <em>Genome Research</em> 10:1001–1010.</li>
+          <li id="ref-bh1995">Benjamini Y, Hochberg Y (1995). Controlling the false discovery rate: a practical and powerful approach to multiple testing. <em>Journal of the Royal Statistical Society B</em> 57:289–300.</li>
+          <li id="ref-bourgon2010">Bourgon R, Gentleman R, Huber W (2010). Independent filtering increases detection power for high-throughput experiments. <em>PNAS</em> 107:9546–9551.</li>
+          <li id="ref-cox1987">Cox DR, Reid N (1987). Parameter orthogonality and approximate conditional inference. <em>Journal of the Royal Statistical Society B</em> 49:1–39.</li>
+          <li id="ref-danecek2021">Danecek P, Bonfield JK, Liddle J, et al. (2021). Twelve years of SAMtools and BCFtools. <em>GigaScience</em> 10:giab008.</li>
+          <li id="ref-ditommaso2017">Di Tommaso P, Chatzou M, Floden EW, Barja PP, Palumbo E, Notredame C (2017). Nextflow enables reproducible computational workflows. <em>Nature Biotechnology</em> 35:316–319.</li>
+          <li id="ref-dubbury2018">Dubbury SJ, Boutz PL, Sharp PA (2018). CDK12 regulates DNA repair genes by suppressing intronic polyadenylation. <em>Nature</em> 564:141–145.</li>
+          <li id="ref-efron1993">Efron B, Tibshirani RJ (1993). <em>An Introduction to the Bootstrap</em>. Chapman &amp; Hall.</li>
+          <li id="ref-ewels2020">Ewels PA, Peltzer A, Fillinger S, et al. (2020). The nf-core framework for community-curated bioinformatics pipelines. <em>Nature Biotechnology</em> 38:276–278.</li>
+          <li id="ref-herrmann2020">Herrmann CJ, Schmidt R, Kanitz A, Artimo P, Gruber AJ, Zavolan M (2020). PolyASite 2.0: a consolidated atlas of polyadenylation sites from 3′ end sequencing. <em>Nucleic Acids Research</em> 48:D174–D179.</li>
+          <li id="ref-holm1979">Holm S (1979). A simple sequentially rejective multiple test procedure. <em>Scandinavian Journal of Statistics</em> 6:65–70.</li>
+          <li id="ref-kriegeskorte2009">Kriegeskorte N, Simmons WK, Bellgowan PSF, Baker CI (2009). Circular analysis in systems neuroscience: the dangers of double dipping. <em>Nature Neuroscience</em> 12:535–540.</li>
+          <li id="ref-kurtzer2017">Kurtzer GM, Sochat V, Bauer MW (2017). Singularity: scientific containers for mobility of compute. <em>PLoS ONE</em> 12:e0177459.</li>
+          <li id="ref-li2008">Li H, Ruan J, Durbin R (2008). Mapping short DNA sequencing reads and calling variants using mapping quality scores. <em>Genome Research</em> 18:1851–1858.</li>
+          <li id="ref-li2009">Li H, Handsaker B, Wysoker A, et al. (2009). The Sequence Alignment/Map format and SAMtools. <em>Bioinformatics</em> 25:2078–2079.</li>
+          <li id="ref-liao2014">Liao Y, Smyth GK, Shi W (2014). featureCounts: an efficient general purpose program for assigning sequence reads to genomic features. <em>Bioinformatics</em> 30:923–930.</li>
+          <li id="ref-love2018">Love MI, Soneson C, Patro R (2018). Swimming downstream: statistical analysis of differential transcript usage following Salmon quantification. <em>F1000Research</em> 7:952.</li>
+          <li id="ref-mantel1959">Mantel N, Haenszel W (1959). Statistical aspects of the analysis of data from retrospective studies of disease. <em>Journal of the National Cancer Institute</em> 22:719–748.</li>
+          <li id="ref-mccarthy2012">McCarthy DJ, Chen Y, Smyth GK (2012). Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation. <em>Nucleic Acids Research</em> 40:4288–4297.</li>
+          <li id="ref-miura2013">Miura P, Shenker S, Andreu-Agullo C, Westholm JO, Lai EC (2013). Widespread and extensive lengthening of 3′ UTRs in the mammalian brain. <em>Genome Research</em> 23:812–825.</li>
+          <li id="ref-moll2014">Moll P, Ante M, Seitz A, Reda T (2014). QuantSeq 3′ mRNA sequencing for RNA quantification. <em>Nature Methods</em> 11:i–iii.</li>
+          <li id="ref-nam2002">Nam DK, Lee S, Zhou G, et al. (2002). Oligo(dT) primer generates a high frequency of truncated cDNAs through internal poly(A) priming during reverse transcription. <em>PNAS</em> 99:6152–6156.</li>
+          <li id="ref-nowicka2016">Nowicka M, Robinson MD (2016). DRIMSeq: a Dirichlet-multinomial framework for multivariate count outcomes in genomics. <em>F1000Research</em> 5:1356.</li>
+          <li id="ref-ojala1981">Ojala D, Montoya J, Attardi G (1981). tRNA punctuation model of RNA processing in human mitochondria. <em>Nature</em> 290:470–474.</li>
+          <li id="ref-pauws2001">Pauws E, van Kampen AH, van de Graaf SA, de Vijlder JJ (2001). Heterogeneity in polyadenylation cleavage sites in mammalian mRNA sequences: implications for SAGE analysis. <em>Nucleic Acids Research</em> 29:1690–1694.</li>
+          <li id="ref-proudfoot2011">Proudfoot NJ (2011). Ending the message: poly(A) signals then and now. <em>Genes &amp; Development</em> 25:1770–1782.</li>
+          <li id="ref-ritchie2015">Ritchie ME, Phipson B, Wu D, et al. (2015). limma powers differential expression analyses for RNA-sequencing and microarray studies. <em>Nucleic Acids Research</em> 43:e47.</li>
+          <li id="ref-rbg1986">Robins J, Breslow N, Greenland S (1986). Estimators of the Mantel–Haenszel variance consistent in both sparse data and large-strata limiting models. <em>Biometrics</em> 42:311–323.</li>
+          <li id="ref-schurch2016">Schurch NJ, Schofield P, Gierliński M, et al. (2016). How many biological replicates are needed in an RNA-seq experiment and which differential expression tool should you use? <em>RNA</em> 22:839–851.</li>
+          <li id="ref-shaffer1986">Shaffer JP (1986). Modified sequentially rejective multiple test procedures. <em>Journal of the American Statistical Association</em> 81:826–831.</li>
+          <li id="ref-smith2017">Smith T, Heger A, Sudbery I (2017). UMI-tools: modeling sequencing errors in Unique Molecular Identifiers to improve quantification accuracy. <em>Genome Research</em> 27:491–499.</li>
+          <li id="ref-smyth2004">Smyth GK (2004). Linear models and empirical Bayes methods for assessing differential expression in microarray experiments. <em>Statistical Applications in Genetics and Molecular Biology</em> 3:Article 3.</li>
+          <li id="ref-soneson2016">Soneson C, Matthes KL, Nowicka M, Law CW, Robinson MD (2016). Isoform prefiltering improves performance of count-based methods for analysis of differential transcript usage. <em>Genome Biology</em> 17:12.</li>
+          <li id="ref-tian2005">Tian B, Hu J, Zhang H, Lutz CS (2005). A large-scale analysis of mRNA polyadenylation of human and mouse genes. <em>Nucleic Acids Research</em> 33:201–212.</li>
+          <li id="ref-tian2017">Tian B, Manley JL (2017). Alternative polyadenylation of mRNA precursors. <em>Nature Reviews Molecular Cell Biology</em> 18:18–30.</li>
+          <li id="ref-turin1960">Turin GL (1960). An introduction to matched filters. <em>IRE Transactions on Information Theory</em> 6:311–329.</li>
+          <li id="ref-vandenberge2017">Van den Berge K, Soneson C, Robinson MD, Clement L (2017). stageR: a general stage-wise method for controlling the gene-level false discovery rate in differential expression and differential transcript usage analysis. <em>Genome Biology</em> 18:151.</li>
+          <li id="ref-vitter1985">Vitter JS (1985). Random sampling with a reservoir. <em>ACM Transactions on Mathematical Software</em> 11:37–57.</li>
+          <li id="ref-wang2012">Wang L, Wang S, Li W (2012). RSeQC: quality control of RNA-seq experiments. <em>Bioinformatics</em> 28:2184–2185.</li>
+          <li id="ref-warton2011">Warton DI, Hui FKC (2011). The arcsine is asinine: the analysis of proportions in ecology. <em>Ecology</em> 92:3–10.</li>
+        </ol>
+        <p class="footer-note">This document describes the pipeline at commit e5594d6. Design details are in <code>docs/design.md</code> and the decision history in <code>docs/decisions.md</code> of the repository.</p>
+      </section>
+
+    </article>
+  </div>
+</div>
+</body>
+</html>
