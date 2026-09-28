@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+# Every PAC-level table starts with these columns. start and end follow the
+# BED convention of the atlas BED; locus is the same interval, 1-based, as a
+# genome browser's search box takes it.
+IDENTITY_COLUMNS = ["pac_id", "gene_id", "gene_name", "chrom", "start", "end", "strand", "locus"]
+
 
 @dataclass(frozen=True)
 class Sample:

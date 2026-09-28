@@ -97,27 +97,16 @@ def test_bedgraphs_have_zero_timestamp(tmp_path) -> None:
 def test_bed_has_zero_timestamp(tmp_path) -> None:
     path = tmp_path / "test.bed.gz"
 
+    # The atlas rows already carry each PAC's BED interval. BED scores stop
+    # at 1000.
+    columns = ["chrom", "start", "end", "pac_id", "total_count", "strand"]
     rows = [
-        {
-            "contig": "chr1",
-            "coordinate": 100,
-            "endpoint_model": "exact_boundary",
-            "region_start": 0,
-            "region_end": 0,
-            "pac_id": "pac1",
-            "total_count": 5,
-            "strand": "+",
-        },
-        {
-            "contig": "chr2",
-            "coordinate": 200,
-            "endpoint_model": "proximal_tag",
-            "region_start": 195,
-            "region_end": 205,
-            "pac_id": "pac2",
-            "total_count": 10,
-            "strand": "-",
-        },
+        dict(zip(columns, values, strict=True))
+        for values in [
+            ("chr1", 100, 101, "pac1", 5, "+"),
+            ("chr2", 195, 205, "pac2", 10, "-"),
+            ("chr2", 300, 301, "pac3", 2117, "+"),
+        ]
     ]
 
     _write_bed(rows, path)
@@ -127,7 +116,11 @@ def test_bed_has_zero_timestamp(tmp_path) -> None:
     assert data[4:8] == b"\x00\x00\x00\x00"
 
     decompressed = gzip.decompress(data).decode()
-    assert decompressed == "chr1\t100\t101\tpac1\t5\t+\nchr2\t195\t205\tpac2\t10\t-\n"
+    assert decompressed == (
+        "chr1\t100\t101\tpac1\t5\t+\n"
+        "chr2\t195\t205\tpac2\t10\t-\n"
+        "chr2\t300\t301\tpac3\t1000\t+\n"
+    )
 
 
 def test_pandas_gzip_compression_has_zero_timestamp(tmp_path) -> None:

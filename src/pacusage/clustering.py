@@ -1,4 +1,9 @@
-"""Condition-blind exact-boundary and proximal-tag PAC discovery."""
+"""Exact-boundary and proximal-tag PAC discovery.
+
+Candidates come from every sample's read ends pooled, without contrasts or
+motifs. Condition labels are used only to require replicate support within the
+condition that supports a candidate, and in the per-condition readthrough rule.
+"""
 
 from __future__ import annotations
 

@@ -30,9 +30,10 @@ Point `fable-overseer` to the project documents: goals and design in
   worktrees one at a time.
 - Keep architecture, ambiguous work, prompt engineering, and anything
   security-, privacy-, concurrency-, or invariant-sensitive for yourself. In
-  this repository that includes the AGENTS.md invariants (condition-blind
-  atlas, exact versus proximal semantics, interbase coordinates, raw counts and
-  PAU without pseudocounts, direct-control comparisons) and the statistics in
+  this repository that includes the AGENTS.md invariants (an atlas built
+  without the treatment–control contrasts, exact versus proximal semantics,
+  interbase coordinates, raw counts and PAU without pseudocounts,
+  direct-control comparisons) and the statistics in
   `scripts/fit_usage_model.R`.
 - Never accept "done" on an implementer's word. Read the diff, run the full
   lint and test suite yourself, and fix or redo what's wrong.

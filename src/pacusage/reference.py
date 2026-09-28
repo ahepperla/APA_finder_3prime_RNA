@@ -128,7 +128,11 @@ def iter_annotation_features(
             gene_id = attributes.get("ID", "")
         if not gene_id and transcript_id:
             gene_id = transcript_to_gene.get(transcript_id, "")
-        gene_name = attributes.get("gene_name") or attributes.get("Name", "")
+        # A GFF3 Name is the gene's name only on a gene record; on an exon or
+        # transcript it names that feature. NCBI annotations use gene.
+        gene_name = attributes.get("gene_name") or attributes.get("gene", "")
+        if not gene_name and feature_type == "gene":
+            gene_name = attributes.get("Name", "")
         if not gene_id and feature_type in {"gene", "exon", "transcript", "mrna"}:
             raise PacusageError(
                 f"Annotation {path}, line {line_number}: feature lacks a gene identifier."
@@ -172,6 +176,25 @@ def parse_attributes(raw: str) -> dict[str, str]:
         if len(parts) == 2:
             values[parts[0]] = parts[1].strip().strip('"')
     return values
+
+
+def gene_name_map(features: Iterable[GenomicFeature]) -> dict[str, str]:
+    """One name per gene: its gene record's name, else the first name on its
+    other records, else the gene ID itself."""
+    from_gene_records: dict[str, str] = {}
+    from_other_records: dict[str, str] = {}
+    gene_ids: dict[str, None] = {}
+    for feature in features:
+        if not feature.gene_id:
+            continue
+        gene_ids.setdefault(feature.gene_id)
+        names = from_gene_records if feature.feature_type == "gene" else from_other_records
+        if feature.gene_name:
+            names.setdefault(feature.gene_id, feature.gene_name)
+    return {
+        gene_id: from_gene_records.get(gene_id) or from_other_records.get(gene_id) or gene_id
+        for gene_id in gene_ids
+    }
 
 
 def transcript_ends(

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import PacusageError
-from .models import Sample
+from .models import IDENTITY_COLUMNS, Sample
 
 REQUIRED_COLUMNS = ("sample_id", "alignment", "condition", "control")
 OPTIONAL_COLUMNS = {
@@ -55,6 +55,12 @@ def read_and_validate_samples(
         raise PacusageError(
             "sample_id must contain only letters, digits, dot, underscore, and hyphen; "
             f"invalid: {', '.join(unsafe)}."
+        )
+    reserved = [sample_id for sample_id in ids if sample_id in IDENTITY_COLUMNS]
+    if reserved:
+        raise PacusageError(
+            f"sample_id must not be a reserved name ({', '.join(IDENTITY_COLUMNS)}) "
+            f"used as count-table columns; reserved: {', '.join(reserved)}."
         )
 
     conditions: dict[str, set[str]] = defaultdict(set)

@@ -12,6 +12,9 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from pacusage.cli import _kmer_rows
+from pacusage.models import IDENTITY_COLUMNS
+
 REPOSITORY = Path(__file__).resolve().parents[2]
 ROOT = REPOSITORY / "results-test"
 FIXTURES = REPOSITORY / "tests" / "fixtures"
@@ -117,6 +120,105 @@ def check_input_checksums() -> None:
     assert list(alignments["path"]) == expected
     for path, digest in zip(alignments["path"], alignments["sha256"], strict=True):
         assert digest == hashlib.sha256(Path(path).read_bytes()).hexdigest(), path
+
+
+def expected_gene_name(gene_id: str) -> str:
+    """The fixture annotation's names, given on its gene lines only."""
+    return {"gene_plus": "GenePlus", "gene_minus": "GeneMinus"}.get(gene_id, gene_id.upper())
+
+
+def is_true(values: pd.Series) -> pd.Series:
+    return values.astype(str).str.strip().str.lower().isin({"true", "t", "1"})
+
+
+def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
+    """Every PAC table starts with one identity block that locates the PAC as
+    the atlas BED does; gene names come from the annotation's gene lines."""
+    def read(path: Path) -> pd.DataFrame:
+        # Blank names stay blank rather than becoming NaN.
+        return pd.read_csv(path, sep="\t", keep_default_na=False)
+
+    atlas = read(ROOT / "atlas" / "pacs.v1.metadata.tsv.gz")
+    bed = pd.read_csv(
+        ROOT / "atlas" / "pacs.v1.bed.gz",
+        sep="\t",
+        header=None,
+        names=["chrom", "start", "end", "pac_id", "score", "strand"],
+    ).set_index("pac_id")
+    assert (bed["score"] <= 1000).all(), "BED scores exceed 1000"
+    statistics = ROOT / "statistics"
+    located = {
+        "atlas": atlas,
+        "pac_motifs": read(ROOT / "motifs" / "pac_motifs.tsv.gz"),
+        "pac_counts": read(ROOT / "counts" / "pac_counts.tsv.gz"),
+        "fitted_pau": read(statistics / "fitted_pau.tsv.gz"),
+        **{f"{name}.pacs": read(statistics / f"{name}.pacs.tsv.gz") for name in tables},
+        **{
+            f"{family}.filtering": read(statistics / f"{family}.statistical_filtering.tsv.gz")
+            for family in FAMILIES
+        },
+    }
+    for name, table in located.items():
+        assert list(table.columns[: len(IDENTITY_COLUMNS)]) == IDENTITY_COLUMNS, name
+        rows = table.drop_duplicates("pac_id").set_index("pac_id")
+        interval = bed.loc[rows.index]
+        assert (rows["chrom"] == interval["chrom"]).all(), f"{name}: chrom differs from the BED"
+        assert (rows["start"] == interval["start"]).all(), f"{name}: start differs from the BED"
+        assert (rows["end"] == interval["end"]).all(), f"{name}: end differs from the BED"
+        loci = rows["chrom"] + ":" + (rows["start"] + 1).astype(str) + "-" + rows["end"].astype(str)
+        assert (rows["locus"] == loci).all(), f"{name}: locus is not the 1-based interval"
+        named = rows[rows["gene_id"].astype(str).str.fullmatch(r"[^,]+")]
+        assert (named["gene_name"] == named["gene_id"].map(expected_gene_name)).all(), name
+    removed = {"feature_id", "site_class", "family", "contig", "region_start", "region_end"}
+    for name, table in tables.items():
+        assert not removed & set(table.columns), f"{name}: {sorted(removed & set(table.columns))}"
+    assert not {"contig", "region_start", "region_end", "resolution_group"} & set(atlas.columns)
+    genes = statistics_table("TreatmentA_vs_DMSO.genes.tsv.gz")
+    assert list(genes.columns[:2]) == ["gene_id", "gene_name"]
+    assert (genes["gene_name"] == genes["gene_id"].map(expected_gene_name)).all()
+
+    # Descriptive labels are given only in genes that pass the gene screen.
+    descriptive = {"dominant_switch", "complexity_gain", "complexity_loss"}
+    for name, table in tables.items():
+        labelled = table[table["event_type"].isin(descriptive)]
+        assert (labelled["gene_fdr"] <= params["gene_fdr"]).all(), f"{name}: unscreened labels"
+
+    # The k-mer background holds only PACs tested in the comparison: the
+    # published tables equal a rerun on the atlas restricted that way, and the
+    # restriction removes at least one untested atlas PAC from an event gene.
+    usable = atlas[
+        ~is_true(atlas["known_rescue_only"])
+        & ~is_true(atlas["ambiguous_gene_assignment"])
+        & (atlas["gene_id"].astype(str) != "")
+    ]
+    restricted_somewhere = False
+    for name, table in tables.items():
+        selected = set(table.loc[table["event_type"].isin(["gained", "increased_usage"]), "pac_id"])
+        tested = usable[usable["pac_id"].isin(set(table["pac_id"]))]
+        event_genes = set(tested.loc[tested["pac_id"].isin(selected), "gene_id"])
+        in_event_genes = usable["gene_id"].isin(event_genes)
+        untested = usable[in_event_genes & ~usable["pac_id"].isin(tested["pac_id"])]
+        restricted_somewhere |= len(untested) > 0
+        expected = {
+            row["kmer"]: (row["event_pacs"], row["background_pacs"], row["informative_genes"])
+            for row in _kmer_rows(tested, selected, int(params["motif_kmer_length"]))
+        }
+        published = pd.read_csv(ROOT / "motifs" / f"{name}.kmer_enrichment.tsv.gz", sep="\t")
+        observed = {
+            row.kmer: (row.event_pacs, row.background_pacs, row.informative_genes)
+            for row in published.itertuples()
+        }
+        assert observed == expected, f"{name}: k-mer background differs from the tested PACs"
+    assert restricted_somewhere, "no comparison exercises the tested-PAC background"
+
+    # Motif preference is also reported per motif class.
+    class_tables = sorted((ROOT / "motifs").glob("*.preference_class.tsv.gz"))
+    assert len(class_tables) == len(COMPARISONS), [path.name for path in class_tables]
+    for path in class_tables:
+        columns = list(pd.read_csv(path, sep="\t", nrows=0).columns)
+        assert columns[:2] == ["primary_motif_class", "condition"], (path.name, columns)
+        assert "primary_pas_motif_rna" not in columns, path.name
+    assert params["excluded_contigs"] == ["chrM", "MT", "chrMT"], params["excluded_contigs"]
 
 
 def main() -> None:
@@ -254,6 +356,8 @@ def main() -> None:
         for table in tables.values()
     )
     assert f"<strong>{finite_intervals:,}</strong>Bootstrap intervals" in report_text
+
+    check_output_layout(tables, params)
 
     trace_text = (ROOT / "pipeline_info" / "execution_trace.txt").read_text()
     check_alignment_handling(trace_text)

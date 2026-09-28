@@ -8,20 +8,30 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+# Motif usage is scored per primary hexamer ("motif") or per motif class ("class").
+MOTIF_SCORE_KEYS = {
+    "motif": ["primary_pas_motif_rna", "primary_motif_class"],
+    "class": ["primary_motif_class"],
+}
+
 
 def motif_usage_scores(
     pau: pd.DataFrame,
     atlas: pd.DataFrame,
     minimum_gene_total: int,
     excluded_rescue_sites: bool = True,
+    level: str = "motif",
 ) -> pd.DataFrame:
+    if level not in MOTIF_SCORE_KEYS:
+        raise ValueError(f"level must be 'motif' or 'class', not {level!r}")
+    motif_keys = MOTIF_SCORE_KEYS[level]
     columns = ["pac_id", "primary_motif_class", "known_rescue_only", "primary_pas_motif_rna"]
     merged = pau.merge(atlas[columns], on="pac_id", how="inner")
     merged["primary_pas_motif_rna"] = (
         merged["primary_pas_motif_rna"].fillna("").astype(str).replace("", "none")
     )
-    # A fixed, condition-blind gene set: genes with at least minimum_gene_total
-    # reads in every sample.
+    # A fixed gene set, chosen without condition labels: genes with at least
+    # minimum_gene_total reads in every sample.
     covered = merged.groupby("gene_id")["gene_total"].min() >= minimum_gene_total
     merged = merged[merged["gene_id"].isin(covered.index[covered])]
     if excluded_rescue_sites:
@@ -31,7 +41,6 @@ def motif_usage_scores(
     merged["renormalized_pau"] = merged["count"] / retained_total[retained_total > 0]
     site_counts = merged.groupby(["gene_id", "sample_id"])["pac_id"].transform("nunique")
     merged = merged[site_counts >= 2]
-    motif_keys = ["primary_pas_motif_rna", "primary_motif_class"]
     by_gene = merged.groupby(
         ["sample_id", "gene_id", *motif_keys], as_index=False
     )["renormalized_pau"].sum()
@@ -43,8 +52,7 @@ def motif_usage_scores(
     scores["transformed_motif_usage"] = np.arcsin(np.sqrt(scores["motif_usage"]))
     genes = by_gene.groupby(["sample_id", *motif_keys])["gene_id"].nunique()
     scores["informative_genes"] = [
-        int(genes.loc[(row.sample_id, row.primary_pas_motif_rna, row.primary_motif_class)])
-        for row in scores.itertuples()
+        int(genes.loc[key]) for key in scores[["sample_id", *motif_keys]].itertuples(index=False)
     ]
     return scores
 

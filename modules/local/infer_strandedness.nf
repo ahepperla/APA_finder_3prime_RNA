@@ -19,6 +19,10 @@ process INFER_STRANDEDNESS {
     script:
     def aliasArgument = params.chromosome_aliases ?
         "--chromosome-aliases '${file(params.chromosome_aliases)}'" : ''
+    // VALIDATE_INPUTS rejects anything but a list before this step runs.
+    assert params.excluded_contigs instanceof List : 'excluded_contigs must be a YAML list'
+    def excludedArgument = params.excluded_contigs ?
+        "--excluded-contigs " + params.excluded_contigs.collect { name -> "'${name}'" }.join(' ') : ''
     """
     pacusage infer-strandedness \
         --sample-id '${meta.sample_id}' \
@@ -27,6 +31,7 @@ process INFER_STRANDEDNESS {
         --reference '${reference}' \
         --annotation '${annotation}' \
         ${aliasArgument} \
+        ${excludedArgument} \
         --profile '${meta.library_profile}' \
         --layout '${meta.layout}' \
         --strandedness '${meta.strandedness}' \

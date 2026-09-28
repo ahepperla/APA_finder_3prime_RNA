@@ -192,20 +192,33 @@ simulate_dm_counts <- function(proportions_by_condition, precision, depth, sampl
 # Build the statistics inputs from genes given as list(gene_id, contig,
 # coordinates, counts), where counts has one column per sample.
 assemble_usage_dataset <- function(genes, sample_ids, sample_condition, control, params) {
+  # Genes are named after their IDs, the way the annotation step names genes
+  # the annotation leaves unnamed.
+  gene_name_of <- function(gene) if (is.null(gene$gene_name)) toupper(gene$gene_id) else gene$gene_name
+  # The identity block of the pipeline's PAC tables: exact PACs on the plus
+  # strand, with their BED interval and 1-based locus.
+  identity <- function(gene) {
+    data.frame(
+      pac_id = sprintf("PACv1.test.%s.+.%d", gene$contig, gene$coordinates),
+      gene_id = gene$gene_id,
+      gene_name = gene_name_of(gene),
+      chrom = gene$contig,
+      start = gene$coordinates,
+      end = gene$coordinates + 1L,
+      strand = "+",
+      locus = sprintf("%s:%d-%d", gene$contig, gene$coordinates + 1L, gene$coordinates + 1L),
+      stringsAsFactors = FALSE
+    )
+  }
   counts <- do.call(rbind, lapply(genes, function(gene) {
-    pac_ids <- sprintf("PACv1.test.%s.+.%d", gene$contig, gene$coordinates)
     values <- as.data.frame(gene$counts)
     names(values) <- sample_ids
-    data.frame(gene_id = gene$gene_id, pac_id = pac_ids, values,
-      check.names = FALSE, stringsAsFactors = FALSE)
+    data.frame(identity(gene), values, check.names = FALSE, stringsAsFactors = FALSE)
   }))
   atlas <- do.call(rbind, lapply(genes, function(gene) {
     data.frame(
-      pac_id = sprintf("PACv1.test.%s.+.%d", gene$contig, gene$coordinates),
-      contig = gene$contig,
+      identity(gene),
       coordinate = gene$coordinates,
-      strand = "+",
-      gene_id = gene$gene_id,
       candidate_status = "primary",
       known_pac = FALSE,
       known_rescue_only = FALSE,
@@ -337,7 +350,9 @@ write_usage_inputs <- function(dataset, directory) {
     atlas = file.path(directory, "pacs.v1.metadata.tsv.gz"),
     params = file.path(directory, "resolved_params.yaml"),
     motif_scores = file.path(directory, "motif_scores.tsv"),
-    motif_sensitivity = file.path(directory, "motif_scores_known_rescue_sensitivity.tsv")
+    motif_sensitivity = file.path(directory, "motif_scores_known_rescue_sensitivity.tsv"),
+    motif_class_scores = file.path(directory, "motif_class_scores.tsv"),
+    motif_class_sensitivity = file.path(directory, "motif_class_scores_known_rescue_sensitivity.tsv")
   )
   utils::write.table(dataset$samples, paths$samples, sep = "\t", quote = FALSE,
     row.names = FALSE, na = "")
@@ -351,6 +366,14 @@ write_usage_inputs <- function(dataset, directory) {
   motif_scores <- if (is.null(dataset$motif_scores)) empty_motif_scores() else dataset$motif_scores
   for (path in c(paths$motif_scores, paths$motif_sensitivity)) {
     utils::write.table(motif_scores, path, sep = "\t", quote = FALSE, row.names = FALSE)
+  }
+  class_scores <- if (is.null(dataset$motif_class_scores)) {
+    empty_motif_scores()[, setdiff(names(empty_motif_scores()), "primary_pas_motif_rna")]
+  } else {
+    dataset$motif_class_scores
+  }
+  for (path in c(paths$motif_class_scores, paths$motif_class_sensitivity)) {
+    utils::write.table(class_scores, path, sep = "\t", quote = FALSE, row.names = FALSE)
   }
   paths
 }
@@ -399,6 +422,8 @@ run_statistics_in_process <- function(
     params = paths$params,
     motif_scores = paths$motif_scores,
     motif_sensitivity = paths$motif_sensitivity,
+    motif_class_scores = paths$motif_class_scores,
+    motif_class_sensitivity = paths$motif_class_sensitivity,
     model_workers = as.character(model_workers),
     bootstrap_batch_size = as.character(batch_size),
     output_dir = fit_directory
@@ -460,6 +485,8 @@ run_statistics_subprocess <- function(
     "--samples", paths$samples, "--counts", paths$counts,
     "--atlas", paths$atlas, "--params", paths$params,
     "--motif-scores", paths$motif_scores, "--motif-sensitivity", paths$motif_sensitivity,
+    "--motif-class-scores", paths$motif_class_scores,
+    "--motif-class-sensitivity", paths$motif_class_sensitivity,
     "--model-workers", as.character(model_workers),
     "--bootstrap-batch-size", as.character(batch_size),
     "--output-dir", fit_directory

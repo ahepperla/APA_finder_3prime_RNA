@@ -18,8 +18,14 @@ coverage before making broad or negative structural claims.
   `VALIDATE_INPUTS`, `PREPARATION`, `DISCOVERY`, `QUANTIFICATION`,
   `STATISTICS`, and `BUILD_REPORT`, in that order.
 - Preserve the analytical separation between protocol calibration and atlas
-  construction. Discovery uses a condition-blind frozen atlas; differential
-  testing compares each treatment only with its declared direct control.
+  construction. The frozen atlas is built without the treatment–control
+  contrasts:
+  - candidates come from every sample's read ends pooled;
+  - a PAC needs replicate support within the condition that supports it;
+  - the readthrough filter also works per condition.
+
+  Differential testing compares each treatment only with its declared direct
+  control.
 - Keep workflow modules small and use their declared channels rather than
   bypassing stages with ad hoc files. Explicit Nextflow CLI parameters override
   values supplied by `analysis.yaml`.
@@ -30,8 +36,9 @@ coverage before making broad or negative structural claims.
   - VALIDATE_INPUTS resolves and validates the parameters once, against the
     staged schema.
   - Later steps read `resolved_params.yaml` as it is. The exception is
-    INFER_STRANDEDNESS, which takes its few parameters on the command line so
-    that other parameter changes don't rerun it. Nextflow applies the
+    INFER_STRANDEDNESS, which takes its few parameters, including
+    `excluded_contigs` and the aliases, on the command line so that other
+    parameter changes don't rerun it. Nextflow applies the
     resource, scheduling, and publication parameters itself.
   - RECORD_SOFTWARE_VERSIONS loads the R packages right after validation. Keep
     the R script out of VALIDATE_INPUTS, or every edit to it reruns the whole
@@ -66,9 +73,10 @@ coverage before making broad or negative structural claims.
 - Each condition has one consistent direct control. Control relationships must
   be acyclic, and modeled conditions normally need at least two biological
   replicates.
-- PAC IDs and internal coordinates are zero-based interbase coordinates.
-  Exact-boundary BED records are `[coordinate, coordinate + 1)`; proximal-tag
-  BED records are `[region_start, region_end)`. Gene assignment treats an
+- PAC IDs and internal coordinates are zero-based interbase coordinates. A
+  PAC's `start`/`end` (and its atlas BED record) are `[coordinate,
+  coordinate + 1)` for an exact-boundary PAC and its resolution region for a
+  proximal-tag PAC; `locus` is the same interval, 1-based. Gene assignment treats an
   exon or gene as containing coordinates `start` through `end` inclusive,
   because a 3′ boundary equals its exon's `end`.
 - Keep exact-boundary and proximal-tag discovery semantics distinct. Do not
@@ -80,6 +88,15 @@ coverage before making broad or negative structural claims.
 
 - Normal results contain `manifest/`, `qc/`, `evidence/`, `atlas/`, `counts/`,
   `statistics/`, `motifs/`, `tracks/`, and `report/index.html`.
+- Every PAC-level table starts with the identity block `pac_id, gene_id,
+  gene_name, chrom, start, end, strand, locus`. It is `IDENTITY_COLUMNS` in
+  `src/pacusage/models.py` and in the R script, and those names are reserved as
+  sample IDs. Gene-level tables start with `gene_id, gene_name`.
+  - A gene's name comes from `reference.gene_name_map`, falling back to its
+    ID.
+  - `feature_id` is DRIMSeq's internal name for a PAC and is never published.
+- `excluded_contigs` defaults to the mitochondrial names `chrM`, `MT`, and
+  `chrMT`, and every step, strandedness inference included, drops them.
 - `pipeline_info/` holds Nextflow's execution report, timeline, trace, and
   DAG. `nextflow.config` sets them after the profiles, so a profile's `outdir`
   applies. Each run replaces them, and they record the run's times, so the

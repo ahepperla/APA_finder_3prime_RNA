@@ -9,7 +9,7 @@ from collections.abc import Iterable
 import numpy as np
 import pandas as pd
 
-from .models import EvidenceObservation
+from .models import IDENTITY_COLUMNS, EvidenceObservation
 
 
 def quantify_exact(
@@ -125,7 +125,7 @@ def _atlas_index(
 ) -> dict[tuple[str, str], tuple[list[int], list[dict[str, object]]]]:
     result: defaultdict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for row in atlas:
-        result[(str(row["contig"]), str(row["strand"]))].append(row)
+        result[(str(row["chrom"]), str(row["strand"]))].append(row)
     indexed = {}
     for key in result:
         result[key].sort(key=lambda row: int(row["coordinate"]))
@@ -141,7 +141,7 @@ def _oriented_atlas_index(
         strand = str(row["strand"])
         coordinate = int(row["coordinate"])
         oriented = coordinate if strand == "+" else -coordinate
-        result[(str(row["contig"]), strand)].append((oriented, row))
+        result[(str(row["chrom"]), strand)].append((oriented, row))
     indexed = {}
     for key, values in result.items():
         values.sort(key=lambda item: item[0])
@@ -157,13 +157,9 @@ def build_count_outputs(
     atlas: list[dict[str, object]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     sample_ids = sorted(per_sample_counts)
-    atlas_rows = sorted(atlas, key=lambda row: str(row["pac_id"]))
-    wide = pd.DataFrame(
-        {
-            "gene_id": [row.get("gene_id", "") for row in atlas_rows],
-            "pac_id": [str(row["pac_id"]) for row in atlas_rows],
-        }
-    )
+    # Rows keep the atlas's genomic order; the identity columns come first.
+    wide = pd.DataFrame({column: [row[column] for row in atlas] for column in IDENTITY_COLUMNS})
+    wide["pac_id"] = wide["pac_id"].astype(str)
     for sample_id in sample_ids:
         rows = per_sample_counts[sample_id]
         counts = (
@@ -177,7 +173,7 @@ def build_count_outputs(
         counts.index = counts.index.astype(str)
         wide[sample_id] = wide["pac_id"].map(counts).fillna(0).astype("int64")
     long = wide.melt(
-        id_vars=["gene_id", "pac_id"],
+        id_vars=["pac_id", "gene_id", "gene_name"],
         value_vars=sample_ids,
         var_name="sample_id",
         value_name="count",
@@ -186,12 +182,19 @@ def build_count_outputs(
         (long["gene_id"].astype(str) != "")
         & ~long["gene_id"].astype(str).str.contains(",", regex=False)
     ].copy()
+    # Genes are grouped by ID; each carries the one name the atlas gives it.
+    names = eligible.drop_duplicates(["gene_id", "gene_name"])
+    repeated = names["gene_id"][names["gene_id"].duplicated()]
+    if len(repeated):
+        raise ValueError(f"Gene {repeated.iloc[0]} has more than one gene_name in the atlas.")
     totals = (
-        eligible.groupby(["gene_id", "sample_id"], as_index=False)["count"]
+        eligible.groupby(["gene_id", "gene_name", "sample_id"], as_index=False)["count"]
         .sum()
         .rename(columns={"count": "gene_total"})
     )
-    pau = eligible.merge(totals, on=["gene_id", "sample_id"], how="left")
+    pau = eligible.merge(
+        totals.drop(columns="gene_name"), on=["gene_id", "sample_id"], how="left"
+    )
     pau["pau"] = pau["count"] / pau["gene_total"].replace(0, np.nan)
     verify_count_invariants(long, totals, pau)
     return wide, long, totals, pau

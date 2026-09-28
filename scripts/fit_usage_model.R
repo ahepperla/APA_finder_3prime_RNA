@@ -21,7 +21,7 @@ REQUIRED_PRECISION_SLOTS <- c(
   "design_precision", "counts", "samples"
 )
 TEXT_COLUMNS <- c(
-  "gene_id", "pac_id", "feature_id", "sample_id", "condition", "control",
+  "gene_id", "gene_name", "chrom", "locus", "pac_id", "feature_id", "sample_id", "condition", "control",
   "control_condition", "comparison", "bootstrap_status", "model_status"
 )
 BOOTSTRAP_STATUSES <- c(
@@ -31,46 +31,57 @@ INTERVAL_COLUMNS <- c(
   "comparison", "gene_id", "feature_id", "delta_pau_ci_low", "delta_pau_ci_high",
   "bootstrap_successes", "bootstrap_perturbed", "bootstrap_status"
 )
-GENE_PRECISION_COLUMNS <- c("gene_id", "precision", "family", "model_status")
-FILTERING_COLUMNS <- c("family", "gene_id", "pac_id", "tested", "reason")
+# Every PAC-level table starts with the identity block; gene-level tables
+# start with the gene's ID and name. The other columns run from the answer to
+# the evidence: comparison, call, effect, significance, annotation, data, and
+# model diagnostics.
+LOCATION_COLUMNS <- c("chrom", "start", "end", "strand", "locus")
+IDENTITY_COLUMNS <- c("pac_id", "gene_id", "gene_name", LOCATION_COLUMNS)
+GENE_PRECISION_COLUMNS <- c("gene_id", "gene_name", "family", "precision", "model_status")
+FILTERING_COLUMNS <- c(IDENTITY_COLUMNS, "family", "tested", "reason")
 MOTIF_PREFERENCE_COLUMNS <- c(
   "primary_pas_motif_rna", "primary_motif_class", "condition", "control_condition",
-  "control_mean", "treatment_mean", "delta_motif_usage", "transformed_coefficient",
-  "p_value", "informative_genes", "fdr"
+  "delta_motif_usage", "fdr", "p_value", "control_mean", "treatment_mean",
+  "transformed_coefficient", "informative_genes"
 )
+# Motif preference is tested per primary hexamer and, in a second table, per
+# motif class.
+MOTIF_PREFERENCE_KEYS <- c("primary_pas_motif_rna", "primary_motif_class")
 FITTED_PAU_COLUMNS <- c(
-  "gene_id", "feature_id", "condition", "control_condition", "fitted_control_pau",
-  "fitted_treatment_pau", "delta_pau", "precision", "alpha_control",
-  "alpha_treatment", "model_status"
+  IDENTITY_COLUMNS, "condition", "control_condition", "fitted_control_pau",
+  "fitted_treatment_pau", "delta_pau", "model_status", "precision", "alpha_control",
+  "alpha_treatment"
 )
 OMNIBUS_COLUMNS <- c(
-  "gene_id", "lr", "df", "pvalue", "gene_fdr", "model_status",
-  "stabilization_successes", "family", "exploratory_insufficient_replicates"
+  "gene_id", "gene_name", "family", "gene_fdr", "pvalue", "lr", "df", "model_status",
+  "stabilization_successes", "exploratory_insufficient_replicates"
 )
 GENE_COLUMNS <- c(
-  "gene_id", "lr", "df", "pvalue", "gene_fdr", "model_status",
-  "stabilization_successes", "condition", "control_condition",
-  "exploratory_insufficient_replicates"
+  "gene_id", "gene_name", "condition", "control_condition", "gene_fdr", "pvalue", "lr",
+  "df", "model_status", "stabilization_successes", "exploratory_insufficient_replicates"
 )
 ATLAS_ANNOTATION_COLUMNS <- c(
-  "assignment_class", "known_pac", "known_rescue_only", "confidence",
-  "internal_priming_flag", "primary_pas_motif", "primary_pas_motif_rna",
+  "assignment_class", "confidence", "internal_priming_flag", "known_pac",
+  "known_rescue_only", "primary_pas_motif", "primary_pas_motif_rna",
   "primary_motif_class"
 )
 PAC_COLUMNS <- c(
-  "feature_id", "gene_id", "lr", "df", "pvalue_pac", "pac_fdr", "pvalue_gene",
-  "gene_fdr", "fitted_control_pau", "fitted_treatment_pau", "delta_pau",
-  "control_supporting_samples", "treatment_supporting_samples",
-  "control_gene_total", "treatment_gene_total", "raw_control_counts",
-  "raw_treatment_counts", "observed_control_pau", "observed_treatment_pau",
-  "model_status", "stabilization_successes", "stabilization_delta_pau_spread",
-  "zero_boundary_unstable", "zero_boundary_reason", "precision", "family",
-  "alpha_control", "alpha_treatment", ATLAS_ANNOTATION_COLUMNS, "pac_id",
-  "site_class", "condition", "control_condition",
-  "exploratory_insufficient_replicates", "delta_pau_ci_low", "delta_pau_ci_high",
-  "bootstrap_successes", "bootstrap_perturbed", "bootstrap_status",
+  IDENTITY_COLUMNS,
+  "condition", "control_condition", "event_type",
+  "fitted_control_pau", "fitted_treatment_pau", "delta_pau", "delta_pau_ci_low",
+  "delta_pau_ci_high",
+  "pac_fdr", "gene_fdr", "pvalue_pac", "pvalue_gene", "lr", "df",
+  ATLAS_ANNOTATION_COLUMNS,
+  "control_supporting_samples", "treatment_supporting_samples", "control_gene_total",
+  "treatment_gene_total", "raw_control_counts", "raw_treatment_counts",
+  "observed_control_pau", "observed_treatment_pau",
   "effect_exceeds_threshold", "dominant_pac_control", "dominant_pac_treatment",
-  "control_detected_complexity", "treatment_detected_complexity", "event_type"
+  "control_detected_complexity", "treatment_detected_complexity",
+  "model_status", "precision", "alpha_control", "alpha_treatment",
+  "stabilization_successes", "stabilization_delta_pau_spread", "zero_boundary_unstable",
+  "zero_boundary_reason",
+  "bootstrap_status", "bootstrap_successes", "bootstrap_perturbed",
+  "exploratory_insufficient_replicates"
 )
 
 load_statistics_packages <- function() {
@@ -276,12 +287,15 @@ family_filter <- function(counts, sample_ids, params, family) {
   list(
     counts = counts[tested, c("gene_id", "pac_id", sample_ids), drop = FALSE],
     reasons = data.frame(
-      family = rep(family, nrow(counts)),
-      gene_id = ifelse(is.na(gene_ids), "", gene_ids),
       pac_id = counts$pac_id,
+      gene_id = ifelse(is.na(gene_ids), "", gene_ids),
+      gene_name = ifelse(is.na(counts$gene_name), "", counts$gene_name),
+      counts[, LOCATION_COLUMNS, drop = FALSE],
+      family = rep(family, nrow(counts)),
       tested = tested,
       reason = reason,
-      stringsAsFactors = FALSE
+      stringsAsFactors = FALSE,
+      check.names = FALSE
     )
   )
 }
@@ -1159,10 +1173,14 @@ classify_event <- function(row, params) {
     control_detected && !treatment_detected &&
     at_most(row$fitted_treatment_pau, params$event_max_control_pau) &&
     at_least(row$fitted_control_pau, params$event_min_treatment_pau) && negative
+  # A PAC's absence from a group counts only when that group has enough reads
+  # at the gene to show it (design section 9).
+  control_covered <- at_least(row$control_gene_total, params$min_gene_total)
+  treatment_covered <- at_least(row$treatment_gene_total, params$min_gene_total)
   if (gained_detection) {
-    if (significant && stable && confident) "gained" else "gained_candidate"
+    if (significant && stable && confident && control_covered) "gained" else "gained_candidate"
   } else if (lost_detection) {
-    if (significant && stable && confident) "lost" else "lost_candidate"
+    if (significant && stable && confident && treatment_covered) "lost" else "lost_candidate"
   } else if (control_detected && treatment_detected && significant && positive) {
     "increased_usage"
   } else if (control_detected && treatment_detected && significant && negative) {
@@ -1178,7 +1196,8 @@ classify_table_events <- function(table, params) {
     "control_supporting_samples", "treatment_supporting_samples", "delta_pau",
     "gene_fdr", "pac_fdr", "zero_boundary_unstable", "confidence",
     "internal_priming_flag", "exploratory_insufficient_replicates",
-    "fitted_control_pau", "fitted_treatment_pau"
+    "fitted_control_pau", "fitted_treatment_pau",
+    "control_gene_total", "treatment_gene_total"
   )
   columns <- lapply(stats::setNames(fields, fields), function(field) table[[field]])
   vapply(
@@ -1224,11 +1243,14 @@ assign_events <- function(pacs, params) {
   exploratory <- as.logical(pacs$exploratory_insufficient_replicates)
   events[exploratory & events == "gained"] <- "gained_candidate"
   events[exploratory & events == "lost"] <- "lost_candidate"
+  # The descriptive labels below describe fitted usage, so they are given
+  # only in genes that pass the comparison's gene-level screen.
+  screened <- !is.na(pacs$gene_fdr) & pacs$gene_fdr <= params$gene_fdr
   dominant_switch <- !is.na(pacs$dominant_pac_control) &
     !is.na(pacs$dominant_pac_treatment) &
     pacs$dominant_pac_control != pacs$dominant_pac_treatment
-  events[events == "none" & dominant_switch & pacs$feature_id == pacs$dominant_pac_treatment] <-
-    "dominant_switch"
+  events[events == "none" & screened & dominant_switch &
+    pacs$feature_id == pacs$dominant_pac_treatment] <- "dominant_switch"
   complexity_delta <- pacs$treatment_detected_complexity - pacs$control_detected_complexity
   # A gene without fitted usage in either group (a condition with no counts)
   # has no usage pattern to compare, so it gets no descriptive event.
@@ -1238,20 +1260,21 @@ assign_events <- function(pacs, params) {
     FUN = any
   )
   complexity_delta[as.logical(unfitted)] <- 0
-  events[events == "none" & complexity_delta > 0] <- "complexity_gain"
-  events[events == "none" & complexity_delta < 0] <- "complexity_loss"
+  events[events == "none" & screened & complexity_delta > 0] <- "complexity_gain"
+  events[events == "none" & screened & complexity_delta < 0] <- "complexity_loss"
   pacs$event_type <- events
   pacs
 }
 
 # ---- Per-comparison tables --------------------------------------------------
 
-comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params) {
+comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params, gene_names) {
   comparison <- comparison_row$comparison
   treatment <- comparison_row$treatment
   control <- layout$control
   contrast <- fit$contrasts[[comparison]]
   genes <- contrast$genes
+  genes$gene_name <- unname(gene_names[genes$gene_id])
   genes$gene_fdr <- bh(genes$pvalue)
   features <- contrast$features
   features$pac_fdr <- stage_adjust(genes, features, params$site_fdr)
@@ -1264,11 +1287,14 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
   precision <- unname(fit$precision[features$gene_id])
   annotation_index <- match(features$feature_id, atlas$pac_id)
   if (anyNA(annotation_index)) stop("The atlas lacks annotation for tested PACs in ", comparison, ".")
-  annotation <- select_columns(atlas, ATLAS_ANNOTATION_COLUMNS, "The atlas")[annotation_index, , drop = FALSE]
+  annotation <- select_columns(
+    atlas, c(LOCATION_COLUMNS, ATLAS_ANNOTATION_COLUMNS), "The atlas"
+  )[annotation_index, , drop = FALSE]
   rownames(annotation) <- NULL
   pacs <- data.frame(
     feature_id = features$feature_id,
     gene_id = features$gene_id,
+    gene_name = unname(gene_names[features$gene_id]),
     lr = features$lr,
     df = features$df,
     pvalue_pac = features$pvalue,
@@ -1292,12 +1318,10 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
     zero_boundary_unstable = features$zero_boundary_unstable,
     zero_boundary_reason = features$zero_boundary_reason,
     precision = precision,
-    family = layout$family,
     alpha_control = unname(control_pau) * precision,
     alpha_treatment = unname(treatment_pau) * precision,
     annotation,
     pac_id = features$feature_id,
-    site_class = annotation$assignment_class,
     condition = treatment,
     control_condition = control,
     exploratory_insufficient_replicates = layout$exploratory,
@@ -1402,6 +1426,16 @@ write_empty_family_outputs <- function(layout, output_dir) {
 
 # ---- Fit mode ---------------------------------------------------------------
 
+# Gene names by gene ID, from the atlas rows assigned to a single gene. The
+# annotation step gives each gene one name, falling back to its ID.
+atlas_gene_names <- function(atlas) {
+  single <- !is.na(atlas$gene_id) & nzchar(atlas$gene_id) & !grepl(",", atlas$gene_id, fixed = TRUE)
+  names <- unique(atlas[single, c("gene_id", "gene_name"), drop = FALSE])
+  repeated <- names$gene_id[duplicated(names$gene_id)]
+  if (length(repeated)) stop("Gene ", repeated[[1]], " has more than one gene_name in the atlas.")
+  stats::setNames(as.character(names$gene_name), names$gene_id)
+}
+
 fit_family <- function(
   family,
   sample_rows,
@@ -1421,6 +1455,7 @@ fit_family <- function(
     fitted_pau = empty_table(FITTED_PAU_COLUMNS),
     batches = list()
   )
+  gene_names <- atlas_gene_names(atlas)
   filtering <- family_filter(counts, layout$sample_ids, params, family)
   write_gzip_tsv(
     select_columns(filtering$reasons, FILTERING_COLUMNS, "The filtering table"),
@@ -1471,6 +1506,7 @@ fit_family <- function(
 
   # 3. Tables.
   omnibus <- fit$omnibus
+  omnibus$gene_name <- unname(gene_names[omnibus$gene_id])
   omnibus$gene_fdr <- bh(omnibus$pvalue)
   omnibus$family <- family
   omnibus$exploratory_insufficient_replicates <- layout$exploratory
@@ -1480,7 +1516,10 @@ fit_family <- function(
   )
 
   outputs <- lapply(seq_len(nrow(layout$comparisons)), function(index) {
-    comparison_outputs(fit, layout$comparisons[index, , drop = FALSE], filtered, layout, atlas, empty, params)
+    comparison_outputs(
+      fit, layout$comparisons[index, , drop = FALSE], filtered, layout, atlas, empty, params,
+      gene_names
+    )
   })
   settings <- bootstrap_settings(params)
   eligible <- bootstrap_eligible_genes(fit)
@@ -1519,6 +1558,7 @@ fit_family <- function(
   )
   precision_table <- data.frame(
     gene_id = fit$gene_ids,
+    gene_name = unname(gene_names[fit$gene_ids]),
     precision = unname(fit$precision),
     family = family,
     model_status = unname(fit$gene_status),
@@ -1534,34 +1574,34 @@ fit_family <- function(
   )
 }
 
-# Motif-class usage (design section 9, "Motif Preference"). Each comparison
-# is one limma fit on the family's main-model design (covariates, then
-# condition with the family control as reference), with one row per motif
-# class. A class is tested in a comparison only when every sample of that
-# comparison has at least motif_preference_min_genes informative genes for it.
-fit_motif_preferences <- function(scores, layout, params, output_dir, suffix) {
+# Motif usage (design section 9, "Motif Preference"). Each comparison is one
+# limma fit on the family's main-model design (covariates, then condition with
+# the family control as reference). Its rows are the score table's keys: a
+# primary hexamer with its class, or a class alone. A row is tested in a
+# comparison only when every sample of that comparison has at least
+# motif_preference_min_genes informative genes for it.
+fit_motif_preferences <- function(
+  scores, layout, params, output_dir, suffix, keys = MOTIF_PREFERENCE_KEYS
+) {
   scores <- scores[scores$sample_id %in% layout$sample_ids, , drop = FALSE]
   if (!nrow(scores)) return(invisible(NULL))
-  classes <- unique(scores[, c("primary_pas_motif_rna", "primary_motif_class"), drop = FALSE])
-  classes <- classes[
-    order(classes$primary_motif_class, classes$primary_pas_motif_rna, method = "radix"), ,
-    drop = FALSE
-  ]
-  rownames(classes) <- NULL
-  class_keys <- paste(classes$primary_pas_motif_rna, classes$primary_motif_class, sep = "\r")
-  score_cells <- cbind(
-    match(paste(scores$primary_pas_motif_rna, scores$primary_motif_class, sep = "\r"), class_keys),
-    match(scores$sample_id, layout$sample_ids)
-  )
-  by_class <- function(column) {
-    values <- matrix(NA_real_, length(class_keys), length(layout$sample_ids))
+  rows <- unique(scores[, keys, drop = FALSE])
+  # Classes first, then hexamers within a class.
+  rows <- rows[do.call(order, c(unname(as.list(rows[rev(keys)])), method = "radix")), , drop = FALSE]
+  rownames(rows) <- NULL
+  key_text <- function(table) do.call(paste, c(unname(as.list(table[keys])), sep = "\r"))
+  row_keys <- key_text(rows)
+  score_cells <- cbind(match(key_text(scores), row_keys), match(scores$sample_id, layout$sample_ids))
+  by_row <- function(column) {
+    values <- matrix(NA_real_, length(row_keys), length(layout$sample_ids))
     colnames(values) <- layout$sample_ids
     values[score_cells] <- as.numeric(scores[[column]])
     values
   }
-  usage <- by_class("motif_usage")
-  transformed <- by_class("transformed_motif_usage")
-  informative <- by_class("informative_genes")
+  usage <- by_row("motif_usage")
+  transformed <- by_row("transformed_motif_usage")
+  informative <- by_row("informative_genes")
+  columns <- c(keys, setdiff(MOTIF_PREFERENCE_COLUMNS, MOTIF_PREFERENCE_KEYS))
   control_ids <- layout$groups[[layout$control]]
   for (index in seq_len(nrow(layout$comparisons))) {
     treatment <- layout$comparisons$treatment[[index]]
@@ -1577,8 +1617,7 @@ fit_motif_preferences <- function(scores, layout, params, output_dir, suffix) {
     control_mean <- rowMeans(usage[testable, control_ids, drop = FALSE])
     treatment_mean <- rowMeans(usage[testable, treatment_ids, drop = FALSE])
     output <- data.frame(
-      primary_pas_motif_rna = classes$primary_pas_motif_rna[testable],
-      primary_motif_class = classes$primary_motif_class[testable],
+      rows[testable, keys, drop = FALSE],
       condition = treatment,
       control_condition = layout$control,
       control_mean = control_mean,
@@ -1588,10 +1627,12 @@ fit_motif_preferences <- function(scores, layout, params, output_dir, suffix) {
       p_value = table$P.Value,
       fdr = bh(table$P.Value),
       informative_genes = minimum_genes[testable],
-      stringsAsFactors = FALSE
+      stringsAsFactors = FALSE,
+      check.names = FALSE
     )
+    rownames(output) <- NULL
     write_gzip_tsv(
-      select_columns(output, MOTIF_PREFERENCE_COLUMNS, "The motif preference table"),
+      select_columns(output, columns, "The motif preference table"),
       file.path(output_dir, paste0(layout$comparisons$comparison[[index]], ".", suffix, ".tsv.gz"))
     )
   }
@@ -1601,7 +1642,7 @@ fit_motif_preferences <- function(scores, layout, params, output_dir, suffix) {
 run_fit_mode <- function(arguments) {
   require_args(arguments, c(
     "family", "samples", "counts", "atlas", "params", "motif_scores",
-    "motif_sensitivity", "output_dir"
+    "motif_sensitivity", "motif_class_scores", "motif_class_sensitivity", "output_dir"
   ))
   model_workers <- parse_model_workers(arguments$model_workers)
   batch_size <- parse_batch_size(arguments$bootstrap_batch_size)
@@ -1651,6 +1692,14 @@ run_fit_mode <- function(arguments) {
   fit_motif_preferences(
     read_tsv(arguments$motif_sensitivity), fitted$layout, params, preliminary_dir,
     "preference_known_rescue_sensitivity"
+  )
+  fit_motif_preferences(
+    read_tsv(arguments$motif_class_scores), fitted$layout, params, preliminary_dir,
+    "preference_class", keys = "primary_motif_class"
+  )
+  fit_motif_preferences(
+    read_tsv(arguments$motif_class_sensitivity), fitted$layout, params, preliminary_dir,
+    "preference_class_known_rescue_sensitivity", keys = "primary_motif_class"
   )
 }
 
@@ -2037,7 +2086,7 @@ apply_bootstrap_intervals <- function(output, comparison, intervals) {
   matches <- intervals[intervals$comparison == comparison, , drop = FALSE]
   if (!nrow(matches)) return(output)
   interval_keys <- paste(matches$gene_id, matches$feature_id, sep = "\r")
-  output_keys <- paste(output$gene_id, output$feature_id, sep = "\r")
+  output_keys <- paste(output$gene_id, output$pac_id, sep = "\r")
   index <- match(interval_keys, output_keys)
   if (anyNA(index)) {
     stop("Bootstrap intervals for ", comparison, " refer to PACs absent from its table.")

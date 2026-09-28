@@ -30,6 +30,8 @@ workflow STATISTICS {
         resolved_params,
         MOTIF_SCORES.out.primary,
         MOTIF_SCORES.out.sensitivity,
+        MOTIF_SCORES.out.class_primary,
+        MOTIF_SCORES.out.class_sensitivity,
         statistics_script
     )
     // One task per batch file; each family writes at least one batch.

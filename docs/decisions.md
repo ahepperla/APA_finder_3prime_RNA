@@ -8,6 +8,66 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-28: Peer-review follow-up: event rules, motif classes, mitochondria, names, and columns
+
+Status: accepted (project lead, answering the overseer's review of the methods
+report and two later requests)
+
+**Discovery**
+- The support rule stays as it is. Candidates come from every sample's read
+  ends pooled, and a PAC needs replicate support within the condition that
+  supports it.
+- The readthrough filter stays per condition.
+- The docs now say "built without the treatment–control contrasts" instead of
+  "condition-blind", and name both places condition labels are used.
+- The end-to-end effect of this selection on false positives is unmeasured,
+  and the methods report lists it as an open question.
+
+**Event rules**
+- `dominant_switch` and `complexity_gain`/`complexity_loss` are given only in
+  genes that pass the comparison's gene-level screen.
+- A `gained` call needs the control samples together to have at least
+  `min_gene_total` reads at the gene, and a `lost` call the same of the
+  treatment samples. Otherwise the call is `*_candidate`.
+
+**Motif and k-mer analyses**
+- The k-mer background is the other PACs of an event's genes that were
+  tested in the same comparison.
+- Motif preference is tested per primary hexamer, as before, and also per
+  motif class, in `.preference_class` tables. This supersedes the "motif
+  classes as rows" wording of the 2026-09-27 cleanup.
+
+**Parameters**
+- `dm_bootstrap_replicates` stays at 200 for the HPC run, to be revisited.
+- `excluded_contigs` defaults to `[chrM, MT, chrMT]`, matched by alignment
+  name or alias target. Strandedness inference honours it too.
+
+**Output tables**
+- Every gene-keyed output carries `gene_name` from one gene-level map: the
+  gene record's name, else the first name on its other records, else the
+  `gene_id`.
+- Every PAC-level table starts with `pac_id, gene_id, gene_name, chrom, start,
+  end, strand, locus`. `start`/`end` follow the atlas BED, and `locus` is
+  1-based. The rest of each table runs from the answer to the evidence.
+- Duplicate columns are dropped: `feature_id` is published as `pac_id` only,
+  `site_class` duplicated `assignment_class`, and `family` in `.pacs`
+  duplicated `control_condition`. From the atlas, `resolution_group` and
+  `region_start`/`region_end` are dropped, and `contig` becomes `chrom`.
+- Count rows follow the atlas's genomic order, and BED scores are capped at
+  1000.
+
+**Design document**
+- Proximal peaks are ranked by matched score on the pooled binned kernel.
+- Strandedness has no terminal-exon priority, and a conflict with the
+  requested value stops the run.
+- The exact-quantification tie rule is stated.
+
+Reason: the overseer found these differences between the design and the code,
+or a peer reviewer's objection, and the project lead chose each answer. The
+names, columns, and mitochondrial default came from the lead's own review of
+the HPC results. The atlas bytes change, so the seeded statistics shift once;
+the next HPC run starts fresh.
+
 ## 2026-09-27: Stabilized genes' p-values are seed-dependent, and documented as such
 
 Status: accepted (project lead, option (a) of the overseer's question)

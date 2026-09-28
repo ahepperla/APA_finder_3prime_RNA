@@ -25,7 +25,7 @@ def test_report_tolerates_unavailable_model_statistics(tmp_path: Path) -> None:
         [
             {
                 "gene_id": "gene-1",
-                "feature_id": "pac-1",
+                "pac_id": "pac-1",
                 "pvalue_pac": None,
                 "model_status": "drimseq_add_uniform",
                 "zero_boundary_unstable": None,
@@ -53,7 +53,7 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
         [
             {
                 "gene_id": "gene-1",
-                "feature_id": "pac-1",
+                "pac_id": "pac-1",
                 "pvalue_pac": 0.01,
                 "model_status": "drimseq",
                 "zero_boundary_unstable": False,
@@ -63,7 +63,7 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
             },
             {
                 "gene_id": "gene-2",
-                "feature_id": "pac-2",
+                "pac_id": "pac-2",
                 "pvalue_pac": 0.02,
                 "model_status": "drimseq_add_uniform",
                 "zero_boundary_unstable": False,
@@ -73,7 +73,7 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
             },
             {
                 "gene_id": "gene-3",
-                "feature_id": "pac-3",
+                "pac_id": "pac-3",
                 "pvalue_pac": 0.50,
                 "model_status": "drimseq",
                 "zero_boundary_unstable": False,
@@ -232,3 +232,135 @@ def test_statistical_filtering_table_is_capped(tmp_path: Path) -> None:
     report = output.read_text()
     assert "Showing the first 200 of 250 untested PACs." in report
     assert report.count("<td>site_count&lt;5</td>") == 200
+
+
+def test_gene_plot_title_shows_name_and_id(tmp_path: Path) -> None:
+    """Gene plot title should show both gene name and gene ID."""
+    counts = tmp_path / "counts"
+    counts.mkdir()
+    rows = [
+        {
+            "gene_id": "ENSG00000000001",
+            "gene_name": "BRCA1",
+            "pac_id": "pac1",
+            "sample_id": "S1",
+            "count": 100,
+            "gene_total": 200,
+            "pau": 0.5,
+        }
+    ]
+    path = counts / "observed_pau.tsv.gz"
+    pd.DataFrame(rows).to_csv(path, sep="\t", index=False, compression=gzip_compression(path))
+
+    write_tsv(
+        [{"pac_id": "pac1", "coordinate": 1000, "strand": "+"}],
+        tmp_path / "pacs.v1.metadata.tsv.gz",
+    )
+    write_tsv(
+        [{"sample_id": "S1", "condition": "ctrl"}],
+        tmp_path / "normalized_samples.tsv",
+    )
+
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+
+    report = output.read_text()
+    # Title should show: <strong>BRCA1</strong> (ENSG00000000001)
+    assert "<strong>BRCA1</strong> (ENSG00000000001)" in report
+
+
+def test_gene_plot_title_omits_id_when_name_equals_id(tmp_path: Path) -> None:
+    """When gene_name equals gene_id, show only the ID once."""
+    counts = tmp_path / "counts"
+    counts.mkdir()
+    rows = [
+        {
+            "gene_id": "GENE001",
+            "gene_name": "GENE001",
+            "pac_id": "pac1",
+            "sample_id": "S1",
+            "count": 100,
+            "gene_total": 200,
+            "pau": 0.5,
+        }
+    ]
+    path = counts / "observed_pau.tsv.gz"
+    pd.DataFrame(rows).to_csv(path, sep="\t", index=False, compression=gzip_compression(path))
+
+    write_tsv(
+        [{"pac_id": "pac1", "coordinate": 1000, "strand": "+"}],
+        tmp_path / "pacs.v1.metadata.tsv.gz",
+    )
+    write_tsv(
+        [{"sample_id": "S1", "condition": "ctrl"}],
+        tmp_path / "normalized_samples.tsv",
+    )
+
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+
+    report = output.read_text()
+    # Should show: <strong>GENE001</strong> (not with ID repeated)
+    assert "<strong>GENE001</strong>" in report
+    # Make sure it's not showing the (ID) part
+    assert "<strong>GENE001</strong> (GENE001)" not in report
+
+
+def test_gene_plot_title_html_escapes_name(tmp_path: Path) -> None:
+    """Gene names with HTML characters should be escaped."""
+    counts = tmp_path / "counts"
+    counts.mkdir()
+    rows = [
+        {
+            "gene_id": "GENE<001>",
+            "gene_name": "BR<CA1>",
+            "pac_id": "pac1",
+            "sample_id": "S1",
+            "count": 100,
+            "gene_total": 200,
+            "pau": 0.5,
+        }
+    ]
+    path = counts / "observed_pau.tsv.gz"
+    pd.DataFrame(rows).to_csv(path, sep="\t", index=False, compression=gzip_compression(path))
+
+    write_tsv(
+        [{"pac_id": "pac1", "coordinate": 1000, "strand": "+"}],
+        tmp_path / "pacs.v1.metadata.tsv.gz",
+    )
+    write_tsv(
+        [{"sample_id": "S1", "condition": "ctrl"}],
+        tmp_path / "normalized_samples.tsv",
+    )
+
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+
+    report = output.read_text()
+    # Should escape the < and > in both name and ID
+    assert "&lt;CA1&gt;" in report
+    assert "&lt;001&gt;" in report
+    # Make sure raw HTML tags are not present
+    assert "<CA1>" not in report
+    assert "<001>" not in report
+
+
+def test_motif_class_preference_tables_are_rendered(tmp_path: Path) -> None:
+    """Tables matching *.preference_class.tsv.gz are rendered under 'Motif-class preference'."""
+    motifs = tmp_path / "motifs"
+    motifs.mkdir()
+
+    # Create a preference_class table
+    rows = [
+        {"motif_id": "m1", "class": "C1", "preference": 0.5},
+        {"motif_id": "m2", "class": "C2", "preference": 0.7},
+    ]
+    path = motifs / "treatment_vs_control.preference_class.tsv.gz"
+    pd.DataFrame(rows).to_csv(path, sep="\t", index=False, compression=gzip_compression(path))
+
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+
+    report = output.read_text()
+    assert "<h2>Motif-class preference</h2>" in report
+    assert "<td>C1</td>" in report and "<td>C2</td>" in report

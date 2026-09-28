@@ -9,8 +9,9 @@ It keeps a few things strictly separate:
 
 - **Protocol calibration and discovery.** The library's 3′-end behavior is
   calibrated against annotated transcript ends before any PAC is called.
-- **Discovery and testing.** One condition-blind PAC atlas is built from all
-  samples, frozen, and only then counted and tested.
+- **Discovery and testing.** One PAC atlas is built from every sample's read
+  ends, without the treatment–control contrasts, then frozen, and only then
+  counted and tested.
 - **Comparisons.** Each treatment is compared only with the control it names
   in the sample sheet.
 
@@ -134,6 +135,28 @@ every parameter with its default, and
 List parameters (`bind_paths`, `excluded_contigs`, `model_covariates`) must be
 YAML lists; a command-line value is not split.
 
+### Mitochondrial reads are excluded by default
+
+`excluded_contigs` defaults to `[chrM, MT, chrMT]`, the usual names of the
+mitochondrial genome. Reads on these contigs are dropped by every step,
+including strandedness inference, so mitochondrial genes get no PACs, counts,
+or tests. There are two reasons:
+- Calibration weights read ends by read, and mitochondrial transcripts are
+  among the most abundant in most cells. Their packed, single-end genes would
+  dominate the offset kernel.
+- Their 3′ ends come from tRNA processing, not from the cleavage and
+  polyadenylation that PACusage models.
+
+A contig is excluded when its name in the alignment, or its
+`chromosome_aliases` target, is on the list. Two things to know:
+- **Other names aren't caught.** A mitochondrial contig named something else,
+  such as `M` or `NC_012920.1`, isn't excluded. Either alias it to `chrM`, or
+  list it.
+- **A supplied list replaces the default.** It doesn't add to it, so
+  `excluded_contigs: [chrY]` keeps mitochondrial reads, and
+  `excluded_contigs: []` keeps every contig. To add a contig, repeat the
+  mitochondrial names: `[chrM, MT, chrMT, chrY]`.
+
 ### Optional reference files
 
 - **`known_pacs`**: a BED6 file of known PACs, such as a PolyASite atlas. Each
@@ -232,22 +255,55 @@ results/
 
 `prepared_reference/`, `prepared_alignments/`, and `counts/per_sample/` also
 appear when `save_prepared_reference`, `save_prepared_alignments`, or
-`save_intermediates` is set.
+`save_intermediates` is set. The `motifs/` folder also holds class-level
+versions of the scores and preference tables (`motif_class_scores*.tsv`,
+`*.preference_class*.tsv.gz`).
 
 A PAC ID such as `PACv1.GRCh38.chr1.+.1234567` holds the atlas version,
 assembly, contig, strand, and the PAC's representative coordinate. Coordinates
 are zero-based and interbase, so a plus-strand PAC at 1234567 is the boundary
-after the 1,234,567th base. In the atlas BED, an exact-boundary PAC is
-`[coordinate, coordinate + 1)` and a proximal-tag PAC is its region
-`[region_start, region_end)`.
+after the 1,234,567th base.
 
-The `.pacs` tables are the main results: one row per tested PAC, with raw and
-fitted PAU per group, the change in PAU, `pac_fdr`, the bootstrap interval,
-and the event call. The `.events` tables keep only the PACs with an event:
-`gained`, `lost`, `increased_usage`, `decreased_usage`, `dominant_switch`, or
-`complexity_gain` / `complexity_loss`. `gained_candidate` and `lost_candidate`
-mark detection-supported changes without a stable p-value; they are not
-confirmed calls.
+### Columns
+
+Every table with one row per PAC starts with the same identity columns:
+
+| Column | Meaning |
+|---|---|
+| `pac_id` | The PAC's ID |
+| `gene_id`, `gene_name` | Its gene, and the gene's name from the annotation (comma-separated, in the same order, for a PAC assigned to several genes) |
+| `chrom`, `start`, `end` | Its interval in the BED convention (0-based start, exclusive end), the same interval as `atlas/pacs.v1.bed.gz`: `[coordinate, coordinate + 1)` for an exact-boundary PAC, and the resolution region for a proximal-tag PAC |
+| `strand` | `+` or `-` |
+| `locus` | The same interval, 1-based, such as `chr1:1234568-1234568`, to paste into IGV or the UCSC browser |
+
+Gene-level tables start with `gene_id` and `gene_name`.
+- **Where names come from:** a gene's name is its `gene_name` attribute, or
+  `Name` on a GFF3 gene record, or NCBI's `gene` attribute.
+- **Unnamed genes:** a gene without a name is named by its `gene_id`.
+- **Counts:** `pac_counts.tsv.gz` has the identity columns, then one column per
+  sample, with rows in genomic order.
+
+After the identity columns, the results tables run from the answer to the
+evidence. In `.pacs` and `.events` the groups are:
+1. **the comparison and the call:** condition, control, `event_type`;
+2. **the effect:** fitted PAU per group, the change in PAU, and its interval;
+3. **significance:** `pac_fdr`, `gene_fdr`, the p-values, and the test
+   statistics;
+4. **the PAC's annotation;**
+5. **the data behind the call:** supporting samples, gene totals, raw counts,
+   and observed PAU;
+6. **model diagnostics:** precision, stabilization, and the bootstrap.
+
+The `.pacs` tables are the main results: one row per tested PAC. The
+`.events` tables keep only the PACs with an event.
+
+| Event | When |
+|---|---|
+| `gained`, `lost` | A PAC is detected (reads in at least two samples) in only one group, and that group's usage passes the fitted-PAU thresholds. The group without it has at least `min_gene_total` reads at the gene. The gene and the PAC pass their FDRs. The PAC is neither ambiguous nor flagged for internal priming. |
+| `gained_candidate`, `lost_candidate` | The detection rules hold, but significance, stability, coverage, or confidence does not, or the comparison is exploratory. These are not confirmed calls. |
+| `increased_usage`, `decreased_usage` | The PAC is detected in both groups, passes both FDRs, and its usage changes by at least `min_abs_delta_pau`. |
+| `dominant_switch` | The most-used PAC differs between the groups, in a gene that passes `gene_fdr`. |
+| `complexity_gain`, `complexity_loss` | The number of PACs with fitted PAU of at least `event_min_treatment_pau` differs, in a gene that passes `gene_fdr`. |
 
 ## How it works
 
@@ -265,8 +321,9 @@ confirmed calls.
    evidence source and endpoint model for the whole run, and builds the
    offset kernel. Samples that calibrate differently stop the run: analyze
    different protocols separately.
-5. **Discover.** One condition-blind atlas is built from all samples, and a
-   PAC must be supported by replicates within at least one condition:
+5. **Discover.** Candidates are found in every sample's read ends pooled,
+   without the treatment–control contrasts. A PAC must be supported by
+   replicates within the condition that supports it:
    - **Exact-boundary** libraries cluster read ends directly, at nucleotide
      resolution.
    - **Proximal-tag** libraries find peaks of the kernel-matched signal, and
@@ -339,11 +396,15 @@ annotated ones calibration uses.
     in about 88% of cases (80-93%), so read them as approximate.
   - `bootstrap_status` says why an interval is missing.
 - **Motif preference.** A limma model on the same design tests whether a
-  treatment shifts usage toward PACs with a given poly(A)-signal class. It
-  uses genes with at least `min_gene_total` reads in every sample, and each
-  gene counts equally.
+  treatment shifts usage toward PACs with a given poly(A) signal. It uses
+  genes with at least `min_gene_total` reads in every sample, and each gene
+  counts equally.
+  - One table tests each primary hexamer (`.preference`).
+  - A second table tests each motif class (`.preference_class`): canonical,
+    the common `ATTAAA` variant, other variants, and no motif.
 - **k-mer enrichment** is exploratory. It is a Cochran-Mantel-Haenszel test
-  per k-mer, among gained and increased PACs, stratified by gene.
+  per k-mer, stratified by gene. It compares gained and increased PACs with
+  the other PACs of their genes that were tested in the same comparison.
 
 ## Reproducibility and -resume
 
@@ -372,6 +433,11 @@ finished steps from it.
 
 ## Troubleshooting
 
+- **Mitochondrial genes are missing from the results**: that's the
+  `excluded_contigs` default. See
+  [Mitochondrial reads are excluded by default](#mitochondrial-reads-are-excluded-by-default).
+  A mitochondrial contig under another name, such as `M`, is not excluded until
+  you alias or list it.
 - **`Invalid parameters: ...`**: the message names each bad parameter, what
   it must be, and what it means. Check `analysis.yaml` against `--help`.
 - **`strandedness is ambiguous`**: too few reads overlap unambiguous exons, or

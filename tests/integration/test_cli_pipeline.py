@@ -246,11 +246,11 @@ def test_merge_comparison_family_statistics(tmp_path: Path) -> None:
         family_b / "gene_precision.tsv.gz",
     )
     write_tsv(
-        [{"gene_id": "g1", "feature_id": "p1", "delta_pau": 0.25}],
+        [{"gene_id": "g1", "pac_id": "p1", "delta_pau": 0.25}],
         family_a / "fitted_pau.tsv.gz",
     )
     write_tsv(
-        [{"gene_id": "g2", "feature_id": "p2", "delta_pau": -0.30}],
+        [{"gene_id": "g2", "pac_id": "p2", "delta_pau": -0.30}],
         family_b / "fitted_pau.tsv.gz",
     )
     write_tsv(
@@ -280,7 +280,7 @@ def test_merge_comparison_family_statistics(tmp_path: Path) -> None:
         {"gene_id": "g1", "precision": "10", "family": "control_a"},
         {"gene_id": "g2", "precision": "20", "family": "control_b"},
     ]
-    assert [row["feature_id"] for row in read_tsv(output / "fitted_pau.tsv.gz")] == [
+    assert [row["pac_id"] for row in read_tsv(output / "fitted_pau.tsv.gz")] == [
         "p1",
         "p2",
     ]
@@ -315,6 +315,13 @@ def test_kmer_enrichment_tolerates_unavailable_model_statistics(
             },
         ],
         statistics / "treatment_vs_control.events.tsv.gz",
+    )
+    write_tsv(
+        [
+            {"pac_id": "pac-event"},
+            {"pac_id": "pac-background"},
+        ],
+        statistics / "treatment_vs_control.pacs.tsv.gz",
     )
     atlas = tmp_path / "atlas.tsv.gz"
     write_tsv(
@@ -354,6 +361,160 @@ def test_kmer_enrichment_tolerates_unavailable_model_statistics(
     assert main([*arguments, "--params", str(params), "--output-dir", str(skipped)]) == 0
     assert read_tsv(skipped / "kmer_enrichment_status.tsv") == [{"status": "not_requested"}]
     assert not list(skipped.glob("*.kmer_enrichment.tsv.gz"))
+
+
+def test_kmer_enrichment_restricts_background_to_tested_pacs(
+    tmp_path: Path, resolved_params
+) -> None:
+    """Background PACs not in the .pacs file should be excluded from k-mer analysis."""
+    statistics = tmp_path / "statistics"
+    statistics.mkdir()
+    write_tsv(
+        [
+            {
+                "pac_id": "pac-event",
+                "event_type": "gained",
+                "pvalue_pac": None,
+                "gene_fdr": None,
+                "delta_pau_ci_low": None,
+                "delta_pau_ci_high": None,
+                "bootstrap_successes": None,
+            },
+            {
+                "pac_id": "pac-background",
+                "event_type": None,
+                "pvalue_pac": None,
+                "gene_fdr": None,
+                "delta_pau_ci_low": None,
+                "delta_pau_ci_high": None,
+                "bootstrap_successes": None,
+            },
+        ],
+        statistics / "treatment_vs_control.events.tsv.gz",
+    )
+    write_tsv(
+        [
+            {"pac_id": "pac-event"},
+            {"pac_id": "pac-background"},
+        ],
+        statistics / "treatment_vs_control.pacs.tsv.gz",
+    )
+
+    atlas = tmp_path / "atlas.tsv.gz"
+    write_tsv(
+        [
+            {
+                "pac_id": "pac-event",
+                "gene_id": "gene-1",
+                "upstream_sequence": "AAAT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+            {
+                "pac_id": "pac-background",
+                "gene_id": "gene-1",
+                "upstream_sequence": "GGGT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+            {
+                "pac_id": "pac-untested",
+                "gene_id": "gene-1",
+                "upstream_sequence": "TTTT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+        ],
+        atlas,
+    )
+
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(params, motif_kmer_length=2)
+
+    def enrichment(atlas_path: Path, name: str) -> tuple[list[dict], list[dict]]:
+        output = tmp_path / name
+        arguments = ["kmer-enrichment", "--statistics", str(statistics), "--atlas", str(atlas_path)]
+        assert main([*arguments, "--params", str(params), "--output-dir", str(output)]) == 0
+        return (
+            read_tsv(output / "kmer_enrichment_status.tsv"),
+            read_tsv(output / "treatment_vs_control.kmer_enrichment.tsv.gz"),
+        )
+
+    status, rows = enrichment(atlas, "with-untested")
+    assert status == [{"comparison": "treatment_vs_control", "tested_kmers": "4"}]
+    # TT occurs only in the untested PAC.
+    assert "TT" not in {row["kmer"] for row in rows}
+    # The untested PAC changes nothing: the result equals a run without it.
+    tested_only = tmp_path / "atlas-tested.tsv.gz"
+    write_tsv([row for row in read_tsv(atlas) if row["pac_id"] != "pac-untested"], tested_only)
+    assert enrichment(tested_only, "tested-only") == (status, rows)
+
+
+def test_kmer_enrichment_raises_on_missing_pacs_file(
+    tmp_path: Path, resolved_params, capsys
+) -> None:
+    """Missing .pacs file should raise PacusageError."""
+    statistics = tmp_path / "statistics"
+    statistics.mkdir()
+    write_tsv(
+        [
+            {
+                "pac_id": "pac-event",
+                "event_type": "gained",
+                "pvalue_pac": None,
+                "gene_fdr": None,
+                "delta_pau_ci_low": None,
+                "delta_pau_ci_high": None,
+                "bootstrap_successes": None,
+            },
+            {
+                "pac_id": "pac-background",
+                "event_type": None,
+                "pvalue_pac": None,
+                "gene_fdr": None,
+                "delta_pau_ci_low": None,
+                "delta_pau_ci_high": None,
+                "bootstrap_successes": None,
+            },
+        ],
+        statistics / "treatment_vs_control.events.tsv.gz",
+    )
+
+    atlas = tmp_path / "atlas.tsv.gz"
+    write_tsv(
+        [
+            {
+                "pac_id": "pac-event",
+                "gene_id": "gene-1",
+                "upstream_sequence": "AAAT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+            {
+                "pac_id": "pac-background",
+                "gene_id": "gene-1",
+                "upstream_sequence": "GGGT",
+                "known_rescue_only": False,
+                "candidate_status": "",
+                "ambiguous_gene_assignment": False,
+            },
+        ],
+        atlas,
+    )
+
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(params, motif_kmer_length=2)
+    output = tmp_path / "kmer"
+    arguments = ["kmer-enrichment", "--statistics", str(statistics), "--atlas", str(atlas)]
+
+    with pytest.raises(SystemExit) as exc_info:
+        main([*arguments, "--params", str(params), "--output-dir", str(output)])
+    assert exc_info.value.code == 2
+    assert "treatment_vs_control.pacs.tsv.gz" in capsys.readouterr().err
 
 
 def test_merge_statistics_concatenates_precision_shards_with_model_status(tmp_path: Path) -> None:
@@ -566,3 +727,106 @@ def test_annotate_writes_an_atlas_for_one_candidate(tmp_path: Path, resolved_par
     assert main(_annotate_arguments(tmp_path, [candidate], "exact_boundary", resolved_params)) == 0
     metadata = read_tsv(tmp_path / "pacs.v1.metadata.tsv.gz")
     assert [row["pac_id"] for row in metadata] == ["PACv1.test.chr1.+.300"]
+
+
+def test_motif_scores_cli_writes_motif_and_class_levels(tmp_path: Path, resolved_params) -> None:
+    # Create a small atlas and PAU table
+    atlas = tmp_path / "atlas.tsv.gz"
+    write_tsv(
+        [
+            {
+                "pac_id": "p1",
+                "gene_id": "g1",
+                "primary_motif_class": "other_variant",
+                "known_rescue_only": False,
+                "primary_pas_motif_rna": "UAUAAA",
+            },
+            {
+                "pac_id": "p2",
+                "gene_id": "g1",
+                "primary_motif_class": "other_variant",
+                "known_rescue_only": False,
+                "primary_pas_motif_rna": "AGUAAA",
+            },
+        ],
+        atlas,
+    )
+    pau = tmp_path / "pau.tsv"
+    write_tsv(
+        [
+            {
+                "gene_id": "g1",
+                "pac_id": "p1",
+                "sample_id": "s1",
+                "count": 3,
+                "gene_total": 4,
+                "pau": 0.75,
+            },
+            {
+                "gene_id": "g1",
+                "pac_id": "p2",
+                "sample_id": "s1",
+                "count": 1,
+                "gene_total": 4,
+                "pau": 0.25,
+            },
+        ],
+        pau,
+    )
+    params = tmp_path / "resolved_params.yaml"
+    resolved_params(params, min_gene_total=1)
+
+    motif_output = tmp_path / "motif_scores.tsv"
+    class_output = tmp_path / "class_scores.tsv"
+
+    # Run with --class-output
+    assert (
+        main(
+            [
+                "motif-scores",
+                "--pau",
+                str(pau),
+                "--atlas",
+                str(atlas),
+                "--output",
+                str(motif_output),
+                "--class-output",
+                str(class_output),
+                "--params",
+                str(params),
+            ]
+        )
+        == 0
+    )
+
+    # Check motif-level output has hexamer columns
+    motif_scores = read_tsv(motif_output)
+    assert len(motif_scores) == 2  # Two hexamers
+    assert all("primary_pas_motif_rna" in row for row in motif_scores)
+    assert set(row["primary_pas_motif_rna"] for row in motif_scores) == {
+        "UAUAAA",
+        "AGUAAA",
+    }
+    expected_motif_keys = {
+        "sample_id",
+        "primary_motif_class",
+        "motif_usage",
+        "transformed_motif_usage",
+        "informative_genes",
+        "primary_pas_motif_rna",
+    }
+    assert all(set(row.keys()) >= expected_motif_keys for row in motif_scores)
+
+    # Check class-level output has exactly the five columns
+    class_scores = read_tsv(class_output)
+    assert len(class_scores) == 1  # One class pooling the hexamers
+    assert class_scores[0]["primary_motif_class"] == "other_variant"
+    expected_class_keys = {
+        "sample_id",
+        "primary_motif_class",
+        "motif_usage",
+        "transformed_motif_usage",
+        "informative_genes",
+    }
+    assert set(class_scores[0].keys()) == expected_class_keys
+    assert class_scores[0]["informative_genes"] == "1"

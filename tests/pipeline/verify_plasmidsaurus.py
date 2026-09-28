@@ -52,11 +52,16 @@ def main(root: Path) -> None:
     assert len(pacs) == len(atlas) == len(expected)
     assert (pacs["gene_id"] == pacs["gene_id_atlas"]).all(), "PACs assigned to the wrong gene"
     assert (pacs["resolution_nt"] == resolution_nt).all()
+    assert (pacs["gene_name"] == pacs["gene_id"].str.upper()).all(), "gene names are missing"
+    # A proximal-tag PAC's start and end are its resolution region.
+    assert ((atlas["end"] - atlas["start"]) == resolution_nt).all()
+    loci = atlas["chrom"] + ":" + (atlas["start"] + 1).astype(str) + "-" + atlas["end"].astype(str)
+    assert (atlas["locus"] == loci).all(), "locus is not the 1-based region"
     for row in atlas.itertuples():
         inside = expected[
             (expected["strand"] == row.strand)
-            & (expected["coordinate"] >= row.region_start)
-            & (expected["coordinate"] < row.region_end)
+            & (expected["coordinate"] >= row.start)
+            & (expected["coordinate"] < row.end)
         ]
         assert len(inside) == 1, f"{row.pac_id}: region holds {len(inside)} designed PACs"
 
@@ -65,12 +70,12 @@ def main(root: Path) -> None:
         root / "atlas" / "pacs.v1.bed.gz",
         sep="\t",
         header=None,
-        names=["contig", "start", "end", "pac_id", "total_count", "strand"],
+        names=["chrom", "start", "end", "pac_id", "score", "strand"],
     )
     regions = bed.merge(atlas, on="pac_id", suffixes=("", "_atlas"), validate="one_to_one")
     assert len(regions) == len(atlas)
-    assert (regions["start"] == regions["region_start"]).all()
-    assert (regions["end"] == regions["region_end"]).all()
+    assert (regions["start"] == regions["start_atlas"]).all()
+    assert (regions["end"] == regions["end_atlas"]).all()
 
     # PACs are 400 nt apart, beyond the kernel's reach, so every read is
     # assigned to its own PAC and raw counts equal the reads written.

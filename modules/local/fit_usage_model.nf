@@ -10,6 +10,8 @@ process FIT_USAGE_MODEL {
     path resolved_params
     path motif_scores
     path motif_sensitivity
+    path motif_class_scores
+    path motif_class_sensitivity
     path statistics_script
 
     output:
@@ -32,6 +34,8 @@ process FIT_USAGE_MODEL {
         --params '${resolved_params}' \
         --motif-scores '${motif_scores}' \
         --motif-sensitivity '${motif_sensitivity}' \
+        --motif-class-scores '${motif_class_scores}' \
+        --motif-class-sensitivity '${motif_class_sensitivity}' \
         --model-workers '${task.cpus}' \
         --bootstrap-batch-size '${params.statistics_bootstrap_batch_size}' \
         --output-dir '${outputDirectory}'

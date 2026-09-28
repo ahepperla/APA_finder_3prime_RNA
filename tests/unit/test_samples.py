@@ -88,3 +88,63 @@ def test_warn_policy_marks_low_replication(tmp_path: Path) -> None:
     params["insufficient_replicates_policy"] = "warn"
     _, checks = read_and_validate_samples(sheet, params)
     assert all(row["exploratory_insufficient_replicates"] == "true" for row in checks)
+
+
+def test_reserved_sample_id_gene_id_is_rejected(tmp_path: Path) -> None:
+    """The sample ID 'gene_id' is reserved and should be rejected."""
+    touch_alignments(tmp_path, ["c1.bam", "c2.bam", "t1.bam", "t2.bam"])
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "sample_id\talignment\tcondition\tcontrol\n"
+        "gene_id\tc1.bam\tControl\t\n"
+        "c2\tc2.bam\tControl\t\n"
+        "t1\tt1.bam\tTreatment\tControl\n"
+        "t2\tt2.bam\tTreatment\tControl\n"
+    )
+    with pytest.raises(PacusageError, match="reserved"):
+        read_and_validate_samples(sheet, parameters(tmp_path))
+
+
+def test_reserved_sample_id_gene_name_is_rejected(tmp_path: Path) -> None:
+    """The sample ID 'gene_name' is reserved and should be rejected."""
+    touch_alignments(tmp_path, ["c1.bam", "c2.bam", "t1.bam", "t2.bam"])
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "sample_id\talignment\tcondition\tcontrol\n"
+        "gene_name\tc1.bam\tControl\t\n"
+        "c2\tc2.bam\tControl\t\n"
+        "t1\tt1.bam\tTreatment\tControl\n"
+        "t2\tt2.bam\tTreatment\tControl\n"
+    )
+    with pytest.raises(PacusageError, match="reserved"):
+        read_and_validate_samples(sheet, parameters(tmp_path))
+
+
+def test_reserved_sample_id_pac_id_is_rejected(tmp_path: Path) -> None:
+    """The sample ID 'pac_id' is reserved and should be rejected."""
+    touch_alignments(tmp_path, ["c1.bam", "c2.bam", "t1.bam", "t2.bam"])
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "sample_id\talignment\tcondition\tcontrol\n"
+        "pac_id\tc1.bam\tControl\t\n"
+        "c2\tc2.bam\tControl\t\n"
+        "t1\tt1.bam\tTreatment\tControl\n"
+        "t2\tt2.bam\tTreatment\tControl\n"
+    )
+    with pytest.raises(PacusageError, match="reserved"):
+        read_and_validate_samples(sheet, parameters(tmp_path))
+
+
+def test_normal_sample_id_still_passes(tmp_path: Path) -> None:
+    """Normal sample IDs should still be accepted."""
+    touch_alignments(tmp_path, ["c1.bam", "c2.bam", "t1.bam", "t2.bam"])
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "sample_id\talignment\tcondition\tcontrol\n"
+        "sample_1\tc1.bam\tControl\t\n"
+        "c2\tc2.bam\tControl\t\n"
+        "t1\tt1.bam\tTreatment\tControl\n"
+        "t2\tt2.bam\tTreatment\tControl\n"
+    )
+    samples, _ = read_and_validate_samples(sheet, parameters(tmp_path))
+    assert samples[0].sample_id == "sample_1"

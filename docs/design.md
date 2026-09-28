@@ -198,7 +198,7 @@ min_mapq: 20
 require_unique: true
 require_proper_pair: true
 exclude_duplicates: true
-excluded_contigs: []
+excluded_contigs: [chrM, MT, chrMT]   # mitochondrial contigs, by default
 
 min_replicates_per_condition: 2
 insufficient_replicates_policy: error
@@ -477,13 +477,9 @@ For PE:
 
 #### Automatic Strandedness Inference
 
-Construct diagnostic intervals from annotated exonic sequence that:
-
-- belongs unambiguously to one gene;
-- has no opposite-strand overlap;
-- prioritizes terminal exons.
-
-Reservoir-sample eligible alignments so coordinate order does not bias the
+Use annotated exonic sequence that belongs unambiguously to one gene, with no
+opposite-strand overlap, on contigs that are not excluded. Reservoir-sample
+eligible alignments so coordinate order does not bias the
 result. Report:
 
 ```text
@@ -499,10 +495,12 @@ Default decision:
 
 - forward fraction at least 0.80: `forward`;
 - reverse fraction at least 0.80: `reverse`;
-- otherwise: fail as ambiguous unless the user supplied a value.
+- otherwise: fail as ambiguous unless the user or the library profile supplied
+  a value.
 
-Warn prominently when samples disagree with one another or with their selected
-library profile.
+Stop the run when a sample's inferred strandedness conflicts with the value
+its profile or the user requested. Samples may differ from one another; each
+is resolved on its own evidence.
 
 ### 4. Extract 3-Prime Evidence
 
@@ -565,8 +563,11 @@ that scan.
 
 ### 5. Build the PAC Atlas
 
-Build one condition-blind atlas from all samples. Do not use CPM, condition
-labels, or PAS motifs during primary discovery.
+Build one atlas from all samples. Find candidates in every sample's read ends
+pooled, without CPM, the treatment–control contrasts, effect sizes, or PAS
+motifs. Condition labels are used only to require replicate support within
+the condition that supports a candidate, and in the per-condition readthrough
+rule below.
 
 Use separate discovery strategies:
 
@@ -585,14 +586,14 @@ For the compatible samples in the run:
    calibrated range. Smooth it once with normalized triangular weights
    `[1, 2, 3, 2, 1]`, normalize it to sum to one, and average sample kernels
    with equal sample weight.
-3. Bin observed endpoints and the pooled calibration kernel at
-   `proximal_bin_size` resolution. For every implied regional PAC coordinate
-   \(x\), calculate the matched score
-   \(L_s(x)=\sum_e \min(y_{es},3)K_s(e-x)\), where \(e\) is an observed
-   endpoint, \(y_{es}\) is its sample count, and \(K_s\) is the sample kernel.
-4. Identify local maxima of the summed matched score. Rank maxima by supporting
-   sample count, summed capped support, matched score, raw support, and genomic
-   coordinate, in that order.
+3. Bin observed endpoints and the pooled calibration kernel at the smaller of
+   `proximal_bin_size` and the minimum resolvable separation. For every
+   implied regional PAC coordinate \(x\), calculate the matched score
+   \(L(x)=\sum_{e,s} \min(y_{es},3)K(e-x)\), where \(e\) is an observed
+   endpoint, \(y_{es}\) is its count in sample \(s\), and \(K\) is the pooled
+   kernel.
+4. Identify local maxima of the matched score. Rank maxima by matched score,
+   then genomic coordinate.
 5. Apply the same total-count, per-sample-count, and supporting-sample
    requirements used for exact-boundary candidates. The supporting-sample
    threshold must be met by replicates within at least one condition; samples
@@ -613,8 +614,9 @@ O(\delta)=\sum_d \min(K(d),K(d-\delta))
 The minimum resolvable separation is the smallest positive \(\delta\) for which
 `O(delta) <= proximal_kernel_overlap_threshold`. Merge maxima closer than this
 distance into one PAC resolution group. Store the strongest maximum as the
-representative coordinate, retain the merged maxima, and report
-`region_start`, `region_end`, and `resolution_nt`. Never report unresolved
+representative coordinate, retain the merged maxima, and report the
+resolution region, of width `resolution_nt` around the representative, as the
+PAC's `start` and `end`. Never report unresolved
 maxima as independently quantified PACs or interpret the representative as a
 nucleotide-resolution cleavage site.
 
@@ -683,10 +685,14 @@ primary identifiers.
 
 Also store:
 
+- `chrom`, `start`, `end`: the PAC's interval in the BED convention, the same
+  as its atlas BED record: `[coordinate, coordinate + 1)` for an exact PAC and
+  the resolution region for a proximal-tag PAC; and `locus`, the same interval
+  1-based for genome browsers;
 - `endpoint_model`;
 - `coordinate_precision`: `exact` or `estimated`;
-- assay-resolution region and width;
-- PAC resolution-group identifier and merged candidate coordinates;
+- assay-resolution width;
+- merged candidate coordinates;
 - calibration profile and version;
 - resolved evidence source;
 - primary evidence type, such as exact boundary, endpoint peak, coverage edge,
@@ -727,6 +733,11 @@ Assign genes in this order:
 Retain ambiguous assignments in the atlas but exclude them from primary
 within-gene testing.
 
+Name each gene once: its gene record's name (`gene_name`, a GFF3 gene's
+`Name`, or NCBI's `gene`), else the first name on its other records, else its
+`gene_id`. A PAC assigned to several genes lists their names in the order of
+their IDs. Every published table carries `gene_name` next to `gene_id`.
+
 ### 7. Quantify the Frozen Atlas
 
 Recount every sample after the atlas is frozen.
@@ -734,7 +745,9 @@ Recount every sample after the atlas is frozen.
 For exact-boundary profiles, define nonoverlapping PAC territories by:
 
 - capping assignment distance at `pac_cluster_radius`;
-- splitting nearby territories at the midpoint between representatives;
+- assigning each end observation to the nearest representative, which splits
+  nearby territories at their midpoint, with a tie going to the lower
+  coordinate;
 - assigning each end observation to at most one PAC.
 
 For proximal-tag profiles, construct assignment regions from the calibrated
@@ -960,9 +973,11 @@ Classify PACs using both statistical evidence and detection evidence:
   PAU;
 - **decreased usage:** detected in both groups with significant negative delta
   PAU;
-- **dominant switch:** the highest-usage PAC differs between treatment and
-  control;
-- **complexity gain or loss:** the number of reproducibly detected PACs changes.
+- **dominant switch:** in a gene that passes the contrast-specific gene test,
+  the highest fitted-usage PAC differs between treatment and control;
+- **complexity gain or loss:** in a gene that passes the contrast-specific gene
+  test, the number of tested PACs with fitted PAU at least
+  `event_min_treatment_pau` differs between the groups.
 
 When detection and effect-size requirements for `gained` or `lost` pass but a
 stable PAC-level p-value cannot be obtained, report `gained_candidate` or
@@ -972,7 +987,8 @@ confirmed and must never be merged with significant gained/lost counts.
 Default gained-PAC requirements:
 
 - the parent gene passes the relevant contrast-specific gene test;
-- control samples meet the gene-coverage threshold;
+- the control samples together have at least `min_gene_total` reads at the
+  gene (for lost calls, the treatment samples);
 - fitted control PAU is at most `event_max_control_pau`;
 - fitted treatment PAU is at least `event_min_treatment_pau`;
 - treatment support meets `event_min_supporting_samples`;
@@ -984,35 +1000,25 @@ Default gained-PAC requirements:
 Use the label `gained` or `not detected in control`, not `de novo`, unless
 independent evidence establishes biological absence in the control.
 
-The event table should contain:
+The `.pacs` table, and its `.events` subset, start with the identity block of
+every PAC-level table, then run from the answer to the evidence:
 
 ```text
-gene_id
-condition
-control_condition
-event_type
-pac_id
-site_class
-known_pac
-known_rescue_only
-control_supporting_samples
-treatment_supporting_samples
-control_gene_total
-treatment_gene_total
-fitted_control_pau
-fitted_treatment_pau
-delta_pau
-gene_fdr
-pac_fdr
-confidence
-internal_priming_flag
-model_status
-zero_boundary_unstable
-delta_pau_ci_low
-delta_pau_ci_high
-bootstrap_successes
-dominant_pac_control
-dominant_pac_treatment
+pac_id  gene_id  gene_name  chrom  start  end  strand  locus
+condition  control_condition  event_type
+fitted_control_pau  fitted_treatment_pau  delta_pau  delta_pau_ci_low  delta_pau_ci_high
+pac_fdr  gene_fdr  pvalue_pac  pvalue_gene  lr  df
+assignment_class  confidence  internal_priming_flag  known_pac  known_rescue_only
+primary_pas_motif  primary_pas_motif_rna  primary_motif_class
+control_/treatment_supporting_samples  control_/treatment_gene_total
+raw_control_/treatment_counts  observed_control_/treatment_pau
+effect_exceeds_threshold  dominant_pac_control/treatment
+control_/treatment_detected_complexity
+model_status  precision  alpha_control  alpha_treatment
+stabilization_successes  stabilization_delta_pau_spread
+zero_boundary_unstable  zero_boundary_reason
+bootstrap_status  bootstrap_successes  bootstrap_perturbed
+exploratory_insufficient_replicates
 ```
 
 #### Motif Preference
@@ -1043,13 +1049,14 @@ For every treatment-control comparison:
    sample.
 5. Transform each sample-level score with
    `asin(sqrt(score))`, which accepts exact zero and one without pseudocounts.
-6. Fit a `limma` linear model for each motif class using the same condition and
-   covariate design as the main model: one fit per comparison, on the
-   family's samples, with the motif classes as rows. A class is tested in a
+6. Fit a `limma` linear model using the same condition and covariate design as
+   the main model: one fit per comparison, on the family's samples. Fit it
+   twice, once with each primary hexamer as a row (`.preference`) and once
+   with each motif class as a row (`.preference_class`). A row is tested in a
    comparison only when every sample of that comparison has at least
    `motif_preference_min_genes` informative genes for it.
-7. Test the treatment-control coefficient and adjust across motif classes
-   within the comparison using BH.
+7. Test the treatment-control coefficient and adjust across the rows of each
+   table within the comparison using BH.
 
 This tests whether treatment shifts transcript usage toward PACs carrying a
 particular motif class without allowing highly expressed genes to dominate.
@@ -1061,8 +1068,8 @@ primary significance claim, with `known_rescue_only` sites included as a
 sensitivity analysis.
 
 As a secondary exploratory analysis, test presence or absence of every upstream
-k-mer among gained or increased-usage PACs against testable background PACs
-from the same genes. Use a Cochran-Mantel-Haenszel test stratified by gene,
+k-mer among gained or increased-usage PACs against the other PACs of the same
+genes that were tested in that comparison. Use a Cochran-Mantel-Haenszel test stratified by gene,
 retaining only genes containing both event and background PACs and within-gene
 variation for that k-mer. Report the common odds ratio, confidence interval,
 raw PAC counts, informative-gene count, and BH-adjusted p-value. Label this
@@ -1145,9 +1152,16 @@ results/
     gene_precision.tsv.gz
   motifs/
     pac_motifs.tsv.gz
+    motif_scores.tsv
+    motif_scores_known_rescue_sensitivity.tsv
+    motif_class_scores.tsv
+    motif_class_scores_known_rescue_sensitivity.tsv
     CONDITION_vs_CONTROL.preference.tsv.gz
     CONDITION_vs_CONTROL.preference_known_rescue_sensitivity.tsv.gz
+    CONDITION_vs_CONTROL.preference_class.tsv.gz
+    CONDITION_vs_CONTROL.preference_class_known_rescue_sensitivity.tsv.gz
     CONDITION_vs_CONTROL.kmer_enrichment.tsv.gz
+    kmer_enrichment_status.tsv
   tracks/
     SAMPLE.plus.3prime_evidence.bedGraph.gz
     SAMPLE.minus.3prime_evidence.bedGraph.gz

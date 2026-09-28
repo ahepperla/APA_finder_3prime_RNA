@@ -447,7 +447,7 @@ def _top_genes_section(root: Path) -> str:
 
 
 def _gene_plot_section(root: Path) -> str:
-    pau_columns = {"gene_id", "pac_id", "sample_id", "count", "pau"}
+    pau_columns = {"gene_id", "gene_name", "pac_id", "sample_id", "count", "pau"}
     pau = _read_table(
         _locate(root, "observed_pau.tsv.gz"),
         usecols=lambda name: name in pau_columns,
@@ -474,6 +474,7 @@ def _gene_plot_section(root: Path) -> str:
 
 
 def _gene_svg(gene_id: str, values: pd.DataFrame) -> str:
+    gene_name = str(values["gene_name"].iloc[0])
     summary = (
         values.groupby(["condition", "pac_id", "coordinate"], as_index=False)["pau"]
         .mean()
@@ -501,11 +502,18 @@ def _gene_svg(gene_id: str, values: pd.DataFrame) -> str:
                 f"<title>{html.escape(condition)}: {usage:.3f}</title></rect>"
             )
     legend = " | ".join(conditions)
+    # A gene the annotation leaves unnamed carries its ID as its name.
+    if gene_name == gene_id:
+        title = f"<strong>{html.escape(gene_id)}</strong>"
+        label = gene_id
+    else:
+        title = f"<strong>{html.escape(gene_name)}</strong> ({html.escape(gene_id)})"
+        label = f"{gene_name} ({gene_id})"
     return (
-        f"<div><strong>{html.escape(str(gene_id))}</strong>"
+        f"<div>{title}"
         f"<span class='empty'> {html.escape(legend)}</span>"
         f"<svg viewBox='0 0 {width} {height}' role='img' "
-        f"aria-label='PAC usage for {html.escape(str(gene_id))}' "
+        f"aria-label='PAC usage for {html.escape(label)}' "
         "style='display:block;max-width:620px;background:white;border:1px solid #d8dee2'>"
         + "".join(bars)
         + "</svg></div>"
@@ -534,7 +542,16 @@ def _statistics_sections(root: Path) -> str:
 
 
 def _motif_sections(root: Path) -> str:
-    return "\n".join(
-        _table_section(path.name.replace(".tsv.gz", "").replace("_", " "), path)
-        for path in sorted(root.rglob("*.preference.tsv.gz"))
-    )
+    def tables(pattern: str) -> list[str]:
+        return [
+            _table_section(path.name.replace(".tsv.gz", "").replace("_", " "), path)
+            for path in sorted(root.rglob(pattern))
+        ]
+
+    sections = tables("*.preference.tsv.gz")
+    class_tables = tables("*.preference_class.tsv.gz")
+    if class_tables:
+        sections.append(
+            "<section><h2>Motif-class preference</h2>" + "\n".join(class_tables) + "</section>"
+        )
+    return "\n".join(sections)

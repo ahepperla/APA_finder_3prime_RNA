@@ -37,7 +37,7 @@
         "gtf": {
           "type": "string",
           "format": "file-path",
-          "description": "GTF or GFF3 gene annotation."
+          "description": "GTF or GFF3 gene annotation. A gene's name comes from gene_name, from Name on gene records, or from gene; a gene without one is named by its gene_id."
         },
         "known_pacs": {
           "type": [
@@ -141,8 +141,8 @@
           "items": {
             "type": "string"
           },
-          "default": [],
-          "description": "Contigs to ignore, by alignment name or alias (for example chrM)."
+          "default": ["chrM", "MT", "chrMT"],
+          "description": "Contigs ignored by every step, by alignment name or chromosome_aliases target. The default removes mitochondrial contigs under their common names; a supplied list replaces the default, and [] keeps every contig."
         }
       }
     },

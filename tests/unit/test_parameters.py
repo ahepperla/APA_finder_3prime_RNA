@@ -185,3 +185,18 @@ def test_typed_and_string_parameters_are_unchanged(tmp_path: Path, schema) -> No
     ]
     unknown = {"not_a_parameter": "30"}
     assert coerce_command_line_types(unknown, schema) == unknown
+
+
+def test_excluded_contigs_default_includes_mitochondrial_contigs(resolved_params) -> None:
+    params = resolved_params()
+    assert params["excluded_contigs"] == ["chrM", "MT", "chrMT"]
+
+
+def test_excluded_contigs_empty_list_overrides_default(resolved_params) -> None:
+    params = resolved_params(excluded_contigs=[])
+    assert params["excluded_contigs"] == []
+
+
+def test_excluded_contigs_custom_list_replaces_default(resolved_params) -> None:
+    params = resolved_params(excluded_contigs=["chrY"])
+    assert params["excluded_contigs"] == ["chrY"]

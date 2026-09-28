@@ -560,3 +560,27 @@ def test_excluded_contigs_match_raw_or_aliased_names(tmp_path, excluded) -> None
     evidence = scan.evidence["read_3p"]
     assert [(item.contig, item.coordinate) for item in evidence.observations()] == [("chr2", 130)]
     assert evidence.filtering["excluded_contig"] == 1
+
+
+def test_scan_excludes_mitochondria_by_default(tmp_path, resolved_params) -> None:
+    # The schema's default list; reads on chrM, on MT (aliased to chrM), chr1, and chr2.
+    reference = write_reference(tmp_path / "genome.fa", CONTIGS)
+    records = [
+        aligned_segment("on_chrm", 0, CHRM, 100, "30M"),
+        aligned_segment("on_mt", 0, MT, 100, "30M"),
+        aligned_segment("on_chr1", 0, CHR1, 100, "30M"),
+        aligned_segment("on_chr2", 0, CHR2, 100, "30M"),
+    ]
+    bam = write_alignment(tmp_path / "reads.bam", CONTIGS, records)
+    scan = scan_alignment(
+        "S", bam, reference, "SE", "forward", ["read_3p"], False,
+        excluded_contigs=resolved_params()["excluded_contigs"],
+        contig_aliases={"MT": "chrM"},
+    )
+    evidence = scan.evidence["read_3p"]
+    observations = list(evidence.observations())
+    # Should only have chr1 and chr2 reads
+    contigs = [item.contig for item in observations]
+    assert sorted(contigs) == ["chr1", "chr2"]
+    # Both mitochondrial reads should be excluded
+    assert evidence.filtering["excluded_contig"] == 2

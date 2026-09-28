@@ -12,8 +12,48 @@ import pysam
 
 from .errors import PacusageError
 from .evidence import reverse_complement
-from .models import PacCandidate
-from .reference import GenomicFeature
+from .models import IDENTITY_COLUMNS, PacCandidate
+from .reference import GenomicFeature, gene_name_map
+
+ATLAS_COLUMNS = [
+    *IDENTITY_COLUMNS,
+    "coordinate",
+    "coordinate_precision",
+    "resolution_nt",
+    "merged_candidate_coordinates",
+    "assignment_class",
+    "ambiguous_gene_assignment",
+    "proximal_distal_rank",
+    "proximal_distal_label",
+    "total_count",
+    "supporting_samples",
+    "total_supporting_samples",
+    "supporting_condition",
+    "candidate_status",
+    "confidence",
+    "known_pac",
+    "known_pac_coordinates",
+    "known_rescue_only",
+    "internal_priming_flag",
+    "downstream_a_fraction",
+    "downstream_longest_a_run",
+    "primary_pas_motif",
+    "primary_pas_motif_rna",
+    "primary_motif_class",
+    "primary_motif_position",
+    "primary_motif_in_core",
+    "all_pas_motifs",
+    "upstream_sequence",
+    "downstream_sequence",
+    "fraction_within_2nt",
+    "width_90",
+    "local_strand_enrichment",
+    "poly_a_clip_fraction",
+    "endpoint_model",
+    "resolved_evidence_source",
+    "primary_evidence_type",
+    "calibration_profile",
+]
 
 DEFAULT_MOTIFS = (
     ("AATAAA", "canonical", 1),
@@ -102,6 +142,7 @@ def annotate_candidates(
 ) -> list[dict[str, object]]:
     known_sites = known_sites or KnownSiteIndex()
     feature_index = FeatureIndex(features)
+    names = gene_name_map(features)
     fasta = pysam.FastaFile(str(fasta_path))
     rows: list[dict[str, object]] = []
     try:
@@ -117,7 +158,8 @@ def annotate_candidates(
             )
             assignment_class = assignments[0][0] if assignments else "intergenic"
             gene_ids = sorted({item[1].gene_id for item in assignments})
-            gene_names = sorted({item[1].gene_name for item in assignments if item[1].gene_name})
+            # Names line up with the IDs, one per gene.
+            gene_names = [names.get(gene_id, gene_id) for gene_id in gene_ids]
             ambiguous = len(gene_ids) > 1
             upstream = oriented_interval_sequence(
                 fasta,
@@ -160,10 +202,14 @@ def annotate_candidates(
             pac_id = (
                 f"PACv1.{assembly}.{candidate.contig}.{candidate.strand}.{candidate.coordinate}"
             )
+            start, end = browser_interval(candidate, endpoint_model)
             rows.append(
                 {
                     "pac_id": pac_id,
-                    "contig": candidate.contig,
+                    "chrom": candidate.contig,
+                    "start": start,
+                    "end": end,
+                    "locus": f"{candidate.contig}:{start + 1}-{end}",
                     "coordinate": candidate.coordinate,
                     "strand": candidate.strand,
                     "endpoint_model": endpoint_model,
@@ -174,7 +220,6 @@ def annotate_candidates(
                     "primary_evidence_type": (
                         "exact_boundary" if endpoint_model == "exact_boundary" else "endpoint_peak"
                     ),
-                    "resolution_group": pac_id,
                     "merged_candidate_coordinates": ",".join(
                         map(str, candidate.member_coordinates)
                     ),
@@ -186,16 +231,6 @@ def annotate_candidates(
                     "width_90": candidate.width_90,
                     "local_strand_enrichment": round(candidate.local_enrichment, 6),
                     "poly_a_clip_fraction": round(candidate.poly_a_clip_fraction, 6),
-                    "region_start": (
-                        candidate.region_start
-                        if candidate.region_start is not None
-                        else candidate.coordinate
-                    ),
-                    "region_end": (
-                        candidate.region_end
-                        if candidate.region_end is not None
-                        else candidate.coordinate + 1
-                    ),
                     "resolution_nt": candidate.resolution_nt,
                     "calibration_profile": "PACusage-0.1",
                     "candidate_status": candidate.status,
@@ -206,6 +241,9 @@ def annotate_candidates(
                     "gene_name": ",".join(gene_names),
                     "assignment_class": assignment_class,
                     "ambiguous_gene_assignment": ambiguous,
+                    # Ranked below for PACs of a single gene; blank otherwise.
+                    "proximal_distal_rank": "",
+                    "proximal_distal_label": "",
                     "upstream_sequence": upstream,
                     "downstream_sequence": downstream,
                     "all_pas_motifs": ";".join(
@@ -231,6 +269,14 @@ def annotate_candidates(
         fasta.close()
     add_proximal_distal_ranks(rows)
     return rows
+
+
+def browser_interval(candidate: PacCandidate, endpoint_model: str) -> tuple[int, int]:
+    """The PAC's BED interval: the boundary base for an exact PAC, the
+    resolution region for a proximal-tag PAC."""
+    if endpoint_model == "proximal_tag":
+        return int(candidate.region_start), int(candidate.region_end)
+    return candidate.coordinate, candidate.coordinate + 1
 
 
 class FeatureIndex:

@@ -8,6 +8,10 @@ outdir: results
 # The protocol. generic_3prime calibrates every compatible evidence source.
 library_profile: generic_3prime
 
+# Mitochondrial contigs are excluded by default. A list here replaces the
+# default, so repeat these names to keep excluding them; [] keeps every contig.
+# excluded_contigs: [chrM, MT, chrMT]
+
 # Slurm, used with -profile slurm.
 # slurm_account: my_lab
 # slurm_partition: general

@@ -225,7 +225,7 @@ scale_runs <- tryCatch(
 scale_table <- function(name) {
   if (inherits(scale_runs, "error")) stop("Scaling runs failed: ", conditionMessage(scale_runs))
   pacs <- read_result(scale_runs[[name]]$run$final_directory, "T1_vs_C.pacs.tsv.gz")
-  pacs[order(pacs$feature_id), , drop = FALSE]
+  pacs[order(pacs$pac_id), , drop = FALSE]
 }
 
 test_case("S5", "scaling a gene's counts leaves its usage and calls unchanged", {

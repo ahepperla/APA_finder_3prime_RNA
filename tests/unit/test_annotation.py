@@ -12,7 +12,12 @@ from pacusage.annotation import (
     load_known_pacs,
 )
 from pacusage.models import PacCandidate
-from pacusage.reference import GenomicFeature, annotation_contigs, parse_annotation
+from pacusage.reference import (
+    GenomicFeature,
+    annotation_contigs,
+    gene_name_map,
+    parse_annotation,
+)
 
 
 def test_motif_position_and_minus_strand_annotation(tmp_path: Path) -> None:
@@ -50,10 +55,14 @@ def test_motif_position_and_minus_strand_annotation(tmp_path: Path) -> None:
         0.6,
     )
     assert rows[0]["gene_id"] == "plus"
+    assert rows[0]["gene_name"] == "Plus"
+    assert rows[1]["gene_name"] == "Minus"
     assert rows[0]["primary_pas_motif"] == "AATAAA"
     assert rows[0]["primary_pas_motif_rna"] == "AAUAAA"
-    assert rows[0]["region_start"] == 101
-    assert rows[0]["region_end"] == 102
+    # An exact PAC's browser interval is its boundary base, in BED and 1-based.
+    assert (rows[0]["chrom"], rows[0]["start"], rows[0]["end"]) == ("chr1", 101, 102)
+    assert rows[0]["locus"] == "chr1:102-102"
+    assert (rows[1]["start"], rows[1]["end"], rows[1]["locus"]) == (200, 201, "chr1:201-201")
     assert rows[0]["resolution_nt"] == 0
     assert rows[0]["total_supporting_samples"] == 0
     assert rows[0]["supporting_condition"] == ""
@@ -78,6 +87,67 @@ def test_gff3_parent_relationships_are_resolved(tmp_path: Path) -> None:
     exon = next(feature for feature in features if feature.feature_type == "exon")
     assert exon.gene_id == "g1"
     assert exon.transcript_id == "t1"
+
+
+def test_gene_name_map_prefers_gene_records_and_falls_back_to_ids() -> None:
+    features = [
+        GenomicFeature("chr1", 0, 100, "+", "exon", "g1", "t1", "ExonLineName"),
+        GenomicFeature("chr1", 0, 100, "+", "gene", "g1", "", "Gene1"),
+        GenomicFeature("chr1", 200, 300, "+", "exon", "g2", "t2", "Gene2"),
+        GenomicFeature("chr1", 400, 500, "+", "gene", "g3", "", ""),
+        GenomicFeature("chr1", 400, 500, "+", "exon", "g3", "t3", ""),
+    ]
+    assert gene_name_map(features) == {"g1": "Gene1", "g2": "Gene2", "g3": "g3"}
+
+
+def test_gff3_exon_and_transcript_names_are_not_gene_names(tmp_path: Path) -> None:
+    gff = tmp_path / "genes.gff3"
+    gff.write_text(
+        "##gff-version 3\n"
+        "chr1\ttest\tgene\t1\t100\t.\t+\t.\tID=g1;Name=Gene1\n"
+        "chr1\ttest\tmRNA\t1\t100\t.\t+\t.\tID=t1;Parent=g1;Name=Gene1-201\n"
+        "chr1\ttest\texon\t1\t100\t.\t+\t.\tParent=t1;Name=exon-1\n"
+    )
+    features = parse_annotation(gff)
+    names = {feature.feature_type: feature.gene_name for feature in features}
+    assert names == {"gene": "Gene1", "mrna": "", "exon": ""}
+    assert gene_name_map(features) == {"g1": "Gene1"}
+
+
+def test_atlas_gene_names_line_up_with_gene_ids(tmp_path: Path) -> None:
+    fasta = tmp_path / "genome.fa"
+    fasta.write_text(">chr1\n" + "C" * 400 + "\n")
+    pysam.faidx(str(fasta))
+    gtf = tmp_path / "genes.gtf"
+    # Three genes end at the PAC. Their names sort in a different order than
+    # their IDs, and g_c has no name.
+    gtf.write_text(
+        'chr1\ttest\tgene\t51\t201\t.\t+\t.\tgene_id "g_a"; gene_name "Zeta";\n'
+        'chr1\ttest\texon\t51\t201\t.\t+\t.\tgene_id "g_a"; transcript_id "a1";\n'
+        'chr1\ttest\tgene\t101\t201\t.\t+\t.\tgene_id "g_b"; gene_name "Alpha";\n'
+        'chr1\ttest\texon\t101\t201\t.\t+\t.\tgene_id "g_b"; transcript_id "b1";\n'
+        'chr1\ttest\tgene\t101\t201\t.\t+\t.\tgene_id "g_c";\n'
+        'chr1\ttest\texon\t101\t201\t.\t+\t.\tgene_id "g_c"; transcript_id "c1";\n'
+    )
+    rows = annotate_candidates(
+        [PacCandidate("chr1", "+", 201, 10, 2, 6, (201,))],
+        parse_annotation(gtf),
+        fasta,
+        "test",
+        "exact_boundary",
+        "read_3p",
+        100,
+        50,
+        5,
+        35,
+        10,
+        20,
+        6,
+        0.6,
+    )
+    assert rows[0]["gene_id"] == "g_a,g_b,g_c"
+    assert rows[0]["gene_name"] == "Zeta,Alpha,g_c"
+    assert rows[0]["ambiguous_gene_assignment"] is True
 
 
 def test_annotation_contigs_scans_without_materializing_features(tmp_path: Path) -> None:

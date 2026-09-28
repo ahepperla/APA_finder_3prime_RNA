@@ -199,3 +199,36 @@ def test_strandedness_inference_applies_contig_aliases(tmp_path) -> None:
     aliased = infer_strandedness(bam, reference, exons, contig_aliases={"1": "chr1"}, **settings)
     assert (aliased["informative_fragments"], aliased["inferred_strandedness"]) == (20, "forward")
     assert infer_strandedness(bam, reference, exons, **settings)["informative_fragments"] == 0
+
+
+def test_strandedness_inference_skips_excluded_contigs_and_their_aliases(tmp_path) -> None:
+    # Ten chr1 reads match their exon's strand. Twenty mitochondrial reads, on
+    # "M" (aliased to chrM) and on "MT", oppose theirs, so counting them turns
+    # a forward call into an ambiguous one.
+    contigs = [("chr1", 5000), ("M", 5000), ("MT", 5000)]
+    reference = write_reference(tmp_path / "genome.fa", contigs)
+    reads = [
+        *[aligned_segment(f"chr1_{index}", 0, 0, 100 + index, "30M") for index in range(10)],
+        *[aligned_segment(f"m_{index}", 0, 1, 100 + index, "30M") for index in range(10)],
+        *[aligned_segment(f"mt_{index}", 0, 2, 100 + index, "30M") for index in range(10)],
+    ]
+    bam = write_alignment(tmp_path / "reads.bam", contigs, reads)
+    exons = [
+        GenomicFeature("chr1", 50, 400, "+", "exon", "g1", "t1"),
+        GenomicFeature("chrM", 50, 400, "-", "exon", "g2", "t2"),
+        GenomicFeature("MT", 50, 400, "-", "exon", "g3", "t3"),
+    ]
+    settings = {
+        "minimum_informative": 10,
+        "maximum_sampled": 100,
+        "decision_fraction": 0.8,
+        "random_seed": 1,
+        "contig_aliases": {"M": "chrM"},
+    }
+    excluded = infer_strandedness(
+        bam, reference, exons, excluded_contigs=["chrM", "MT"], **settings
+    )
+    assert (excluded["informative_fragments"], excluded["inferred_strandedness"]) == (10, "forward")
+    kept = infer_strandedness(bam, reference, exons, excluded_contigs=[], **settings)
+    assert (kept["informative_fragments"], kept["reverse_count"]) == (30, 20)
+    assert kept["inferred_strandedness"] == "ambiguous"

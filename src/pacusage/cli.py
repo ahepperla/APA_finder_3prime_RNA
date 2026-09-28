@@ -8,7 +8,7 @@ import platform
 import shutil
 import tempfile
 from collections.abc import Iterator, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from heapq import merge
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from .alignments import (
     prepare_alignment,
     validate_contigs,
 )
-from .annotation import annotate_candidates, load_known_pacs, load_motif_catalog
+from .annotation import ATLAS_COLUMNS, annotate_candidates, load_known_pacs, load_motif_catalog
 from .calibration import (
     CalibrationMetrics,
     calculate_metrics,
@@ -50,7 +50,7 @@ from .evidence import (
     write_evidence,
     write_splice_continuations,
 )
-from .models import EvidenceObservation, PacCandidate, SpliceContinuation
+from .models import IDENTITY_COLUMNS, EvidenceObservation, PacCandidate, SpliceContinuation
 from .parameters import (
     load_schema,
     read_resolved_parameters,
@@ -141,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     strand.add_argument("--reference", required=True)
     strand.add_argument("--annotation", required=True)
     strand.add_argument("--chromosome-aliases")
+    strand.add_argument("--excluded-contigs", nargs="*", default=[])
     strand.add_argument("--profile", required=True)
     strand.add_argument("--layout", default="auto")
     strand.add_argument("--strandedness", default="auto")
@@ -206,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--qc", required=True)
     evidence.set_defaults(function=command_extract_evidence)
 
-    cluster = commands.add_parser("cluster", help="build the condition-blind PAC atlas")
+    cluster = commands.add_parser("cluster", help="build the PAC atlas from pooled read ends")
     cluster.add_argument("--evidence", nargs="+", required=True)
     cluster.add_argument("--samples", required=True)
     cluster.add_argument("--resolution", required=True)
@@ -264,10 +265,13 @@ def build_parser() -> argparse.ArgumentParser:
     motifs.add_argument("--output", required=True)
     motifs.add_argument("--params", required=True)
     motifs.add_argument("--include-known-rescue", action="store_true")
+    motifs.add_argument("--class-output")
     motifs.set_defaults(function=command_motif_scores)
 
     kmers = commands.add_parser(
-        "kmer-enrichment", help="test upstream k-mers among gained/increased PACs"
+        "kmer-enrichment",
+        help="test upstream k-mers among gained/increased PACs against "
+        "the other tested PACs of their genes",
     )
     kmers.add_argument("--statistics", required=True)
     kmers.add_argument("--atlas", required=True)
@@ -431,6 +435,7 @@ def command_infer_strandedness(args: argparse.Namespace) -> None:
         args.decision_fraction,
         args.random_seed,
         contig_aliases=_read_aliases(args.chromosome_aliases),
+        excluded_contigs=args.excluded_contigs,
     )
     if args.alignment_metadata:
         check_prepared_source(args.alignment, args.alignment_metadata)
@@ -878,7 +883,16 @@ def command_cluster(args: argparse.Namespace) -> None:
         accepted.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
         rejected.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
     write_tsv(candidates_as_rows(accepted), args.accepted, compresslevel=1)
-    write_tsv(candidates_as_rows(rejected), args.rejected, compresslevel=1)
+    # The published rejected table names the contig like every other table,
+    # and keeps its header when no candidate was rejected.
+    rejected_columns = [
+        "chrom" if field.name == "contig" else field.name for field in fields(PacCandidate)
+    ]
+    rejected_rows = (
+        {("chrom" if key == "contig" else key): value for key, value in row.items()}
+        for row in candidates_as_rows(rejected)
+    )
+    write_tsv(rejected_rows, args.rejected, rejected_columns, compresslevel=1)
     write_tsv(
         [
             {
@@ -972,20 +986,18 @@ def command_annotate(args: argparse.Namespace) -> None:
         int(params["known_pac_match_radius"]),
         load_motif_catalog(params.get("pas_motif_catalog")),
     )
-    write_tsv(rows, args.metadata)
+    write_tsv(rows, args.metadata, ATLAS_COLUMNS)
     _write_bed(rows, args.bed)
     if args.motifs:
         motif_columns = [
-            "pac_id",
-            "gene_id",
-            "strand",
-            "upstream_sequence",
-            "all_pas_motifs",
+            *IDENTITY_COLUMNS,
             "primary_pas_motif",
             "primary_pas_motif_rna",
             "primary_motif_class",
             "primary_motif_position",
             "primary_motif_in_core",
+            "all_pas_motifs",
+            "upstream_sequence",
             "known_rescue_only",
         ]
         write_tsv(rows, args.motifs, motif_columns)
@@ -1115,8 +1127,18 @@ def command_motif_scores(args: argparse.Namespace) -> None:
         atlas,
         int(params["min_gene_total"]),
         excluded_rescue_sites=not args.include_known_rescue,
+        level="motif",
     )
     scores.to_csv(args.output, sep="\t", index=False)
+    if args.class_output:
+        class_scores = motif_usage_scores(
+            pau,
+            atlas,
+            int(params["min_gene_total"]),
+            excluded_rescue_sites=not args.include_known_rescue,
+            level="class",
+        )
+        class_scores.to_csv(args.class_output, sep="\t", index=False)
 
 
 def command_kmer_enrichment(args: argparse.Namespace) -> None:
@@ -1135,17 +1157,25 @@ def command_kmer_enrichment(args: argparse.Namespace) -> None:
     ].copy()
     completed = []
     for event_path in sorted(statistics_directory.glob("*.events.tsv.gz")):
+        comparison = event_path.name.removesuffix(".events.tsv.gz")
+        pacs_path = statistics_directory / f"{comparison}.pacs.tsv.gz"
+        if not pacs_path.exists():
+            raise PacusageError(
+                f"K-mer background needs the comparison's tested PACs: "
+                f"missing {pacs_path.name}"
+            )
+        tested = set(pd.read_csv(pacs_path, sep="\t", usecols=["pac_id"], dtype=str)["pac_id"])
+        atlas_for_comparison = atlas[atlas["pac_id"].astype(str).isin(tested)]
         events = pd.read_csv(event_path, sep="\t").fillna("")
         selected = set(
             events.loc[events["event_type"].isin(["gained", "increased_usage"]), "pac_id"]
             .astype(str)
         )
-        rows = _kmer_rows(atlas, selected, int(params["motif_kmer_length"]))
+        rows = _kmer_rows(atlas_for_comparison, selected, int(params["motif_kmer_length"]))
         if rows:
             adjusted = add_bh_fdr(row["p_value"] for row in rows)
             for row, fdr in zip(rows, adjusted, strict=True):
                 row["fdr"] = fdr
-        comparison = event_path.name.removesuffix(".events.tsv.gz")
         destination = output_directory / f"{comparison}.kmer_enrichment.tsv.gz"
         write_tsv(
             rows,
@@ -1155,8 +1185,8 @@ def command_kmer_enrichment(args: argparse.Namespace) -> None:
                 "common_odds_ratio",
                 "ci_low",
                 "ci_high",
-                "p_value",
                 "fdr",
+                "p_value",
                 "event_pacs",
                 "background_pacs",
                 "informative_genes",
@@ -1365,26 +1395,10 @@ def _read_transcript_ends(
 def _write_bed(rows: list[dict[str, object]], path: str | Path) -> None:
     with open_text(path, "wt") as handle:
         for row in rows:
-            coordinate = int(row["coordinate"])
-            if row["endpoint_model"] == "proximal_tag":
-                start = int(row["region_start"])
-                end = int(row["region_end"])
-            else:
-                start = coordinate
-                end = coordinate + 1
-            handle.write(
-                "\t".join(
-                    [
-                        str(row["contig"]),
-                        str(start),
-                        str(end),
-                        str(row["pac_id"]),
-                        str(row["total_count"]),
-                        str(row["strand"]),
-                    ]
-                )
-                + "\n"
-            )
+            # BED scores run from 0 to 1000.
+            score = min(int(row["total_count"]), 1000)
+            values = [row["chrom"], row["start"], row["end"], row["pac_id"], score, row["strand"]]
+            handle.write("\t".join(map(str, values)) + "\n")
 
 
 if __name__ == "__main__":

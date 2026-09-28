@@ -343,15 +343,21 @@ test_case("H-04", "dominant PAC ignores missing values", {
 test_case("H-05", "event classification", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
-    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05
+    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
+    min_gene_total = 20
   )
   gained <- list(
     control_supporting_samples = 0, treatment_supporting_samples = 2, delta_pau = 0.20,
     gene_fdr = 0.01, pac_fdr = 0.01, zero_boundary_unstable = FALSE, confidence = "high",
     internal_priming_flag = FALSE, exploratory_insufficient_replicates = FALSE,
-    fitted_control_pau = 0, fitted_treatment_pau = 0.20
+    fitted_control_pau = 0, fitted_treatment_pau = 0.20,
+    control_gene_total = 40, treatment_gene_total = 40
   )
   modified <- function(row, ...) utils::modifyList(row, list(...))
+  lost <- modified(gained,
+    control_supporting_samples = 2, treatment_supporting_samples = 0, delta_pau = -0.20,
+    fitted_control_pau = 0.20, fitted_treatment_pau = 0
+  )
   expectations <- list(
     list(gained, "gained"),
     list(modified(gained, pac_fdr = NA_real_), "gained_candidate"),
@@ -360,10 +366,15 @@ test_case("H-05", "event classification", {
     list(modified(gained, zero_boundary_unstable = TRUE), "gained_candidate"),
     list(modified(gained, fitted_control_pau = NA_real_), "none"),
     list(modified(gained, control_supporting_samples = NA_real_), "none"),
-    list(modified(gained,
-      control_supporting_samples = 2, treatment_supporting_samples = 0, delta_pau = -0.20,
-      fitted_control_pau = 0.20, fitted_treatment_pau = 0
-    ), "lost"),
+    # Absence from the control counts only when the control covers the gene.
+    list(modified(gained, control_gene_total = 20), "gained"),
+    list(modified(gained, control_gene_total = 19), "gained_candidate"),
+    list(modified(gained, control_gene_total = NA_real_), "gained_candidate"),
+    list(modified(gained, treatment_gene_total = 5), "gained"),
+    list(lost, "lost"),
+    list(modified(lost, treatment_gene_total = 20), "lost"),
+    list(modified(lost, treatment_gene_total = 19), "lost_candidate"),
+    list(modified(lost, control_gene_total = 5), "lost"),
     list(modified(gained, control_supporting_samples = 2, fitted_control_pau = 0.30,
       fitted_treatment_pau = 0.50), "increased_usage"),
     list(modified(gained, control_supporting_samples = 2, delta_pau = -0.20,
@@ -376,6 +387,57 @@ test_case("H-05", "event classification", {
       "case ", index, " gave ", observed, "; expected ", expectations[[index]][[2]], "."
     )
   }
+})
+
+test_case("H-07", "descriptive events need a gene that passes the screen", {
+  params <- list(
+    event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
+    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
+    min_gene_total = 20
+  )
+  # Every PAC is detected in both groups with a PAC FDR of 0.5, so no tested
+  # label applies and only the descriptive labels can.
+  gene <- function(gene_id, gene_fdr, control, treatment) {
+    data.frame(
+      feature_id = paste0(gene_id, "_p", seq_along(control)),
+      gene_id = gene_id,
+      fitted_control_pau = control,
+      fitted_treatment_pau = treatment,
+      delta_pau = treatment - control,
+      gene_fdr = gene_fdr,
+      pac_fdr = 0.5,
+      control_supporting_samples = 2,
+      treatment_supporting_samples = 2,
+      control_gene_total = 100,
+      treatment_gene_total = 100,
+      zero_boundary_unstable = FALSE,
+      confidence = "moderate",
+      internal_priming_flag = FALSE,
+      exploratory_insufficient_replicates = FALSE,
+      stringsAsFactors = FALSE
+    )
+  }
+  switched <- list(c(0.7, 0.3), c(0.3, 0.7))
+  complexity <- list(c(1.0, 0.0), c(0.8, 0.2))
+  pacs <- rbind(
+    gene("switch_screened", 0.01, switched[[1]], switched[[2]]),
+    gene("switch_unscreened", 0.5, switched[[1]], switched[[2]]),
+    gene("switch_untested", NA_real_, switched[[1]], switched[[2]]),
+    gene("complexity_screened", 0.01, complexity[[1]], complexity[[2]]),
+    gene("complexity_unscreened", 0.5, complexity[[1]], complexity[[2]])
+  )
+  events <- stats::setNames(model$assign_events(pacs, params)$event_type, pacs$feature_id)
+  expected <- c(
+    switch_screened_p1 = "none", switch_screened_p2 = "dominant_switch",
+    switch_unscreened_p1 = "none", switch_unscreened_p2 = "none",
+    switch_untested_p1 = "none", switch_untested_p2 = "none",
+    complexity_screened_p1 = "complexity_gain", complexity_screened_p2 = "complexity_gain",
+    complexity_unscreened_p1 = "none", complexity_unscreened_p2 = "none"
+  )
+  check(
+    identical(events, expected),
+    "events were ", paste(names(events), events, sep = "=", collapse = ", ")
+  )
 })
 
 test_case("H-06", "bootstrap interval files are validated", {
@@ -490,25 +552,28 @@ test_case("M-13", "zero perturbation changes only zeros, within (0, 0.1), reprod
 test_case("M-14", "event classification reads typed flags in a mixed table", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
-    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05
+    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
+    min_gene_total = 20
   )
   table <- data.frame(
-    control_supporting_samples = c(0, 0, 0),
-    treatment_supporting_samples = c(3, 3, 3),
-    delta_pau = c(0.3, 0.3, 0.3),
-    gene_fdr = c(0.001, 0.001, 0.001),
-    pac_fdr = c(0.001, 0.001, 0.001),
-    zero_boundary_unstable = c(TRUE, FALSE, FALSE),
-    confidence = c("high", "high", "high"),
-    internal_priming_flag = c(FALSE, TRUE, FALSE),
-    exploratory_insufficient_replicates = c(FALSE, FALSE, FALSE),
-    fitted_control_pau = c(0, 0, 0),
-    fitted_treatment_pau = c(0.3, 0.3, 0.3),
+    control_supporting_samples = c(0, 0, 0, 0),
+    treatment_supporting_samples = c(3, 3, 3, 3),
+    delta_pau = c(0.3, 0.3, 0.3, 0.3),
+    gene_fdr = c(0.001, 0.001, 0.001, 0.001),
+    pac_fdr = c(0.001, 0.001, 0.001, 0.001),
+    zero_boundary_unstable = c(TRUE, FALSE, FALSE, FALSE),
+    confidence = c("high", "high", "high", "high"),
+    internal_priming_flag = c(FALSE, TRUE, FALSE, FALSE),
+    exploratory_insufficient_replicates = c(FALSE, FALSE, FALSE, FALSE),
+    fitted_control_pau = c(0, 0, 0, 0),
+    fitted_treatment_pau = c(0.3, 0.3, 0.3, 0.3),
+    control_gene_total = c(40, 40, 40, 10),
+    treatment_gene_total = c(40, 40, 40, 40),
     stringsAsFactors = FALSE
   )
   events <- model$classify_table_events(table, params)
   check(
-    identical(events, c("gained_candidate", "gained_candidate", "gained")),
+    identical(events, c("gained_candidate", "gained_candidate", "gained", "gained_candidate")),
     "events were ", paste(events, collapse = ", ")
   )
 })
@@ -650,7 +715,16 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
     gene_id = c(
       "gA", "gA", "gA", "gB", "gB", NA, "gC,gD", "gE", "gE", "gF", "gF", "gG", "gG"
     ),
+    gene_name = c(
+      "GeneA", "GeneA", "GeneA", "GeneB", "GeneB", NA, "GeneC,GeneD", "GeneE", "GeneE",
+      "GeneF", "GeneF", "GeneG", "GeneG"
+    ),
     pac_id = sprintf("p%02d", 1:13),
+    chrom = "chr1",
+    start = seq(100L, 1300L, by = 100L),
+    end = seq(101L, 1301L, by = 100L),
+    strand = "+",
+    locus = sprintf("chr1:%d-%d", seq(101L, 1301L, by = 100L), seq(101L, 1301L, by = 100L)),
     s1 = c(30, 10, 0, 3, 4, 50, 50, 10, 10, 15, 1, 3, 1),
     s2 = c(30, 10, 1, 3, 4, 50, 50, 10, 10, 15, 0, 3, 0),
     outside = rep(99, 13),
@@ -670,12 +744,17 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
   reasons <- result$reasons
   check(identical(names(reasons), model$FILTERING_COLUMNS), "columns: ", paste(names(reasons), collapse = ", "))
   check(identical(reasons$pac_id, counts$pac_id), "rows are not in input order.")
+  check(
+    identical(reasons$gene_name, ifelse(is.na(counts$gene_name), "", counts$gene_name)),
+    "gene names were ", paste(reasons$gene_name, collapse = ", ")
+  )
   check(all(reasons$family == "F"), "family column is wrong.")
   check(identical(reasons$reason, expected_reasons), "reasons were ", paste(reasons$reason, collapse = " | "))
   check(identical(reasons$tested, expected_reasons == ""), "tested flags do not match the reasons.")
   check(identical(result$counts$pac_id, c("p01", "p02", "p08", "p09")), "tested PACs: ",
     paste(result$counts$pac_id, collapse = ", "))
   check(identical(names(result$counts), c("gene_id", "pac_id", "s1", "s2")), "samples outside the family leaked.")
+  check(identical(reasons$locus, counts$locus), "the filtering table lost the PAC locations.")
 
   run <- require_run(run_a)
   written <- read_result(run$final_directory, "C.statistical_filtering.tsv.gz")
@@ -724,6 +803,32 @@ test_case("M-22", "motif preference uses the family design, covariates included"
   check(abs(as_number(output$delta_motif_usage) -
     (mean(sin(canonical[4:6])^2) - mean(sin(canonical[1:3])^2))) < 1e-10, "delta motif usage is wrong.")
   check(as_number(output$informative_genes) == 60, "informative genes should be the comparison minimum.")
+
+  # The class-level table uses the same design, with one row per class.
+  class_scores <- rbind(
+    scores[, setdiff(names(scores), "primary_pas_motif_rna")],
+    data.frame(
+      sample_id = samples$sample_id, primary_motif_class = "other_variant", motif_usage = 0.1,
+      transformed_motif_usage = asin(sqrt(0.1)) - noise, informative_genes = 55L,
+      stringsAsFactors = FALSE
+    )
+  )
+  model$fit_motif_preferences(
+    class_scores, layout, list(motif_preference_min_genes = 50L), directory, "preference_class",
+    keys = "primary_motif_class"
+  )
+  classes <- read_result(directory, "B_vs_A.preference_class.tsv.gz")
+  class_columns <- c(
+    "primary_motif_class", "condition", "control_condition", "delta_motif_usage", "fdr",
+    "p_value", "control_mean", "treatment_mean", "transformed_coefficient", "informative_genes"
+  )
+  check(identical(names(classes), class_columns), "unexpected class columns.")
+  check(
+    identical(classes$primary_motif_class, c("canonical", "other_variant")),
+    "class rows were ", paste(classes$primary_motif_class, collapse = ", "), "."
+  )
+  class_coefficient <- as_number(classes$transformed_coefficient[[1]])
+  check(abs(class_coefficient - adjusted) < 1e-10, "the class coefficient is not batch-adjusted.")
 })
 
 test_case("M-23", "versions mode writes a table, then appends to it", {

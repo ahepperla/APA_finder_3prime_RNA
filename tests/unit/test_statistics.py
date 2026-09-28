@@ -129,3 +129,87 @@ def test_motif_scores_use_only_genes_covered_in_every_sample() -> None:
     assert usage == pytest.approx({("s1", "AAUAAA"): 0.6, ("s1", "none"): 0.4,
                                    ("s2", "AAUAAA"): 0.3, ("s2", "none"): 0.7})
     assert set(scores["informative_genes"]) == {1}
+
+
+def test_motif_scores_class_level_pools_hexamers_within_each_gene() -> None:
+    # g1 has two other_variant hexamers and a canonical PAC; g2 has one
+    # other_variant PAC and one without a motif; g3 has canonical and none.
+    rows = [
+        ("g1", "p1", "TATAAA", "other_variant", 3),
+        ("g1", "p2", "AGTAAA", "other_variant", 1),
+        ("g1", "p3", "AATAAA", "canonical", 4),
+        ("g2", "p4", "TATAAA", "other_variant", 1),
+        ("g2", "p5", "", "no_recognized_motif", 3),
+        ("g3", "p6", "AATAAA", "canonical", 2),
+        ("g3", "p7", "", "no_recognized_motif", 2),
+    ]
+    atlas = pd.DataFrame(
+        {
+            "pac_id": [row[1] for row in rows],
+            "primary_motif_class": [row[3] for row in rows],
+            "known_rescue_only": [False] * len(rows),
+            "primary_pas_motif_rna": [row[2].replace("T", "U") for row in rows],
+        }
+    )
+    totals = {"g1": 8, "g2": 4, "g3": 4}
+    pau = pd.DataFrame(
+        {
+            "gene_id": [row[0] for row in rows],
+            "pac_id": [row[1] for row in rows],
+            "sample_id": ["s1"] * len(rows),
+            "count": [row[4] for row in rows],
+            "gene_total": [totals[row[0]] for row in rows],
+        }
+    )
+    pau["pau"] = pau["count"] / pau["gene_total"]
+
+    classes = motif_usage_scores(pau, atlas, minimum_gene_total=1, level="class")
+    assert list(classes.columns) == [
+        "sample_id", "primary_motif_class", "motif_usage", "transformed_motif_usage",
+        "informative_genes",
+    ]
+    by_class = classes.set_index("primary_motif_class")
+    # other_variant: g1 (3 + 1) / 8 = 0.5 and g2 1 / 4 = 0.25, so the mean is 0.375.
+    # canonical: g1 4 / 8 and g3 2 / 4, both 0.5. none: g2 0.75 and g3 0.5.
+    assert by_class["motif_usage"].to_dict() == pytest.approx(
+        {"other_variant": 0.375, "canonical": 0.5, "no_recognized_motif": 0.625}
+    )
+    assert by_class["informative_genes"].to_dict() == {
+        "other_variant": 2, "canonical": 2, "no_recognized_motif": 2,
+    }
+    assert np.allclose(
+        classes["transformed_motif_usage"], np.arcsin(np.sqrt(classes["motif_usage"]))
+    )
+
+    # The same data at motif level keep the two other_variant hexamers apart.
+    motifs = motif_usage_scores(pau, atlas, minimum_gene_total=1)
+    by_motif = motifs.set_index("primary_pas_motif_rna")
+    # UAUAAA: g1 3 / 8 and g2 1 / 4; AGUAAA: g1 1 / 8 only.
+    assert by_motif.loc["UAUAAA", "motif_usage"] == pytest.approx(0.3125)
+    assert by_motif.loc["AGUAAA", "motif_usage"] == pytest.approx(0.125)
+    assert by_motif.loc["AGUAAA", "informative_genes"] == 1
+
+
+def test_motif_scores_rejects_unknown_level() -> None:
+    atlas = pd.DataFrame(
+        {
+            "pac_id": ["p1"],
+            "primary_pas_motif": ["TATAAA"],
+            "primary_motif_class": ["other_variant"],
+            "known_rescue_only": [False],
+            "primary_pas_motif_rna": ["UAUAAA"],
+        }
+    )
+    pau = pd.DataFrame(
+        {
+            "gene_id": ["g1"],
+            "pac_id": ["p1"],
+            "sample_id": ["s1"],
+            "count": [1],
+            "gene_total": [1],
+            "pau": [1.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="level must be 'motif' or 'class'"):
+        motif_usage_scores(pau, atlas, minimum_gene_total=1, level="unknown")

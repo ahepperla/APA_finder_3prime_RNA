@@ -277,6 +277,7 @@ def infer_strandedness(
     decision_fraction: float,
     random_seed: int,
     contig_aliases: dict[str, str] | None = None,
+    excluded_contigs: Iterable[str] = (),
 ) -> dict[str, Any]:
     index = ExonBinIndex(exons)
     alignment = Path(alignment)
@@ -285,6 +286,7 @@ def infer_strandedness(
     eligible = 0
     rng = random.Random(random_seed)
     aliases = contig_aliases or {}
+    excluded = set(excluded_contigs)
     with pysam.AlignmentFile(str(alignment), mode, reference_filename=str(reference)) as handle:
         for record in handle.fetch(until_eof=True):
             if (
@@ -295,6 +297,8 @@ def infer_strandedness(
             ):
                 continue
             query_contig = aliases.get(record.reference_name, record.reference_name)
+            if record.reference_name in excluded or query_contig in excluded:
+                continue
             overlaps = index.query(
                 query_contig, record.reference_start, record.reference_end
             )
