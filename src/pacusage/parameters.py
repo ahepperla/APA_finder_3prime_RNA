@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,11 @@ CHOICES = {
 }
 
 
+SCHEMA_PATH = Path(__file__).resolve().parents[2] / "nextflow_schema.json"
+_INTEGER = re.compile(r"[+-]?\d+")
+_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
 def load_parameters(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     with path.open() as handle:
@@ -113,9 +119,66 @@ def load_parameters(path: str | Path) -> dict[str, Any]:
             supplied = yaml.safe_load(handle) or {}
     if not isinstance(supplied, dict):
         raise PacusageError(f"Parameter file {path} must contain a mapping.")
-    params = normalize_parameters(supplied)
+    params = normalize_parameters(coerce_command_line_types(supplied, _load_schema()))
     validate_against_schema(params)
     return params
+
+
+def coerce_command_line_types(
+    supplied: dict[str, Any], schema: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Convert command-line strings to the types their parameters declare.
+
+    Nextflow 25.10 and later pass every command-line value as a string, so
+    `--min_mapq 30` arrives as "30" and a bare `--save_prepared_alignments` as
+    "true". A params file keeps its YAML types. Only an exact integer, a finite
+    number, or true/false (in any case) is converted, and never for a
+    parameter that also accepts strings or lists. Anything else is left for
+    validation to report.
+    """
+    declared = _declared_types(schema)
+    coerced = dict(supplied)
+    for key, value in supplied.items():
+        accepted = declared.get(key, set())
+        if not isinstance(value, str) or not accepted or accepted & {"string", "array"}:
+            continue
+        text = value.strip()
+        if "boolean" in accepted and text.lower() in {"true", "false"}:
+            coerced[key] = text.lower() == "true"
+        elif accepted & {"integer", "number"} and _INTEGER.fullmatch(text):
+            coerced[key] = int(text)
+        elif "number" in accepted and _NUMBER.fullmatch(text) and math.isfinite(float(text)):
+            coerced[key] = float(text)
+    return coerced
+
+
+def _declared_types(schema: dict[str, Any] | None) -> dict[str, set[str]]:
+    """JSON types each parameter accepts: from the schema, or else the defaults.
+
+    Installed packages, including the container's, do not ship the schema, so
+    the defaults' types stand in for it there.
+    """
+    if schema is None:
+        names = {bool: "boolean", int: "integer", float: "number", list: "array", str: "string"}
+        return {
+            key: {names[type(value)]} for key, value in DEFAULTS.items() if value is not None
+        }
+    declared: dict[str, set[str]] = {}
+    for group in schema.get("definitions", {}).values():
+        for key, specification in group.get("properties", {}).items():
+            types: set[str] = set()
+            for branch in specification.get("anyOf", [specification]):
+                value = branch.get("type")
+                types.update(value if isinstance(value, list) else [value] if value else [])
+            declared[key] = types
+    return declared
+
+
+def _load_schema() -> dict[str, Any] | None:
+    if not SCHEMA_PATH.is_file():
+        return None
+    with SCHEMA_PATH.open() as handle:
+        return json.load(handle)
 
 
 def normalize_parameters(supplied: dict[str, Any]) -> dict[str, Any]:
@@ -222,11 +285,9 @@ def write_resolved_parameters(params: dict[str, Any], path: str | Path) -> None:
 
 
 def validate_against_schema(params: dict[str, Any]) -> None:
-    schema_path = Path(__file__).resolve().parents[2] / "nextflow_schema.json"
-    if not schema_path.is_file():
+    schema = _load_schema()
+    if schema is None:
         return
-    with schema_path.open() as handle:
-        schema = json.load(handle)
     errors = sorted(Draft7Validator(schema).iter_errors(params), key=lambda error: list(error.path))
     if errors:
         details = "; ".join(
