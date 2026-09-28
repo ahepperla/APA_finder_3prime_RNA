@@ -1153,6 +1153,11 @@ results/
     SAMPLE.minus.3prime_evidence.bedGraph.gz
   report/
     index.html
+  pipeline_info/               # Nextflow's reports for the latest run
+    execution_report.html
+    execution_timeline.html
+    execution_trace.txt
+    pipeline_dag.html
 ```
 
 BedGraph values are non-negative counts. Strand is encoded by the separate

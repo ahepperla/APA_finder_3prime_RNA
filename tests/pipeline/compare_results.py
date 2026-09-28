@@ -4,7 +4,8 @@
 tests/pipeline/run_nextflow.sh uses this to show that a fresh run reproduces an earlier
 one. Only the output directory may differ: it appears in
 manifest/resolved_params.yaml and in that file's checksum in
-manifest/run_manifest.json.
+manifest/run_manifest.json. Nextflow's own reports in pipeline_info/ record
+the run's times, so they are not compared.
 """
 
 from __future__ import annotations
@@ -29,7 +30,11 @@ def comparable(path: Path, name: str) -> bytes:
 def main(left: str, right: str) -> int:
     roots = (Path(left), Path(right))
     names = [
-        {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
+        {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file() and path.relative_to(root).parts[0] != "pipeline_info"
+        }
         for root in roots
     ]
     problems = [f"only in {roots[0]}: {name}" for name in sorted(names[0] - names[1])]

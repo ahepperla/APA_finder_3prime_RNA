@@ -80,6 +80,11 @@ coverage before making broad or negative structural claims.
 
 - Normal results contain `manifest/`, `qc/`, `evidence/`, `atlas/`, `counts/`,
   `statistics/`, `motifs/`, `tracks/`, and `report/index.html`.
+- `pipeline_info/` holds Nextflow's execution report, timeline, trace, and
+  DAG. `nextflow.config` sets them after the profiles, so a profile's `outdir`
+  applies. Each run replaces them, and they record the run's times, so the
+  rerun comparison skips them. Only `.nextflow.log`, `.nextflow/`, and the
+  default `work/` go to the launch directory.
 - `work/`, `.nextflow/`, `results-test/`, caches, generated reports, and
   Nextflow logs are generated state. Do not treat them as maintained source.
 - Retain Nextflow work directories during an analysis so `-resume` remains
@@ -107,7 +112,8 @@ The integration script:
 - executes the test Nextflow profile, checks the required result artifacts,
   and validates their contents (`tests/pipeline/verify_integration.py`);
 - checks that the fixture files are unchanged;
-- checks that a fresh rerun reproduces every published file;
+- checks that a fresh rerun reproduces every published file outside
+  `pipeline_info/`;
 - checks that a mixed-protocol sample sheet fails before discovery;
 - runs the Plasmidsaurus-like proximal-tag fixture in
   `tests/fixtures/plasmidsaurus/`, which has its own reference and annotation;

@@ -225,6 +225,9 @@ results/
   motifs/      pac_motifs.tsv.gz, motif_scores.tsv, per-comparison motif
                preference and exploratory k-mer enrichment tables
   report/      index.html, a self-contained report
+  pipeline_info/
+               Nextflow's execution report, timeline, trace, and DAG; each
+               run, resumed or not, replaces them
 ```
 
 `prepared_reference/`, `prepared_alignments/`, and `counts/per_sample/` also
@@ -352,7 +355,8 @@ Every run records:
 
 Gzip files carry no timestamps and every random step is seeded, so a fresh
 rerun with the same inputs, parameters, and software reproduces every
-published file byte for byte.
+published file byte for byte. The exception is Nextflow's own reports in
+`pipeline_info/`, which record the run's times.
 
 Keep the Nextflow work directory until the analysis is final: `-resume` reuses
 finished steps from it.
@@ -389,6 +393,11 @@ finished steps from it.
   that preparation records the new file.
 - **`FASTA ... is compressed`**: decompress it (`gunzip` or `bgzip -d`) and
   point `fasta` at the uncompressed file.
+- **A step fails or runs slowly**: `pipeline_info/execution_report.html` shows
+  each task's run time and memory. In `pipeline_info/execution_trace.txt`, a
+  task's `native_id` is its Slurm job ID, and its `hash`, such as `3f/a1b2c3`,
+  begins its path under the work directory, where `.command.log` and
+  `.command.err` hold its output.
 
 ## Development
 
@@ -410,7 +419,8 @@ Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
 `tests/pipeline/run_nextflow.sh` runs everything end to end, with `.venv/bin`
 first on `PATH`. It builds the fixtures (`tests/fixtures/build_fixture.py`)
 and runs the R tests, then runs the `test` profile and checks:
-- the results, and that a fresh rerun reproduces every file;
+- the results, and that a fresh rerun reproduces every file outside
+  `pipeline_info/`;
 - that a mixed-protocol sample sheet stops before discovery;
 - the Plasmidsaurus-like fixture;
 - that exact-boundary reads run as Plasmidsaurus tags warn at calibration.

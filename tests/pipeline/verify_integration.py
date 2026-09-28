@@ -255,9 +255,7 @@ def main() -> None:
     )
     assert f"<strong>{finite_intervals:,}</strong>Bootstrap intervals" in report_text
 
-    traces = list(REPOSITORY.glob("trace-*.txt"))
-    assert traces
-    trace_text = max(traces, key=lambda path: path.stat().st_mtime).read_text()
+    trace_text = (ROOT / "pipeline_info" / "execution_trace.txt").read_text()
     check_alignment_handling(trace_text)
     check_input_checksums()
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3

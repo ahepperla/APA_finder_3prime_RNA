@@ -33,6 +33,9 @@ test -s results-test/statistics/TreatmentB_vs_Vehicle.pacs.tsv.gz
 test -s results-test/statistics/Rescue_vs_TreatmentA.pacs.tsv.gz
 test -s results-test/statistics/gene_precision.tsv.gz
 test -s results-test/statistics/fitted_pau.tsv.gz
+test -s results-test/pipeline_info/execution_report.html
+test -s results-test/pipeline_info/execution_timeline.html
+test -s results-test/pipeline_info/pipeline_dag.html
 python tests/pipeline/verify_integration.py
 test "$(fixture_state)" = "${fixtures_before}"
 
@@ -44,9 +47,11 @@ rerun_root="${scratch_root}/rerun"
 mkdir -p "${rerun_root}"
 (cd "${rerun_root}" && nextflow run "${project_dir}" -profile test,local \
   --outdir "${rerun_root}/results" \
-  -work-dir "${rerun_root}/work" \
-  -with-trace "${rerun_root}/trace.txt")
+  -work-dir "${rerun_root}/work")
 python tests/pipeline/compare_results.py results-test "${rerun_root}/results"
+# Nextflow's reports go to the results, never to the launch directory.
+test -s "${rerun_root}/results/pipeline_info/execution_trace.txt"
+test -z "$(find "${rerun_root}" -maxdepth 1 -type f \( -name '*.html' -o -name '*.txt' \))"
 test "$(fixture_state)" = "${fixtures_before}"
 
 # Samples from two protocols must fail at calibration, before discovery.
@@ -55,13 +60,16 @@ mkdir -p "${incompatible_root}"
 if (cd "${incompatible_root}" && nextflow run "${project_dir}" -profile test,local \
   --input "${project_dir}/tests/fixtures/samples_incompatible.tsv" \
   --outdir "${incompatible_root}/results" \
-  -work-dir "${incompatible_root}/work" \
-  -with-trace "${incompatible_root}/trace.txt") > "${incompatible_root}/log.txt" 2>&1; then
+  -work-dir "${incompatible_root}/work") > "${incompatible_root}/log.txt" 2>&1; then
   echo "The incompatible-profile sample sheet did not fail." >&2
   exit 1
 fi
 grep -q "Samples use incompatible library profiles" "${incompatible_root}/log.txt"
-if grep -q "CLUSTER_PACS" "${incompatible_root}/trace.txt"; then
+# The trace must show the step that stopped the run, or the check after it
+# would pass on a missing trace.
+incompatible_trace="${incompatible_root}/results/pipeline_info/execution_trace.txt"
+grep -q "AGGREGATE_CALIBRATION" "${incompatible_trace}"
+if grep -q "CLUSTER_PACS" "${incompatible_trace}"; then
   echo "The incompatible-profile run reached PAC discovery." >&2
   exit 1
 fi
@@ -78,8 +86,7 @@ mkdir -p "${plasmidsaurus_root}"
   --gtf "${plasmidsaurus_fixture}/genes.gtf" \
   --endpoint_model auto \
   --outdir "${plasmidsaurus_root}/results" \
-  -work-dir "${plasmidsaurus_root}/work" \
-  -with-trace "${plasmidsaurus_root}/trace.txt")
+  -work-dir "${plasmidsaurus_root}/work")
 python tests/pipeline/verify_plasmidsaurus.py "${plasmidsaurus_root}/results"
 test "$(fixture_state)" = "${fixtures_before}"
 
@@ -96,15 +103,16 @@ if (cd "${mislabelled_root}" && nextflow run "${project_dir}" -profile test,loca
   --input "${mislabelled_root}/samples.tsv" \
   --endpoint_model auto \
   --outdir "${mislabelled_root}/results" \
-  -work-dir "${mislabelled_root}/work" \
-  -with-trace "${mislabelled_root}/trace.txt") > "${mislabelled_root}/log.txt" 2>&1; then
+  -work-dir "${mislabelled_root}/work") > "${mislabelled_root}/log.txt" 2>&1; then
   echo "The mislabelled sample sheet did not fail." >&2
   exit 1
 fi
 grep -q "Calibration kernel: the pooled kernel has 3 separated modes" "${mislabelled_root}/log.txt"
 grep -q "No PAC candidates passed discovery" "${mislabelled_root}/log.txt"
 grep -q $'\twarning\t' "${mislabelled_root}/results/qc/calibration_kernel_diagnostics.tsv"
-if grep -q "QUANTIFY_PACS" "${mislabelled_root}/trace.txt"; then
+mislabelled_trace="${mislabelled_root}/results/pipeline_info/execution_trace.txt"
+grep -q "CLUSTER_PACS" "${mislabelled_trace}"
+if grep -q "QUANTIFY_PACS" "${mislabelled_trace}"; then
   echo "The mislabelled run reached quantification." >&2
   exit 1
 fi
