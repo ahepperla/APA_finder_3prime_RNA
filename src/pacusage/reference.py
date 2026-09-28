@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gzip
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +12,22 @@ import pysam
 
 from .errors import PacusageError
 from .tableio import sha256_file
+
+# Ensembl GFF3 writes gene and transcript IDs with these prefixes, and writes
+# gene records under the gene's biotype family.
+GENE_ID_PREFIX = "gene:"
+TRANSCRIPT_ID_PREFIX = "transcript:"
+GENE_FEATURE_TYPES = {"gene", "ncrna_gene", "pseudogene"}
+# Parts of a transcript, which never parent another feature.
+TRANSCRIPT_PART_TYPES = {
+    "exon",
+    "cds",
+    "utr",
+    "five_prime_utr",
+    "three_prime_utr",
+    "start_codon",
+    "stop_codon",
+}
 
 
 @dataclass(frozen=True)
@@ -97,37 +113,28 @@ def parse_annotation(
 def iter_annotation_features(
     path: str | Path, feature_types: set[str] | None = None
 ) -> Iterator[GenomicFeature]:
-    transcript_to_gene: dict[str, str] = {}
-    for _, fields in _iter_annotation_rows(path):
-        feature_type = fields[2].lower()
-        if feature_type not in {"transcript", "mrna"}:
-            continue
-        raw_attributes = fields[8]
-        attributes = parse_attributes(raw_attributes)
-        transcript_id = attributes.get("transcript_id") or attributes.get("ID", "")
-        parent_gene = attributes.get("gene_id") or attributes.get("Parent", "")
-        if transcript_id and parent_gene:
-            transcript_to_gene[transcript_id] = parent_gene
-
-    selected_types = {value.lower() for value in feature_types} if feature_types else None
+    parents = _gff3_parents(path)
+    selected_types = {_feature_type(value) for value in feature_types} if feature_types else None
     for line_number, fields in _iter_annotation_rows(path):
-        contig, _, feature_type, start, end, _, strand, _, raw_attributes = fields
-        feature_type = feature_type.lower()
+        contig, _, raw_type, start, end, _, strand, _, raw_attributes = fields
+        feature_type = _feature_type(raw_type)
         if strand not in {"+", "-"} or (
             selected_types is not None and feature_type not in selected_types
         ):
             continue
         attributes = parse_attributes(raw_attributes)
+        record_id = attributes.get("ID", "")
+        parent = attributes.get("Parent", "")
         transcript_id = attributes.get("transcript_id", "")
         if not transcript_id and feature_type in {"transcript", "mrna"}:
-            transcript_id = attributes.get("ID", "")
-        if not transcript_id and feature_type == "exon":
-            transcript_id = attributes.get("Parent", "").split(",")[0]
+            transcript_id = record_id.removeprefix(TRANSCRIPT_ID_PREFIX)
+        if not transcript_id and feature_type == "exon" and parent:
+            transcript_id = _parent_transcript(parent, parents)
         gene_id = attributes.get("gene_id") or attributes.get("gene", "")
         if not gene_id and feature_type == "gene":
-            gene_id = attributes.get("ID", "")
-        if not gene_id and transcript_id:
-            gene_id = transcript_to_gene.get(transcript_id, "")
+            gene_id = record_id.removeprefix(GENE_ID_PREFIX)
+        if not gene_id and parent:
+            gene_id = _parent_gene(parent, parents)
         # A GFF3 Name is the gene's name only on a gene record; on an exon or
         # transcript it names that feature. NCBI annotations use gene.
         gene_name = attributes.get("gene_name") or attributes.get("gene", "")
@@ -147,6 +154,61 @@ def iter_annotation_features(
             transcript_id=transcript_id,
             gene_name=gene_name,
         )
+
+
+@dataclass(frozen=True)
+class _ParentRecord:
+    """A GFF3 feature that other features can name as their Parent."""
+
+    feature_type: str
+    parent: str
+    gene_id: str
+    transcript_id: str
+
+
+def _gff3_parents(path: str | Path) -> dict[str, _ParentRecord]:
+    """Every GFF3 feature that can be a Parent, by ID. GTF lines carry no ID."""
+    parents: dict[str, _ParentRecord] = {}
+    for _, fields in _iter_annotation_rows(path):
+        feature_type = _feature_type(fields[2])
+        if feature_type in TRANSCRIPT_PART_TYPES:
+            continue
+        attributes = parse_attributes(fields[8])
+        record_id = attributes.get("ID", "")
+        if record_id:
+            parents[record_id] = _ParentRecord(
+                feature_type=feature_type,
+                parent=attributes.get("Parent", ""),
+                gene_id=attributes.get("gene_id") or attributes.get("gene", ""),
+                transcript_id=attributes.get("transcript_id", ""),
+            )
+    return parents
+
+
+def _parent_gene(record_id: str, parents: Mapping[str, _ParentRecord]) -> str:
+    """The gene a GFF3 Parent chain leads to, or "" when it leads nowhere."""
+    seen: set[str] = set()
+    while record_id in parents and record_id not in seen:
+        seen.add(record_id)
+        record = parents[record_id]
+        if record.gene_id:
+            return record.gene_id
+        if record.feature_type == "gene":
+            return record_id.removeprefix(GENE_ID_PREFIX)
+        record_id = record.parent
+    return ""
+
+
+def _parent_transcript(record_id: str, parents: Mapping[str, _ParentRecord]) -> str:
+    record = parents.get(record_id)
+    if record is not None and record.transcript_id:
+        return record.transcript_id
+    return record_id.removeprefix(TRANSCRIPT_ID_PREFIX)
+
+
+def _feature_type(raw: str) -> str:
+    feature_type = raw.lower()
+    return "gene" if feature_type in GENE_FEATURE_TYPES else feature_type
 
 
 def _iter_annotation_rows(path: str | Path) -> Iterator[tuple[int, list[str]]]:
