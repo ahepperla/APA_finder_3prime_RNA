@@ -93,3 +93,30 @@ mkdir -p "${plasmidsaurus_root}"
   -with-trace "${plasmidsaurus_root}/trace.txt")
 python tests/verify_plasmidsaurus.py "${plasmidsaurus_root}/results"
 test "$(fixture_state)" = "${fixtures_before}"
+
+# Exact-boundary reads run as Plasmidsaurus tags calibrate to a kernel of PAC
+# spacings. Calibration warns and the run goes on, until discovery finds no PAC.
+mislabelled_root="${scratch_root}/mislabelled"
+mkdir -p "${mislabelled_root}"
+awk -F '\t' -v OFS='\t' -v fixtures="${project_dir}/tests/fixtures" '
+  NR == 1 { for (i = 1; i <= NF; i++) if ($i == "alignment") column = i }
+  NR > 1 { $column = fixtures "/" $column }
+  { print }
+' "${plasmidsaurus_fixture}/samples.tsv" > "${mislabelled_root}/samples.tsv"
+if (cd "${mislabelled_root}" && nextflow run "${project_dir}" -profile test,local \
+  --input "${mislabelled_root}/samples.tsv" \
+  --endpoint_model auto \
+  --outdir "${mislabelled_root}/results" \
+  -work-dir "${mislabelled_root}/work" \
+  -with-trace "${mislabelled_root}/trace.txt") > "${mislabelled_root}/log.txt" 2>&1; then
+  echo "The mislabelled sample sheet did not fail." >&2
+  exit 1
+fi
+grep -q "Calibration kernel: the pooled kernel has 3 separated modes" "${mislabelled_root}/log.txt"
+grep -q "No PAC candidates passed discovery" "${mislabelled_root}/log.txt"
+grep -q $'\twarning\t' "${mislabelled_root}/results/qc/calibration_kernel_diagnostics.tsv"
+if grep -q "QUANTIFY_PACS" "${mislabelled_root}/trace.txt"; then
+  echo "The mislabelled run reached quantification." >&2
+  exit 1
+fi
+test "$(fixture_state)" = "${fixtures_before}"

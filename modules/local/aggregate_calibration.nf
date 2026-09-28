@@ -2,7 +2,8 @@ process AGGREGATE_CALIBRATION {
     tag 'run'
     label 'low'
 
-    publishDir "${params.outdir}/qc", mode: 'copy', pattern: 'library_calibration.tsv'
+    publishDir "${params.outdir}/qc", mode: 'copy',
+        pattern: '{library_calibration.tsv,calibration_kernel_diagnostics.tsv}'
     publishDir "${params.outdir}/manifest", mode: 'copy',
         pattern: '{calibration_kernel.tsv,library_resolution.json}'
 
@@ -15,6 +16,7 @@ process AGGREGATE_CALIBRATION {
     path 'library_calibration.tsv', emit: calibration
     path 'calibration_kernel.tsv', emit: kernel
     path 'library_resolution.json', emit: resolution
+    path 'calibration_kernel_diagnostics.tsv', emit: kernel_diagnostics
 
     script:
     """
@@ -24,6 +26,7 @@ process AGGREGATE_CALIBRATION {
         --params '${resolved_params}' \
         --output library_calibration.tsv \
         --kernel calibration_kernel.tsv \
-        --resolution library_resolution.json
+        --resolution library_resolution.json \
+        --kernel-diagnostics calibration_kernel_diagnostics.tsv
     """
 }

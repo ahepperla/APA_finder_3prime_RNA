@@ -190,6 +190,22 @@ After calibration picks the run's evidence source, `EXTRACT_3PRIME_EVIDENCE`
 writes that source's evidence from the scan without reading the alignment
 again.
 
+Calibration also checks the pooled offset kernel and writes the result to
+`qc/calibration_kernel_diagnostics.tsv`. Read ends scattered around one site
+give a kernel with one mode. A proximal-tag run warns when:
+- the kernel, smoothed over its own minimum resolvable separation, has more
+  than one separated mode; or
+- the samples' median central interval is more than 6 times that separation.
+
+A kernel of PAC spacings looks like this, for example when exact-boundary
+reads run under a proximal-tag profile, or when unannotated alternative
+polyadenylation sites lie near the annotated ends that calibration uses. The
+warning appears in the Nextflow log and at the top of the report, and the run
+goes on. Check that the library profile suits the data before trusting its
+proximal-tag PACs. Exact-boundary runs record the same values with status
+`not_applicable`, because exact discovery does not assign reads through the
+kernel.
+
 When multiple library chemistries resolve differently, run them separately.
 A batch term cannot recover information lost through incompatible endpoint
 definitions.
@@ -321,7 +337,9 @@ checks the results. It also checks that:
 - a fresh run in a new work directory reproduces every published file;
 - a sample sheet mixing two protocols fails at calibration, before discovery;
 - the Plasmidsaurus-like fixture runs end to end and passes
-  `tests/verify_plasmidsaurus.py`.
+  `tests/verify_plasmidsaurus.py`;
+- exact-boundary reads run under the Plasmidsaurus profile warn at
+  calibration, then stop at ANNOTATE_PACS.
 
 `build_fixture.py` also writes that Plasmidsaurus-like fixture, to
 `tests/fixtures/plasmidsaurus/`. It has its own reference and annotation, and
@@ -339,7 +357,8 @@ nextflow run . -profile test,conda \
 
 If proximal-tag discovery accepts no PAC at all, the run stops at
 ANNOTATE_PACS. The error names `qc/pac_discovery.tsv` and
-`atlas/rejected_candidates.tsv.gz`, which explain why.
+`atlas/rejected_candidates.tsv.gz`, which explain why. A calibration kernel
+warning earlier in the log often points to the cause.
 
 The statistical process requires DRIMSeq, stageR, and limma. The supplied
 Conda files install them from Bioconda and pin DRIMSeq to 1.38.0, the version

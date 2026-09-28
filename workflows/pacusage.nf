@@ -62,6 +62,7 @@ workflow PACUSAGE {
         .mix(PREPARATION.out.alignment_qc.flatten())
         .mix(PREPARATION.out.strandedness_qc.flatten())
         .mix(DISCOVERY.out.calibration)
+        .mix(DISCOVERY.out.kernel_diagnostics)
         .mix(DISCOVERY.out.filtering_qc.flatten())
         .mix(DISCOVERY.out.discovery_qc)
         .mix(DISCOVERY.out.atlas)

@@ -36,6 +36,12 @@ def main(root: Path) -> None:
     assert int(discovery["rejected_candidates"]) == 0, discovery["rejected_candidates"]
     resolution_nt = int(discovery["minimum_resolvable_separation"])
     assert resolution_nt > 1, "a proximal-tag atlas cannot resolve single nucleotides"
+    # Read ends scatter around one site each, so the kernel has one mode and
+    # calibration does not warn. Discovery used the same kernel.
+    kernel = pd.read_csv(root / "qc" / "calibration_kernel_diagnostics.tsv", sep="\t").iloc[0]
+    assert kernel["status"] == "ok", kernel["reason"]
+    assert int(kernel["kernel_modes"]) == 1, kernel["kernel_modes"]
+    assert int(kernel["minimum_resolvable_separation"]) == resolution_nt
 
     # Designed sites sit on the discovery bins, so each representative is its
     # site. A region spans the assay resolution and holds one designed PAC.
@@ -108,6 +114,9 @@ def main(root: Path) -> None:
 
     report = root / "report" / "index.html"
     assert report.stat().st_size > 10000
+    report_text = report.read_text()
+    assert "<h2>Calibration kernel</h2>" in report_text
+    assert "Calibration warning" not in report_text
     print(f"Plasmidsaurus-like run verified: {len(atlas)} proximal-tag PACs.")
 
 

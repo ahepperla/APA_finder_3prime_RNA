@@ -433,6 +433,20 @@ samples, and instruct the user to analyze incompatible protocols in separate
 runs. Do not attempt to statistically correct incompatible library chemistries
 with a batch term.
 
+Describe the selected source's pooled kernel in
+`qc/calibration_kernel_diagnostics.tsv`. Read ends around one site give one
+mode. For a proximal-tag run, warn when the kernel, smoothed with a centred
+moving average as wide as its minimum resolvable separation (rounded down to
+an odd width), has more than one separated mode, or when the median
+per-sample central interval width exceeds six times that separation. A mode
+reaches at least a quarter of the highest one, and neighbouring modes merge
+unless the valley between them drops below half the lower one. A kernel of
+PAC spacings fails these checks, for example from exact-boundary reads under
+a proximal-tag profile or from unannotated alternative polyadenylation near
+annotated ends. The warning goes to the Nextflow log and the report and does
+not stop the run. Exact-boundary runs record the same values with status
+`not_applicable`.
+
 #### Layout
 
 When `layout=auto`, inspect alignment flags to classify the sample as SE or PE.
@@ -1050,6 +1064,8 @@ Produce a static HTML report with:
 - proper-pair rates;
 - strandedness evidence;
 - protocol, evidence-source, and calibration compatibility;
+- calibration kernel diagnostics, with a warning at the top of the report when
+  a proximal-tag kernel fails them;
 - end-observation and PAC counts;
 - proximal-kernel resolution and merged resolution groups;
 - PAC width, peakiness, annotation, motif, and internal-priming summaries;
@@ -1084,6 +1100,7 @@ results/
     alignment_preparation.tsv
     control_mapping.tsv
     library_calibration.tsv
+    calibration_kernel_diagnostics.tsv
     strandedness.tsv
     fragment_filtering.tsv
     pac_discovery.tsv
@@ -1221,6 +1238,8 @@ Cover:
 - PAC seed ranking, radius boundaries, and deterministic ties;
 - deterministic proximal kernels, peak ranking, minimum resolvable separation,
   regional peak merging, and assay-resolution intervals;
+- calibration kernel warnings for PAC spacings, separated modes, and wide
+  spreads, and their absence for single-site kernels;
 - calibrated proximal-tag assignment likelihood ratios and ambiguity handling;
 - protocol evidence sources and rejection of incompatible comparison families;
 - prevention of motif use during primary PAC discovery;
@@ -1249,6 +1268,8 @@ Create a small synthetic FASTA, annotation, and alignment collection containing:
   exact-boundary PE samples;
 - an intentionally incompatible mixed-protocol run that must fail before atlas
   construction;
+- exact-boundary reads run under the Plasmidsaurus profile, which must warn at
+  calibration;
 - DMSO controls referenced by TreatmentA and TreatmentB;
 - at least one second comparison family;
 - forward- and reverse-stranded samples;

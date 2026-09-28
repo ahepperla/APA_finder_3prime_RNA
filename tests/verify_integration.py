@@ -216,9 +216,17 @@ def main() -> None:
     sums = positive.groupby(["gene_id", "sample_id"])["pau"].sum().to_numpy()
     assert np.allclose(sums, 1)
 
+    # Exact-boundary discovery does not assign reads through the kernel, so the
+    # kernel is described but not judged.
+    kernel = pd.read_csv(ROOT / "qc" / "calibration_kernel_diagnostics.tsv", sep="\t")
+    assert list(kernel["endpoint_model"]) == ["exact_boundary"], list(kernel["endpoint_model"])
+    assert list(kernel["status"]) == ["not_applicable"], list(kernel["status"])
+
     report = ROOT / "report" / "index.html"
     assert report.stat().st_size > 10000
     report_text = report.read_text()
+    assert "<h2>Calibration kernel</h2>" in report_text
+    assert "Calibration warning" not in report_text
     assert "PAU sample correlation" in report_text
     assert "PAC-level p-value distribution" in report_text
     assert "primary_pas_motif_rna" in report_text

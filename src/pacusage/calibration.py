@@ -8,9 +8,20 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.signal import find_peaks
 
 from .errors import PacusageError
 from .models import EvidenceObservation
+
+# Thresholds for the proximal-tag kernel warning, which never stops a run. A
+# mode counts when it reaches this share of the highest mode, and two modes
+# stay separate only when the valley between them drops below this share of
+# the lower one.
+KERNEL_MODE_MINIMUM_HEIGHT = 0.25
+KERNEL_MODE_VALLEY = 0.50
+# A kernel whose central interval exceeds its minimum resolvable separation by
+# more than this factor is wider than read ends around one site should be.
+KERNEL_MAXIMUM_SPREAD_RATIO = 6.0
 
 
 @dataclass(frozen=True)
@@ -228,3 +239,75 @@ def minimum_resolvable_separation(kernel: np.ndarray, threshold: float) -> int:
         if kernel_overlap(kernel, separation) <= threshold:
             return separation
     return len(kernel)
+
+
+def kernel_modes(kernel: np.ndarray, window: int) -> int:
+    """Count the kernel's modes that stay separate after smoothing over ``window``.
+
+    Smoothing at the kernel's own resolution removes ripples and narrow bumps
+    that discovery could not resolve anyway. Counting raw local maxima instead
+    would split a flat top into equal-height twins.
+    """
+    width = max(1, min(int(window), len(kernel)))
+    if width % 2 == 0:
+        width -= 1
+    smoothed = np.convolve(kernel, np.ones(width) / width, mode="same")
+    if not smoothed.any():
+        return 0
+    padded = np.concatenate(([0.0], smoothed, [0.0]))
+    peaks, _ = find_peaks(padded, height=KERNEL_MODE_MINIMUM_HEIGHT * smoothed.max())
+    modes: list[int] = []
+    for peak in (int(index) - 1 for index in peaks):
+        if modes:
+            previous = modes[-1]
+            valley = smoothed[previous : peak + 1].min()
+            if valley >= KERNEL_MODE_VALLEY * min(smoothed[previous], smoothed[peak]):
+                if smoothed[peak] > smoothed[previous]:
+                    modes[-1] = peak
+                continue
+        modes.append(peak)
+    return len(modes)
+
+
+def kernel_diagnostics(
+    kernel: np.ndarray,
+    central_widths: Iterable[float],
+    endpoint_model: str,
+    evidence_source: str,
+    overlap_threshold: float,
+) -> dict[str, object]:
+    """Describe the pooled kernel, warning when a proximal-tag kernel looks unlike
+    read ends around one site.
+
+    ``central_widths`` are the samples' calibrated central interval widths.
+    A kernel of PAC spacings, for example from alternative polyadenylation near
+    annotated ends, has several modes or a resolution far below its spread.
+    """
+    resolution = minimum_resolvable_separation(kernel, overlap_threshold)
+    modes = kernel_modes(kernel, resolution)
+    widths = [float(value) for value in central_widths if np.isfinite(value)]
+    width = float(np.median(widths)) if widths else float("nan")
+    ratio = width / resolution
+    reasons = []
+    if endpoint_model == "proximal_tag":
+        if modes > 1:
+            reasons.append(f"the pooled kernel has {modes} separated modes")
+        if np.isfinite(ratio) and ratio > KERNEL_MAXIMUM_SPREAD_RATIO:
+            reasons.append(
+                f"the samples' median central interval ({width:g} nt) is {ratio:.1f} times "
+                f"the kernel's minimum resolvable separation ({resolution} nt)"
+            )
+        status = "warning" if reasons else "ok"
+    else:
+        # Exact-boundary discovery does not assign reads through the kernel.
+        status = "not_applicable"
+    return {
+        "endpoint_model": endpoint_model,
+        "evidence_source": evidence_source,
+        "kernel_modes": modes,
+        "minimum_resolvable_separation": resolution,
+        "median_central_interval_width": round(width, 3) if widths else "",
+        "spread_to_resolution_ratio": round(ratio, 3) if np.isfinite(ratio) else "",
+        "status": status,
+        "reason": "; ".join(reasons),
+    }

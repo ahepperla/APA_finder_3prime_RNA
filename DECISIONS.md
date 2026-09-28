@@ -8,6 +8,40 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-27: The calibration kernel diagnostic warns and never stops a run
+
+Status: accepted (project lead, by approving the calibration kernel warning
+plan)
+
+This settles the details that the next entry left open.
+- **Warn only.** A proximal-tag run whose pooled kernel fails a check goes on.
+  - The warning appears in the Nextflow log, in
+    `qc/calibration_kernel_diagnostics.tsv`, and at the top of the report.
+  - The empty-atlas stop at ANNOTATE_PACS still catches the worst case.
+- **Two checks,** on the selected source's pooled kernel exactly as discovery
+  reads it back from `calibration_kernel.tsv`. Summing the untrimmed array can
+  round an overlap tie differently and shift the resolution by 1 nt.
+  - **Separated modes.** The kernel is smoothed with a centred moving average
+    as wide as its minimum resolvable separation, rounded down to an odd
+    width. A peak counts as a mode when it reaches 25% of the highest.
+    Neighbours merge when the valley between them stays at or above 50% of the
+    lower one. More than one mode warns.
+  - **Spread.** A median per-sample central interval width more than 6 times
+    the minimum resolvable separation warns.
+- **Constants, not parameters.** The thresholds are
+  `KERNEL_MODE_MINIMUM_HEIGHT`, `KERNEL_MODE_VALLEY`, and
+  `KERNEL_MAXIMUM_SPREAD_RATIO` in `calibration.py`. They can become
+  parameters if real libraries call for tuning.
+- **Exact-boundary runs** record the same values with status
+  `not_applicable`, because exact discovery does not assign reads through the
+  kernel.
+
+Reason: the kernel of PAC spacings has 3 modes and a spread ratio of 50.
+Single-site kernels measured 1 mode and ratios of 1.8 to 4.2, and two sites
+250 nt apart gave 2 modes. Counting raw local maxima instead would split the
+healthy fixture's flat top into twin peaks. Warning rather than failing keeps
+a run going when an unusual but genuine kernel trips a check.
+
 ## 2026-09-27: Calibration kernels get a diagnostic, not new gene selection
 
 Status: accepted (project lead, option b of the proximal-fixture review)

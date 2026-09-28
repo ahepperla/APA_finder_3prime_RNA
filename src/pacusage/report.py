@@ -14,6 +14,7 @@ import pandas as pd
 def build_report(results_root: str | Path, output_html: str | Path) -> None:
     root = Path(results_root)
     sections = [
+        _calibration_warning_section(_locate(root, "calibration_kernel_diagnostics.tsv")),
         _table_section("Input validation", _locate(root, "input_validation.tsv")),
         _table_section("Reference preparation", _locate(root, "reference_preparation.tsv")),
         _combined_table_section(
@@ -21,6 +22,7 @@ def build_report(results_root: str | Path, output_html: str | Path) -> None:
         ),
         _table_section("Condition to control mapping", _locate(root, "control_mapping.tsv")),
         _table_section("Library calibration", _locate(root, "library_calibration.tsv")),
+        _table_section("Calibration kernel", _locate(root, "calibration_kernel_diagnostics.tsv")),
         _combined_table_section("Strandedness", list(root.rglob("*.strandedness.tsv"))),
         _combined_table_section("Fragment filtering", list(root.rglob("*.fragment_filtering.tsv"))),
         _table_section("PAC discovery", _locate(root, "pac_discovery.tsv")),
@@ -65,6 +67,7 @@ tr:last-child td {{ border-bottom:0; }}
 .metrics {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; }}
 .metric {{ border-left:4px solid var(--accent); background:var(--paper); padding:12px; }}
 .metric strong {{ display:block; font-size:23px; }}
+.warning {{ border-left:4px solid var(--warn); background:#fbf1e8; padding:12px 14px; }}
 .chart-panel {{ margin-top:10px; border:1px solid var(--line); background:var(--paper);
   padding:14px; }}
 .chart-note {{ color:var(--muted); margin:2px 0 10px; }}
@@ -125,6 +128,21 @@ def _read_table(path: Path, **options: object) -> pd.DataFrame | None:
         return pd.read_csv(path, sep="\t", **options)
     except (pd.errors.EmptyDataError, OSError):
         return None
+
+
+def _calibration_warning_section(path: Path) -> str:
+    frame = _read_table(path)
+    if frame is None or not {"status", "reason"} <= set(frame.columns):
+        return ""
+    reasons = frame.loc[frame["status"] == "warning", "reason"].fillna("")
+    if reasons.empty:
+        return ""
+    paragraphs = "".join(f"<p>{html.escape(str(reason))}</p>" for reason in reasons)
+    return (
+        f"<section class='warning'><h2>Calibration warning</h2>{paragraphs}"
+        "<p>See qc/calibration_kernel_diagnostics.tsv. The run continued; check that the "
+        "calibration kernel suits this library before trusting proximal-tag PACs.</p></section>"
+    )
 
 
 def _table_section(title: str, path: Path, limit: int = 200) -> str:

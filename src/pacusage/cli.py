@@ -32,6 +32,7 @@ from .calibration import (
     classify_metrics,
     empirical_kernel,
     kernel_correlations,
+    kernel_diagnostics,
     observation_offsets,
     pooled_kernel,
 )
@@ -156,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--output", required=True)
     calibrate.add_argument("--kernel", required=True)
     calibrate.add_argument("--resolution", required=True)
+    calibrate.add_argument("--kernel-diagnostics", required=True)
     calibrate.add_argument("--threads", type=int, default=1)
     calibrate.set_defaults(function=command_calibrate)
 
@@ -193,6 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate_calibration.add_argument("--output", required=True)
     aggregate_calibration.add_argument("--kernel", required=True)
     aggregate_calibration.add_argument("--resolution", required=True)
+    aggregate_calibration.add_argument("--kernel-diagnostics", required=True)
     aggregate_calibration.set_defaults(function=command_aggregate_calibration)
 
     evidence = commands.add_parser(
@@ -565,6 +568,7 @@ def command_calibrate(args: argparse.Namespace) -> None:
         args.output,
         args.kernel,
         args.resolution,
+        args.kernel_diagnostics,
     )
 
 
@@ -728,6 +732,7 @@ def command_aggregate_calibration(args: argparse.Namespace) -> None:
         args.output,
         args.kernel,
         args.resolution,
+        args.kernel_diagnostics,
     )
 
 
@@ -740,6 +745,7 @@ def _write_calibration_outputs(
     output_path: str | Path,
     kernel_path: str | Path,
     resolution_path: str | Path,
+    diagnostics_path: str | Path,
 ) -> None:
     selected_source = _select_source(source_metrics, resolutions, profile, params)
     selected_metrics = source_metrics[selected_source]
@@ -810,6 +816,17 @@ def _write_calibration_outputs(
         },
         resolution_path,
     )
+    # Describe the kernel exactly as discovery reads it back. Summing the longer
+    # pooled array can round an overlap differently at a tie with the threshold.
+    kernel, _ = _read_kernel(kernel_path)
+    diagnostics = kernel_diagnostics(
+        kernel,
+        [metric.central_high - metric.central_low for metric in classified],
+        endpoint_model,
+        selected_source,
+        float(params["proximal_kernel_overlap_threshold"]),
+    )
+    write_tsv([diagnostics], diagnostics_path)
 
 
 def _select_source(

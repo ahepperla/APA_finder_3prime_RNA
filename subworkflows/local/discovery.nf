@@ -32,6 +32,13 @@ workflow DISCOVERY {
     )
     run_resolution = AGGREGATE_CALIBRATION.out.resolution.first()
     kernel = AGGREGATE_CALIBRATION.out.kernel.first()
+    // A doubtful proximal-tag kernel is reported, not fatal: the run goes on.
+    AGGREGATE_CALIBRATION.out.kernel_diagnostics
+        .splitCsv(header: true, sep: '\t')
+        .filter { row -> row.status == 'warning' }
+        .subscribe { row ->
+            log.warn "Calibration kernel: ${row.reason}. See qc/calibration_kernel_diagnostics.tsv."
+        }
 
     EXTRACT_3PRIME_EVIDENCE(SCAN_ALIGNMENT.out.scan, run_resolution, resolved_params)
     evidence_tables = EXTRACT_3PRIME_EVIDENCE.out.evidence
@@ -63,6 +70,7 @@ workflow DISCOVERY {
     motifs = ANNOTATE_PACS.out.motifs
     evidence = EXTRACT_3PRIME_EVIDENCE.out.evidence
     calibration = AGGREGATE_CALIBRATION.out.calibration
+    kernel_diagnostics = AGGREGATE_CALIBRATION.out.kernel_diagnostics
     run_resolution = run_resolution
     kernel = kernel
     discovery_qc = CLUSTER_PACS.out.qc

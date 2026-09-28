@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +12,17 @@ from pacusage.calibration import (
     classify_metrics,
     empirical_kernel,
     kernel_correlations,
+    kernel_diagnostics,
+    kernel_modes,
     kernel_overlap,
+    minimum_resolvable_separation,
     observation_offsets,
+    pooled_kernel,
 )
-from pacusage.cli import main
+from pacusage.cli import _read_kernel, main
 from pacusage.models import EvidenceObservation
 from pacusage.parameters import normalize_parameters
+from pacusage.tableio import read_tsv
 
 
 def params() -> dict:
@@ -246,6 +252,8 @@ def test_split_calibration_matches_legacy_outputs(tmp_path: Path, case: str) -> 
                 str(legacy / "calibration_kernel.tsv"),
                 "--resolution",
                 str(legacy / "library_resolution.json"),
+                "--kernel-diagnostics",
+                str(legacy / "calibration_kernel_diagnostics.tsv"),
             ]
         )
         == 0
@@ -319,6 +327,8 @@ def test_split_calibration_matches_legacy_outputs(tmp_path: Path, case: str) -> 
                 str(split / "calibration_kernel.tsv"),
                 "--resolution",
                 str(split / "library_resolution.json"),
+                "--kernel-diagnostics",
+                str(split / "calibration_kernel_diagnostics.tsv"),
             ]
         )
         == 0
@@ -328,11 +338,190 @@ def test_split_calibration_matches_legacy_outputs(tmp_path: Path, case: str) -> 
         "library_calibration.tsv",
         "calibration_kernel.tsv",
         "library_resolution.json",
+        "calibration_kernel_diagnostics.tsv",
     ):
         assert (split / name).read_bytes() == (legacy / name).read_bytes()
+    # Every case resolves to exact boundaries, which the kernel warning skips.
+    diagnostics = read_tsv(split / "calibration_kernel_diagnostics.tsv")
+    assert [row["status"] for row in diagnostics] == ["not_applicable"]
     selected = json.loads((split / "library_resolution.json").read_text())
     assert (selected["evidence_source"], selected["endpoint_model"]) == {
         "exact_boundary_SE": ("polyA_junction", "exact_boundary"),
         "generic_SE": ("read_3p", "exact_boundary"),
         "generic_PE": ("fragment_3p", "exact_boundary"),
     }[case]
+
+
+# The pooled kernel from calibrating exact-boundary reads, PACs 50 nt apart,
+# under the Plasmidsaurus profile: offsets -2..102, zero outside the spikes.
+SPACING_KERNEL = {
+    -2: 0.044121495611877164, -1: 0.08824299122375433, 0: 0.13236448683563146,
+    1: 0.08824299122375433, 2: 0.044121495611877164, 48: 0.031574023768461475,
+    49: 0.06314804753692295, 50: 0.09472207130538442, 51: 0.06314804753692295,
+    52: 0.031574023768461475, 98: 0.03541559173077248, 99: 0.07083118346154496,
+    100: 0.10624677519231743, 101: 0.07083118346154496, 102: 0.03541559173077248,
+}
+
+
+def dense(weights: dict[int, float]) -> np.ndarray:
+    kernel = np.zeros(max(weights) - min(weights) + 1)
+    for offset, weight in weights.items():
+        kernel[offset - min(weights)] = weight
+    return kernel
+
+
+def gaussian(center: float, sd: float, length: int = 1001) -> np.ndarray:
+    positions = np.arange(length)
+    return np.exp(-0.5 * ((positions - center) / sd) ** 2)
+
+
+def test_kernel_of_pac_spacings_warns() -> None:
+    row = kernel_diagnostics(dense(SPACING_KERNEL), [100.0] * 4, "proximal_tag", "read_3p", 0.5)
+    assert row["status"] == "warning"
+    assert (row["kernel_modes"], row["minimum_resolvable_separation"]) == (3, 2)
+    assert row["spread_to_resolution_ratio"] == 50.0
+    assert row["reason"] == (
+        "the pooled kernel has 3 separated modes; the samples' median central interval "
+        "(100 nt) is 50.0 times the kernel's minimum resolvable separation (2 nt)"
+    )
+
+
+def test_single_site_kernel_is_ok() -> None:
+    kernel = gaussian(300, 60)
+    row = kernel_diagnostics(kernel / kernel.sum(), [197.4] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"], row["reason"]) == ("ok", 1, "")
+    assert row["minimum_resolvable_separation"] == 81
+
+
+@pytest.mark.parametrize(
+    ("width", "status", "reason"),
+    [
+        # Exactly 6 times the 81 nt resolution is still acceptable.
+        (486.0, "ok", ""),
+        (
+            500.0,
+            "warning",
+            "the samples' median central interval (500 nt) is 6.2 times the kernel's "
+            "minimum resolvable separation (81 nt)",
+        ),
+    ],
+)
+def test_spread_warns_above_six_times_the_resolution(width, status, reason) -> None:
+    kernel = gaussian(300, 60)
+    row = kernel_diagnostics(kernel / kernel.sum(), [width] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"], row["reason"]) == (status, 1, reason)
+
+
+def test_flat_top_with_ripples_and_tail_bumps_is_one_mode() -> None:
+    # Like the Plasmidsaurus-like fixture: a triangle whose flat top has
+    # equal-height ripples, with narrow bumps at a fifth of the height at each
+    # tail. Raw local maxima would count several modes here.
+    offsets = np.arange(0, 301)
+    kernel = np.minimum(offsets, 300 - offsets).astype(float)
+    ripples = np.where(np.abs(offsets - 150) < 10, 1.5 * np.cos(offsets), 0)
+    kernel = np.minimum(kernel, 140.0) + ripples
+    for tail in (10, 290):
+        kernel[tail - 2 : tail + 3] += 28.0
+    kernel /= kernel.sum()
+    assert kernel_modes(kernel, 1) > 1
+    row = kernel_diagnostics(kernel, [220.0] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"]) == ("ok", 1)
+
+
+def test_a_shoulder_above_half_its_height_is_one_mode() -> None:
+    # Smoothing at the 89 nt resolution leaves a dip between the peak and its
+    # shoulder 140 nt away, but the dip stays well above half the shoulder.
+    kernel = gaussian(300, 40) + 0.6 * gaussian(440, 40)
+    row = kernel_diagnostics(kernel / kernel.sum(), [240.0] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"]) == ("ok", 1)
+    assert row["minimum_resolvable_separation"] == 89
+
+
+def test_a_minor_site_is_not_a_mode_but_widens_the_spread() -> None:
+    # A site at 15% of the main one's height, 300 nt away, stays below a
+    # quarter of the highest mode. It still shrinks the resolution to 55 nt
+    # and widens the central interval, so the spread check warns alone.
+    kernel = gaussian(300, 40) + 0.15 * gaussian(600, 40)
+    row = kernel_diagnostics(kernel / kernel.sum(), [375.0] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"], row["minimum_resolvable_separation"]) == (
+        "warning",
+        1,
+        55,
+    )
+    assert row["reason"].startswith("the samples' median central interval (375 nt)")
+
+
+def test_two_sites_with_a_valley_below_half_the_lower_peak_are_two_modes() -> None:
+    # After smoothing at the 70 nt resolution, the valley between sites 165 nt
+    # apart falls to 37% of the lower peak.
+    kernel = gaussian(300, 40) + gaussian(465, 40)
+    row = kernel_diagnostics(kernel / kernel.sum(), [267.0] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"], row["minimum_resolvable_separation"]) == (
+        "warning",
+        2,
+        70,
+    )
+    assert row["reason"] == "the pooled kernel has 2 separated modes"
+
+
+def test_two_separated_modes_warn_without_a_wide_spread() -> None:
+    kernel = gaussian(200, 40) + 0.3 * gaussian(450, 40)
+    row = kernel_diagnostics(kernel / kernel.sum(), [150.0] * 4, "proximal_tag", "read_3p", 0.5)
+    assert (row["status"], row["kernel_modes"]) == ("warning", 2)
+    assert row["reason"] == "the pooled kernel has 2 separated modes"
+
+
+def test_exact_boundary_kernels_are_described_but_not_judged() -> None:
+    row = kernel_diagnostics(dense(SPACING_KERNEL), [100.0] * 4, "exact_boundary", "read_3p", 0.5)
+    assert (row["status"], row["reason"]) == ("not_applicable", "")
+    assert (row["kernel_modes"], row["minimum_resolvable_separation"]) == (3, 2)
+
+
+def test_diagnostics_describe_the_kernel_discovery_reads_back(tmp_path: Path) -> None:
+    # These offsets put the kernel's overlap at 3 nt exactly on the 0.5
+    # threshold. Summed over the full pooled array, the tie rounds the other
+    # way, giving a resolution that discovery never uses.
+    offsets = {191: 3, 193: 3, 196: 1, 197: 1}
+    full = pooled_kernel([empirical_kernel(offsets, -1000, 1000)] * 2)
+    assert minimum_resolvable_separation(full, 0.5) == 3, "the offsets no longer tie"
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text("sample_id\tcondition\nS1\tA\nS2\tA\n")
+    params = tmp_path / "params.json"
+    params.write_text(
+        json.dumps({"input": str(sheet), "assembly": "synthetic", "fasta": "x.fa", "gtf": "x.gtf"})
+    )
+    summaries = []
+    for sample_id in ("S1", "S2"):
+        metrics = calculate_metrics(sample_id, "read_3p", offsets, 100, 0, 0.05, 0.95)
+        resolution = {
+            "sample_id": sample_id,
+            "library_profile": "plasmidsaurus_3prime",
+            "layout": "SE",
+            "strandedness": "forward",
+            "evidence_source": "read_3p",
+            "endpoint_model": "proximal_tag",
+        }
+        summary = tmp_path / f"{sample_id}.calibration.json"
+        summary.write_text(
+            json.dumps(
+                {
+                    "sample_id": sample_id,
+                    "resolution": resolution,
+                    "sources": {
+                        "read_3p": {"metrics": asdict(metrics), "offset_counts": offsets}
+                    },
+                }
+            )
+        )
+        summaries.append(str(summary))
+    arguments = ["aggregate-calibration", "--samples", str(sheet), "--calibrations", *summaries]
+    arguments += ["--params", str(params), "--output", str(tmp_path / "calibration.tsv")]
+    arguments += ["--kernel", str(tmp_path / "kernel.tsv")]
+    arguments += ["--resolution", str(tmp_path / "run.json")]
+    arguments += ["--kernel-diagnostics", str(tmp_path / "diagnostics.tsv")]
+    assert main(arguments) == 0
+
+    kernel, _ = _read_kernel(tmp_path / "kernel.tsv")
+    [row] = read_tsv(tmp_path / "diagnostics.tsv")
+    assert minimum_resolvable_separation(kernel, 0.5) == 4
+    assert row["minimum_resolvable_separation"] == "4"
