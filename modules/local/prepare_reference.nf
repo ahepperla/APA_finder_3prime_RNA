@@ -1,13 +1,16 @@
 process PREPARE_REFERENCE {
     tag 'reference'
     label 'low'
+    // genome.fa links to the source FASTA; move keeps links as links, where
+    // the default copy would duplicate the genome into the work directory.
+    stageOutMode 'move'
 
     publishDir "${params.outdir}/qc", mode: 'copy', pattern: 'reference_preparation.tsv'
     publishDir "${params.outdir}/prepared_reference", mode: 'copy',
         pattern: 'genome.fa*', enabled: params.save_prepared_reference
 
     input:
-    path resolved_params
+    path fasta, stageAs: 'source/*'
 
     output:
     path 'genome.fa', emit: fasta
@@ -16,13 +19,13 @@ process PREPARE_REFERENCE {
 
     script:
     """
-    FASTA=\$(python -c 'import yaml; print(yaml.safe_load(open("${resolved_params}"))["fasta"])')
+    SOURCE=\$(python -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' '${fasta}')
     FAI=""
-    if [[ -f "\${FASTA}.fai" ]]; then
-        FAI="--fai \${FASTA}.fai"
+    if [[ -f "\${SOURCE}.fai" ]]; then
+        FAI="--fai \${SOURCE}.fai"
     fi
     pacusage prepare-reference \
-        --fasta "\${FASTA}" \
+        --fasta '${fasta}' \
         \${FAI} \
         --output genome.fa \
         --metadata reference_preparation.tsv

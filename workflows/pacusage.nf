@@ -1,4 +1,5 @@
 include { VALIDATE_INPUTS } from '../modules/local/validate_inputs'
+include { RECORD_INPUT_CHECKSUMS } from '../modules/local/record_input_checksums'
 include { BUILD_REPORT } from '../modules/local/build_report'
 include { PREPARATION } from '../subworkflows/local/preparation'
 include { DISCOVERY } from '../subworkflows/local/discovery'
@@ -27,6 +28,11 @@ workflow PACUSAGE {
     annotation = Channel.value(file(params.gtf, checkIfExists: true))
 
     PREPARATION(normalized, resolved, annotation)
+    RECORD_INPUT_CHECKSUMS(
+        VALIDATE_INPUTS.out.input_checksums,
+        normalized,
+        PREPARATION.out.alignment_qc
+    )
     DISCOVERY(
         PREPARATION.out.samples,
         normalized,

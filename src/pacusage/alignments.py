@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
 import pysam
 
 from .errors import PacusageError
-from .tableio import sha256_file
+from .tableio import read_tsv, sha256_file
 
 
 def inspect_alignment(path: str | Path, reference: str | Path | None = None) -> dict[str, Any]:
@@ -53,24 +52,35 @@ def inspect_alignment(path: str | Path, reference: str | Path | None = None) -> 
     }
 
 
+def source_fingerprint(path: str | Path) -> dict[str, int]:
+    """Size and modification time, which also key Nextflow's task cache."""
+    status = Path(path).stat()
+    return {"source_size": status.st_size, "source_mtime_ns": status.st_mtime_ns}
+
+
 def prepare_alignment(
     source: str | Path,
     output: str | Path,
     reference: str | Path,
     threads: int = 1,
 ) -> dict[str, Any]:
+    """Link a coordinate-sorted source, or sort it, and index the result.
+
+    A sorted source is not copied: the output is an absolute symlink to it, so
+    the source must stay in place and unmodified for the rest of the analysis.
+    """
     source = Path(source).resolve()
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    before = sha256_file(source)
+    fingerprint = source_fingerprint(source)
+    source_sha256 = sha256_file(source)
     details = inspect_alignment(source, reference)
     is_cram = source.suffix.lower() == ".cram"
-    if destination.exists() and destination.samefile(source):
-        # Nextflow may stage the input under the requested output name as a
-        # symlink. Remove only that work-directory link before creating output.
-        destination.unlink()
+    # Nextflow stages the input under the requested output name. Remove that
+    # work-directory link so nothing is ever written through it.
+    _remove_staged_link(destination, source)
     if details["sort_order"] == "coordinate":
-        shutil.copyfile(source, destination)
+        destination.symlink_to(source)
         action = "reused_alignment"
     else:
         args = ["-@", str(max(1, threads)), "-o", str(destination)]
@@ -84,6 +94,7 @@ def prepare_alignment(
         action = "sorted_and_indexed"
 
     index_path = Path(f"{destination}.crai" if is_cram else f"{destination}.bai")
+    _remove_staged_link(index_path, None)
     sibling_index = _find_index(source)
     reusable_index = (
         action == "reused_alignment"
@@ -91,7 +102,7 @@ def prepare_alignment(
         and _index_is_usable(source, sibling_index, reference)
     )
     if reusable_index:
-        shutil.copyfile(sibling_index, index_path)
+        index_path.symlink_to(sibling_index.resolve())
         action = "reused_alignment_and_index"
     else:
         try:
@@ -101,8 +112,7 @@ def prepare_alignment(
         if action == "reused_alignment":
             action = "indexed"
 
-    after = sha256_file(source)
-    if before != after:
+    if source_fingerprint(source) != fingerprint:
         raise PacusageError(f"Source alignment changed during preparation: {source}")
     prepared = inspect_alignment(destination, reference)
     if prepared["sort_order"] != "coordinate":
@@ -114,9 +124,53 @@ def prepare_alignment(
         "format": "CRAM" if is_cram else "BAM",
         "action": action,
         "layout_detected": prepared["layout"],
-        "source_sha256": before,
-        "prepared_sha256": sha256_file(destination),
+        "source_sha256": source_sha256,
+        "prepared_sha256": (
+            source_sha256 if destination.is_symlink() else sha256_file(destination)
+        ),
+        **fingerprint,
     }
+
+
+def check_prepared_source(alignment: str | Path, metadata: str | Path) -> None:
+    """Fail if a linked source alignment moved or changed after preparation."""
+    rows = read_tsv(metadata)
+    if len(rows) != 1:
+        raise PacusageError(f"Alignment preparation record {metadata} must contain one row.")
+    row = rows[0]
+    source = row["source_alignment"]
+    if row.get("action") == "sorted_and_indexed":
+        # A sorted copy in the work directory, which the pipeline owns. Every
+        # other action links the source, whose path may resolve differently
+        # inside a container, so it is checked by its recorded path.
+        return
+    if not Path(source).is_file():
+        raise PacusageError(
+            f"Source alignment {source} is not readable here. Prepared alignments link to "
+            "their sources, so sources must stay in place, and container runs need their "
+            "directories in bind_paths."
+        )
+    try:
+        recorded = {key: int(row[key]) for key in ("source_size", "source_mtime_ns")}
+    except (KeyError, ValueError) as error:
+        raise PacusageError(
+            f"Alignment preparation record {metadata} lacks the source fingerprint."
+        ) from error
+    if source_fingerprint(source) != recorded:
+        raise PacusageError(
+            f"Source alignment {source} changed after preparation. Restore it, or rerun "
+            "with -resume so PREPARE_ALIGNMENT records the current file."
+        )
+
+
+def _remove_staged_link(path: Path, source: Path | None) -> None:
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        if source is not None and path.samefile(source):
+            path.unlink()
+        else:
+            raise PacusageError(f"Refusing to replace an existing file: {path}")
 
 
 def _find_index(path: Path) -> Path | None:

@@ -6,15 +6,16 @@ process INFER_STRANDEDNESS {
 
     input:
     tuple val(meta), path(alignment), path(index), path(alignment_qc)
-    path reference
+    tuple path(reference), path(reference_index)
     path annotation
     path resolved_params
 
+    // The alignment is not an output: passing it through made Nextflow copy
+    // the whole file back from scratch. PREPARATION rejoins it by sample.
     output:
-    tuple val(meta), path(alignment), path(index),
+    tuple val(meta),
         path("${meta.sample_id}.resolution.json"),
         path("${meta.sample_id}.strandedness.tsv"),
-        path(alignment_qc),
         emit: resolved
 
     script:
@@ -22,6 +23,7 @@ process INFER_STRANDEDNESS {
     pacusage infer-strandedness \
         --sample-id '${meta.sample_id}' \
         --alignment '${alignment}' \
+        --alignment-metadata '${alignment_qc}' \
         --reference '${reference}' \
         --annotation '${annotation}' \
         --profile '${meta.library_profile}' \

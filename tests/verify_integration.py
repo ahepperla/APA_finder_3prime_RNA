@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from pathlib import Path
@@ -62,6 +63,61 @@ def check_interval(row: pd.Series, params: dict, label: str) -> None:
     assert low <= delta <= high, f"{label}: interval [{low}, {high}] excludes {delta}"
     successes = number(row["bootstrap_successes"])
     assert successes >= minimum, f"{label}: {successes} bootstrap successes"
+
+
+def task_directories(trace_text: str, process: str) -> dict[str, Path]:
+    """Work directories of one process's tasks, keyed by task tag."""
+    lines = trace_text.splitlines()
+    header = lines[0].split("\t")
+    directories = {}
+    for line in lines[1:]:
+        row = dict(zip(header, line.split("\t"), strict=True))
+        match = re.fullmatch(rf"PACUSAGE:\S*{process} \((.+)\)", row["name"])
+        if match:
+            candidates = list((REPOSITORY / "work").glob(f"{row['hash']}*"))
+            assert len(candidates) == 1, f"no single work directory for {row['name']}"
+            directories[match.group(1)] = candidates[0]
+    return directories
+
+
+def check_alignment_handling(trace_text: str) -> None:
+    # One scan per sample replaces per-source calibration passes.
+    assert trace_text.count("PACUSAGE:DISCOVERY:SCAN_ALIGNMENT") == 10
+    assert "CALIBRATE_SAMPLE" not in trace_text
+    assert trace_text.count("PACUSAGE:RECORD_INPUT_CHECKSUMS") == 1
+    samples = pd.read_csv(FIXTURES / "samples.tsv", sep="\t", dtype=str)
+    sources = dict(zip(samples["sample_id"], samples["alignment"], strict=True))
+    prepared = task_directories(trace_text, "PREPARE_ALIGNMENT")
+    assert set(prepared) == set(sources)
+    for sample_id, source in sources.items():
+        output = prepared[sample_id] / f"{sample_id}{Path(source).suffix}"
+        if sample_id == "DMSO_1":
+            # The only unsorted fixture is sorted into the work directory.
+            assert output.is_file() and not output.is_symlink(), output
+        else:
+            assert output.is_symlink(), f"{output} is a copy, not a link"
+            assert output.resolve() == (FIXTURES / source).resolve(), output
+    for process in ("INFER_STRANDEDNESS", "SCAN_ALIGNMENT"):
+        for sample_id, directory in task_directories(trace_text, process).items():
+            copies = [
+                path.name
+                for path in directory.iterdir()
+                if path.suffix in {".bam", ".cram"} and not path.is_symlink()
+            ]
+            assert copies == [], f"{process} ({sample_id}) holds alignment copies: {copies}"
+
+
+def check_input_checksums() -> None:
+    rows = pd.read_csv(ROOT / "manifest" / "input_checksums.tsv", sep="\t", dtype=str)
+    samples = pd.read_csv(FIXTURES / "samples.tsv", sep="\t", dtype=str)
+    assert list(rows["role"]) == ["sample_sheet", "fasta", "annotation"] + ["alignment"] * len(
+        samples
+    )
+    alignments = rows[rows["role"] == "alignment"]
+    expected = [str((FIXTURES / name).resolve()) for name in samples["alignment"]]
+    assert list(alignments["path"]) == expected
+    for path, digest in zip(alignments["path"], alignments["sha256"], strict=True):
+        assert digest == hashlib.sha256(Path(path).read_bytes()).hexdigest(), path
 
 
 def main() -> None:
@@ -176,6 +232,8 @@ def main() -> None:
     traces = list(REPOSITORY.glob("trace-*.txt"))
     assert traces
     trace_text = max(traces, key=lambda path: path.stat().st_mtime).read_text()
+    check_alignment_handling(trace_text)
+    check_input_checksums()
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:FINALIZE_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:MERGE_USAGE_MODELS") == 1

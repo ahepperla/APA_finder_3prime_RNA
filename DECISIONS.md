@@ -8,6 +8,72 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-27: Implementation choices in the BAM pass cleanup
+
+Status: accepted (project lead)
+
+- **Milestone.** The project lead accepted the milestone with the proximal
+  path covered by the CLI-level equivalence tests (option a). The
+  Plasmidsaurus-like fixture, recorded separately, has since covered that path
+  end to end.
+- **Source fingerprint.** It is size plus modification time, not the planned
+  size, modification time, and inode (option a). Nextflow's cache ignores
+  inodes, so an inode-only change (for example a file restored by `rsync -a`)
+  would fail every later step, and `-resume` could never clear it.
+- **Merge order.** MERGE_USAGE_MODELS orders `gene_precision.tsv.gz` and
+  `fitted_pau.tsv.gz` shards by family. Their directories are numbered in
+  task-creation order, which changed between two otherwise identical runs, so
+  the published row order was not reproducible.
+- **VALIDATE cache.** A comment inside VALIDATE_INPUTS's script changes its
+  task hash. Otherwise `-resume` would reuse an older version's
+  `input_checksums.tsv`, which still has alignment rows.
+- **Reference inputs.** As planned, PREPARE_REFERENCE takes the FASTA as a
+  declared input instead of reading its path from `resolved_params.yaml`. So
+  changing an unrelated parameter no longer reruns reference or alignment
+  preparation on `-resume`.
+  - The deviation: the source's sibling `.fai` is found through the FASTA's
+    real path, not declared as an input.
+  - This is safe because a reused `.fai` is validated against the FASTA, and
+    an index is a deterministic function of an unchanged FASTA, so a cached
+    task can't hold a wrong one.
+- **Sorted-copy detection.** `check_prepared_source` recognizes a sorted copy
+  by its recorded `action` (`sorted_and_indexed`), not by comparing paths. So
+  a linked source whose path resolves differently inside a container is still
+  checked.
+
+Reason: each keeps the approved plan's targets, reproducible reruns and
+reliable `-resume`, where a literal reading of the plan would not.
+
+## 2026-09-27: Read each alignment once for calibration and evidence
+
+Status: accepted (project lead, by approving the BAM pass cleanup plan)
+
+- Python gzip writers set a zero header timestamp. Reruns then reproduce the
+  atlas checksum and the statistics seeds within one software environment.
+  Statistics change once when this lands.
+- Strandedness inference keeps its full-pass reservoir sample.
+- `manifest/input_checksums.tsv` stays complete.
+  - VALIDATE hashes the sample sheet, FASTA, and GTF, but no longer the
+    alignments.
+  - PREPARE_ALIGNMENT hashes each alignment once, and a new
+    RECORD_INPUT_CHECKSUMS step adds those rows.
+- Prepared alignments, their indexes, and the prepared FASTA are symlinks to
+  the sources. Source files must stay in place, unmodified, and visible inside
+  containers until an analysis is accepted.
+- SCAN_ALIGNMENT (`pacusage scan-alignment`, label `medium`) replaces
+  CALIBRATE_SAMPLE. One pass over each alignment collects every candidate
+  evidence source, splice continuations, and filtering counters.
+- EXTRACT_3PRIME_EVIDENCE writes its outputs from the scan without reading the
+  alignment, with label `serial_medium`.
+- Two existing behaviors stay for exact equivalence, to be fixed separately:
+  - excluded contigs match the alignment's raw contig names;
+  - strandedness inference ignores contig aliases.
+
+Reason: each alignment was hashed 4 times, copied up to 3 times, and read in
+full 4-7 times, on 8-CPU reservations for single-threaded work. Evidence,
+atlas, counts, and statistics stay identical apart from the one-time seed
+change.
+
 ## 2026-09-27: Accept the measured bootstrap coverage and pin DRIMSeq
 
 Status: accepted (project lead)

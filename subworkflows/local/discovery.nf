@@ -1,5 +1,5 @@
 include { BUILD_CALIBRATION_REFERENCE } from '../../modules/local/build_calibration_reference'
-include { CALIBRATE_SAMPLE } from '../../modules/local/calibrate_sample'
+include { SCAN_ALIGNMENT } from '../../modules/local/scan_alignment'
 include { AGGREGATE_CALIBRATION } from '../../modules/local/aggregate_calibration'
 include { EXTRACT_3PRIME_EVIDENCE } from '../../modules/local/extract_3prime_evidence'
 include { CLUSTER_PACS } from '../../modules/local/cluster_pacs'
@@ -16,13 +16,13 @@ workflow DISCOVERY {
     main:
     BUILD_CALIBRATION_REFERENCE(annotation)
     calibration_transcript_ends = BUILD_CALIBRATION_REFERENCE.out.transcript_ends.first()
-    CALIBRATE_SAMPLE(
+    SCAN_ALIGNMENT(
         samples,
         reference,
         calibration_transcript_ends,
         resolved_params
     )
-    calibration_summaries = CALIBRATE_SAMPLE.out.calibration
+    calibration_summaries = SCAN_ALIGNMENT.out.calibration
         .map { meta, calibration -> calibration }
         .collect()
     AGGREGATE_CALIBRATION(
@@ -33,7 +33,7 @@ workflow DISCOVERY {
     run_resolution = AGGREGATE_CALIBRATION.out.resolution.first()
     kernel = AGGREGATE_CALIBRATION.out.kernel.first()
 
-    EXTRACT_3PRIME_EVIDENCE(samples, reference, run_resolution, resolved_params)
+    EXTRACT_3PRIME_EVIDENCE(SCAN_ALIGNMENT.out.scan, run_resolution, resolved_params)
     evidence_tables = EXTRACT_3PRIME_EVIDENCE.out.evidence
         .map { meta, tsv, parquet, splice, plus, minus, qc -> parquet }
         .collect()

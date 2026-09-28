@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import gzip
 import hashlib
+import io
 import json
 from collections.abc import Iterable
 from itertools import chain
@@ -19,11 +20,31 @@ def open_text(
 ):
     path = Path(path)
     if path.suffix == ".gz":
+        # Zero timestamp makes identical content produce identical bytes,
+        # and the atlas checksum seeds the statistics.
+        if any(op in mode for op in ("w", "a", "x")):
+            binary = gzip.GzipFile(
+                filename=path,
+                mode=mode.replace("t", ""),
+                compresslevel=9 if compresslevel is None else compresslevel,
+                mtime=0,
+            )
+            if "b" in mode:
+                return binary
+            return io.TextIOWrapper(binary, newline="")
+        # Reading: unchanged behavior.
         options = {"newline": ""}
         if compresslevel is not None:
             options["compresslevel"] = compresslevel
         return gzip.open(path, mode, **options)
     return path.open(mode, newline="")
+
+
+def gzip_compression(path: str | Path) -> str | dict[str, object]:
+    """Return compression argument for pandas to_csv with zero gzip timestamp."""
+    if str(path).endswith(".gz"):
+        return {"method": "gzip", "mtime": 0}
+    return "infer"
 
 
 def read_tsv(path: str | Path) -> list[dict[str, str]]:

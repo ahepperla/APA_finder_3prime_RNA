@@ -22,9 +22,21 @@ coverage before making broad or negative structural claims.
 - Keep workflow modules small and use their declared channels rather than
   bypassing stages with ad hoc files. Explicit Nextflow CLI parameters override
   values supplied by `analysis.yaml`.
-- Do not modify source FASTA or alignment inputs. The pipeline records
-  checksums, resolved parameters, software versions, preparation actions, and
-  the frozen-atlas checksum for reproducibility.
+- Do not modify source FASTA or alignment inputs.
+  - Prepared alignments, indexes, and the prepared FASTA are symlinks to the
+    sources. Never write through them.
+  - Keep any generated index in the work directory. htslib writes a missing
+    `.fai` beside whatever FASTA path it is given, so pass it a link in the
+    task directory, never the source path.
+- The pipeline records checksums, resolved parameters, software versions,
+  preparation actions, and the frozen-atlas checksum for reproducibility.
+  Published gzip files carry no timestamps, so reruns are byte-identical.
+- Each alignment is read in full twice: once by INFER_STRANDEDNESS, and once
+  by SCAN_ALIGNMENT for every candidate evidence source together.
+  EXTRACT_3PRIME_EVIDENCE works from the scan. `src/pacusage/scan.py` must
+  reproduce `extract_evidence` and `extract_splice_continuations` in
+  `evidence.py`, which stay as the reference implementation;
+  `tests/unit/test_scan.py` holds the equivalence tests.
 
 ## Input And Data Invariants
 
@@ -71,9 +83,15 @@ Rscript tests/test_usage_model_simulation.R scripts/fit_usage_model.R
 tests/run_nextflow.sh
 ```
 
-The integration script runs the R statistics tests, rebuilds fixtures, executes
-the test Nextflow profile, checks required result artifacts, and validates
-their contents. When running the fixture manually with Conda:
+The integration script:
+- runs the R statistics tests and rebuilds the fixtures;
+- executes the test Nextflow profile, checks the required result artifacts,
+  and validates their contents;
+- checks that the fixture files are unchanged;
+- checks that a fresh rerun reproduces every published file;
+- checks that a mixed-protocol sample sheet fails before discovery.
+
+When running the fixture manually with Conda:
 
 ```bash
 python tests/fixtures/build_fixture.py

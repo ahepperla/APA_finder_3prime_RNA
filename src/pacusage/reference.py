@@ -32,13 +32,25 @@ def prepare_reference(
     output_fasta: str | Path,
     supplied_fai: str | Path | None = None,
 ) -> dict[str, str]:
+    """Link the FASTA and place a validated or new index beside the link.
+
+    The source is never copied or written to: ``faidx`` runs on the link, so a
+    generated index lands next to ``output_fasta``, not next to the source.
+    """
     source = Path(fasta).resolve()
     destination = Path(output_fasta)
     if not source.is_file():
         raise PacusageError(f"Genome FASTA does not exist: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
     destination_fai = Path(f"{destination}.fai")
+    for path in (destination, destination_fai):
+        if path.is_symlink():
+            path.unlink()
+        elif path.exists():
+            if path.samefile(source) or Path(f"{source}.fai").resolve() == path.resolve():
+                raise PacusageError(f"Reference preparation would replace its source: {path}")
+            path.unlink()
+    destination.symlink_to(source)
 
     action = "generated_index"
     if supplied_fai and Path(supplied_fai).is_file():

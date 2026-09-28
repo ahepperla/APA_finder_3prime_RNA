@@ -1,6 +1,9 @@
 process PREPARE_ALIGNMENT {
     tag { meta.sample_id }
     label 'medium'
+    // A sorted source is linked, not copied; move keeps links as links, where
+    // the default copy would duplicate every BAM into the work directory.
+    stageOutMode 'move'
 
     publishDir "${params.outdir}/qc", mode: 'copy',
         pattern: '*.alignment_preparation.tsv'
@@ -9,7 +12,7 @@ process PREPARE_ALIGNMENT {
 
     input:
     tuple val(meta), path(alignment)
-    path reference
+    tuple path(reference), path(reference_index)
 
     output:
     tuple val(meta),
@@ -29,4 +32,3 @@ process PREPARE_ALIGNMENT {
         --threads ${task.cpus}
     """
 }
-

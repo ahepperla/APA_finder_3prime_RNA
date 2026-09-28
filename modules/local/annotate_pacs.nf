@@ -7,7 +7,7 @@ process ANNOTATE_PACS {
 
     input:
     path candidates
-    path reference
+    tuple path(reference), path(reference_index)
     path annotation
     path run_resolution
     path resolved_params

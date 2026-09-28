@@ -479,3 +479,32 @@ def test_merge_statistics_rejects_mismatched_precision_headers(
         )
     assert exc_info.value.code == 2
     assert "TSV headers differ between families" in capsys.readouterr().err
+
+
+def test_merge_statistics_orders_shards_by_family_not_task_number(tmp_path: Path) -> None:
+    # Task numbers follow task-creation order, which can change between runs.
+    shards = {"family-1": "Vehicle", "family-2": "DMSO", "family-3": "TreatmentA"}
+    for directory, family in shards.items():
+        (tmp_path / directory).mkdir()
+        precision_row = {
+            "gene_id": f"{family}_gene",
+            "precision": "1",
+            "family": family,
+            "model_status": "drimseq",
+        }
+        fitted_row = {
+            "gene_id": f"{family}_gene",
+            "condition": f"{family}_treated",
+            "control_condition": family,
+        }
+        write_tsv([precision_row], tmp_path / directory / "gene_precision.tsv.gz")
+        write_tsv([fitted_row], tmp_path / directory / "fitted_pau.tsv.gz")
+
+    output = tmp_path / "merged"
+    arguments = ["merge-statistics", "--inputs"]
+    arguments += [str(tmp_path / directory) for directory in shards]
+    assert main([*arguments, "--output-dir", str(output)]) == 0
+    precision = read_tsv(output / "gene_precision.tsv.gz")
+    assert [row["family"] for row in precision] == ["DMSO", "TreatmentA", "Vehicle"]
+    fitted = read_tsv(output / "fitted_pau.tsv.gz")
+    assert [row["control_condition"] for row in fitted] == ["DMSO", "TreatmentA", "Vehicle"]

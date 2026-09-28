@@ -19,7 +19,12 @@ import pyarrow.parquet as pq
 import pysam
 
 from . import __version__
-from .alignments import inspect_alignment, prepare_alignment, validate_contigs
+from .alignments import (
+    check_prepared_source,
+    inspect_alignment,
+    prepare_alignment,
+    validate_contigs,
+)
 from .annotation import annotate_candidates, load_known_pacs, load_motif_catalog
 from .calibration import (
     CalibrationMetrics,
@@ -30,6 +35,7 @@ from .calibration import (
     observation_offsets,
     pooled_kernel,
 )
+from .checksums import record_input_checksums
 from .clustering import (
     candidates_as_rows,
     cluster_exact_boundaries,
@@ -39,7 +45,6 @@ from .clustering import (
 from .errors import PacusageError
 from .evidence import (
     extract_evidence,
-    extract_splice_continuations,
     infer_strandedness,
     write_bedgraphs,
     write_evidence,
@@ -58,8 +63,10 @@ from .reference import (
 )
 from .report import build_report
 from .samples import control_mapping_rows, read_and_validate_samples, write_normalized_samples
+from .scan import read_scan_manifest, scan_alignment, write_scan
 from .statistics import add_bh_fdr, cmh_kmer_test, filter_testable_features, motif_usage_scores
 from .tableio import (
+    gzip_compression,
     iter_tsv,
     open_text,
     read_tsv,
@@ -110,9 +117,20 @@ def build_parser() -> argparse.ArgumentParser:
     alignment.add_argument("--threads", type=int, default=1)
     alignment.set_defaults(function=command_prepare_alignment)
 
+    record_checksums = commands.add_parser(
+        "record-input-checksums",
+        help="append per-sample alignment hashes to the input checksums",
+    )
+    record_checksums.add_argument("--base", required=True)
+    record_checksums.add_argument("--samples", required=True)
+    record_checksums.add_argument("--alignment-metadata", nargs="+", required=True)
+    record_checksums.add_argument("--output", required=True)
+    record_checksums.set_defaults(function=command_record_input_checksums)
+
     strand = commands.add_parser("infer-strandedness", help="infer layout and strandedness")
     strand.add_argument("--sample-id", required=True)
     strand.add_argument("--alignment", required=True)
+    strand.add_argument("--alignment-metadata")
     strand.add_argument("--reference", required=True)
     strand.add_argument("--annotation", required=True)
     strand.add_argument("--profile", required=True)
@@ -149,19 +167,21 @@ def build_parser() -> argparse.ArgumentParser:
     calibration_reference.add_argument("--output", required=True)
     calibration_reference.set_defaults(function=command_calibration_reference)
 
-    calibrate_sample = commands.add_parser(
-        "calibrate-sample",
-        help="calculate calibration summaries for one sample",
+    scan = commands.add_parser(
+        "scan-alignment",
+        help="read one alignment once for calibration and evidence",
     )
-    calibrate_sample.add_argument("--sample-id", required=True)
-    calibrate_sample.add_argument("--alignment", required=True)
-    calibrate_sample.add_argument("--resolution", required=True)
-    calibrate_sample.add_argument("--reference", required=True)
-    calibrate_sample.add_argument("--transcript-ends", required=True)
-    calibrate_sample.add_argument("--params", required=True)
-    calibrate_sample.add_argument("--output", required=True)
-    calibrate_sample.add_argument("--threads", type=int, default=1)
-    calibrate_sample.set_defaults(function=command_calibrate_sample)
+    scan.add_argument("--sample-id", required=True)
+    scan.add_argument("--alignment", required=True)
+    scan.add_argument("--alignment-metadata")
+    scan.add_argument("--resolution", required=True)
+    scan.add_argument("--reference", required=True)
+    scan.add_argument("--transcript-ends", required=True)
+    scan.add_argument("--params", required=True)
+    scan.add_argument("--calibration", required=True)
+    scan.add_argument("--output-prefix", required=True)
+    scan.add_argument("--threads", type=int, default=1)
+    scan.set_defaults(function=command_scan_alignment)
 
     aggregate_calibration = commands.add_parser(
         "aggregate-calibration",
@@ -175,10 +195,11 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate_calibration.add_argument("--resolution", required=True)
     aggregate_calibration.set_defaults(function=command_aggregate_calibration)
 
-    evidence = commands.add_parser("extract-evidence", help="extract one sample's evidence")
+    evidence = commands.add_parser(
+        "extract-evidence", help="write one sample's evidence from its alignment scan"
+    )
     evidence.add_argument("--sample-id", required=True)
-    evidence.add_argument("--alignment", required=True)
-    evidence.add_argument("--reference", required=True)
+    evidence.add_argument("--scan", required=True)
     evidence.add_argument("--resolution", required=True)
     evidence.add_argument("--params", required=True)
     evidence.add_argument("--tsv", required=True)
@@ -187,7 +208,6 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--minus-track", required=True)
     evidence.add_argument("--splice-continuations", required=True)
     evidence.add_argument("--qc", required=True)
-    evidence.add_argument("--threads", type=int, default=1)
     evidence.set_defaults(function=command_extract_evidence)
 
     cluster = commands.add_parser("cluster", help="build the condition-blind PAC atlas")
@@ -292,10 +312,14 @@ def command_validate(args: argparse.Namespace) -> None:
     samples, checks = read_and_validate_samples(
         params["input"], params, check_files=not args.skip_alignment_open
     )
+    fasta_sha256: str | None = None
     if not args.skip_alignment_open:
         with tempfile.TemporaryDirectory(prefix="pacusage-validation-") as temporary:
+            # A linked FASTA keeps any generated index in this directory,
+            # never next to the source.
             validation_fasta = Path(temporary) / "genome.fa"
-            prepare_reference(params["fasta"], validation_fasta)
+            reference_metadata = prepare_reference(params["fasta"], validation_fasta)
+            fasta_sha256 = reference_metadata["fasta_sha256"]
             with pysam.FastaFile(str(validation_fasta)) as fasta_handle:
                 fasta_contigs = dict(
                     zip(fasta_handle.references, fasta_handle.lengths, strict=True)
@@ -328,19 +352,21 @@ def command_validate(args: argparse.Namespace) -> None:
     write_resolved_parameters(params, output / "resolved_params.yaml")
     write_tsv(checks, output / "input_validation.tsv")
     write_tsv(control_mapping_rows(samples), output / "control_mapping.tsv")
+    # Alignment hashes are added by record-input-checksums, from the one hash
+    # each PREPARE_ALIGNMENT task computes.
     checksums = [
         {
             "role": "sample_sheet",
             "path": str(Path(params["input"]).resolve()),
             "sha256": sha256_file(params["input"]),
         },
-        {"role": "fasta", "path": params["fasta"], "sha256": sha256_file(params["fasta"])},
+        {
+            "role": "fasta",
+            "path": params["fasta"],
+            "sha256": fasta_sha256 or sha256_file(params["fasta"]),
+        },
         {"role": "annotation", "path": params["gtf"], "sha256": sha256_file(params["gtf"])},
     ]
-    checksums.extend(
-        {"role": "alignment", "path": sample.alignment, "sha256": sha256_file(sample.alignment)}
-        for sample in samples
-    )
     write_tsv(checksums, output / "input_checksums.tsv")
     versions = [
         {"software": "pacusage", "version": __version__},
@@ -371,7 +397,25 @@ def command_prepare_alignment(args: argparse.Namespace) -> None:
     write_tsv([metadata], args.metadata)
 
 
+def command_record_input_checksums(args: argparse.Namespace) -> None:
+    base_rows = read_tsv(args.base)
+    sample_rows = read_tsv(args.samples)
+    metadata_rows = []
+    for metadata_file in args.alignment_metadata:
+        rows = read_tsv(metadata_file)
+        if len(rows) != 1:
+            raise PacusageError(
+                f"Alignment metadata file {metadata_file} must contain exactly one data row, "
+                f"but contains {len(rows)}."
+            )
+        metadata_rows.extend(rows)
+    output_rows = record_input_checksums(base_rows, sample_rows, metadata_rows)
+    write_tsv(output_rows, args.output, ["role", "path", "sha256"])
+
+
 def command_infer_strandedness(args: argparse.Namespace) -> None:
+    if args.alignment_metadata:
+        check_prepared_source(args.alignment, args.alignment_metadata)
     inspection = inspect_alignment(args.alignment, args.reference)
     if args.layout == "auto":
         layout = inspection["layout"]
@@ -396,6 +440,8 @@ def command_infer_strandedness(args: argparse.Namespace) -> None:
         args.decision_fraction,
         args.random_seed,
     )
+    if args.alignment_metadata:
+        check_prepared_source(args.alignment, args.alignment_metadata)
     defaults = resolve_profile_defaults(
         args.profile, layout, args.strandedness, args.evidence_source, args.endpoint_model
     )
@@ -542,7 +588,7 @@ def command_calibration_reference(args: argparse.Namespace) -> None:
     )
 
 
-def command_calibrate_sample(args: argparse.Namespace) -> None:
+def command_scan_alignment(args: argparse.Namespace) -> None:
     params = load_parameters(args.params)
     resolution = _read_json(args.resolution)
     if resolution.get("sample_id") != args.sample_id:
@@ -556,27 +602,38 @@ def command_calibrate_sample(args: argparse.Namespace) -> None:
         sources.intersection_update({resolution["evidence_source"]})
     if not sources:
         raise PacusageError(f"Sample {args.sample_id} has no compatible calibration source.")
+    # An auto endpoint model is resolved only after every sample is calibrated,
+    # so splice continuations are collected unless the model is already exact.
+    splice_continuations = (
+        bool(params["constitutive_readthrough_filter"])
+        and resolution.get("endpoint_model", "auto") != "exact_boundary"
+    )
 
     ends = _read_transcript_ends(args.transcript_ends)
+    if args.alignment_metadata:
+        check_prepared_source(args.alignment, args.alignment_metadata)
+    scan = scan_alignment(
+        args.sample_id,
+        args.alignment,
+        args.reference,
+        resolution["layout"],
+        resolution["strandedness"],
+        sources,
+        splice_continuations,
+        min_mapq=int(params["min_mapq"]),
+        require_unique=bool(params["require_unique"]),
+        require_proper_pair=bool(params["require_proper_pair"]),
+        exclude_duplicates=bool(params["exclude_duplicates"]),
+        excluded_contigs=params["excluded_contigs"],
+        contig_aliases=_read_aliases(params.get("chromosome_aliases")),
+        threads=args.threads,
+    )
+    if args.alignment_metadata:
+        check_prepared_source(args.alignment, args.alignment_metadata)
     source_results: dict[str, dict[str, object]] = {}
     for source in sorted(sources):
-        observations, _ = extract_evidence(
-            args.sample_id,
-            args.alignment,
-            args.reference,
-            resolution["layout"],
-            resolution["strandedness"],
-            source,
-            min_mapq=int(params["min_mapq"]),
-            require_unique=bool(params["require_unique"]),
-            require_proper_pair=bool(params["require_proper_pair"]),
-            exclude_duplicates=bool(params["exclude_duplicates"]),
-            excluded_contigs=params["excluded_contigs"],
-            contig_aliases=_read_aliases(params.get("chromosome_aliases")),
-            threads=args.threads,
-        )
         offsets, genes, clips = observation_offsets(
-            observations,
+            scan.evidence[source].observations(),
             ends,
             int(params["calibration_max_distance"]),
             int(params["pac_min_sample_count"]),
@@ -600,8 +657,9 @@ def command_calibrate_sample(args: argparse.Namespace) -> None:
             "resolution": resolution,
             "sources": source_results,
         },
-        args.output,
+        args.calibration,
     )
+    write_scan(scan, args.output_prefix)
 
 
 def command_aggregate_calibration(args: argparse.Namespace) -> None:
@@ -802,21 +860,26 @@ def command_extract_evidence(args: argparse.Namespace) -> None:
         raise PacusageError(
             f"Run resolution does not contain layout/strandedness for sample {args.sample_id}."
         )
-    observations, qc = extract_evidence(
-        args.sample_id,
-        args.alignment,
-        args.reference,
-        sample_resolution["layout"],
-        sample_resolution["strandedness"],
-        resolution["evidence_source"],
-        min_mapq=int(params["min_mapq"]),
-        require_unique=bool(params["require_unique"]),
-        require_proper_pair=bool(params["require_proper_pair"]),
-        exclude_duplicates=bool(params["exclude_duplicates"]),
-        excluded_contigs=params["excluded_contigs"],
-        contig_aliases=_read_aliases(params.get("chromosome_aliases")),
-        threads=args.threads,
-    )
+    scan = read_scan_manifest(args.scan)
+    if scan.sample_id != args.sample_id:
+        raise PacusageError(
+            f"Alignment scan {args.scan} belongs to {scan.sample_id!r}, not {args.sample_id!r}."
+        )
+    scanned = (scan.layout, scan.strandedness)
+    resolved = (sample_resolution["layout"], sample_resolution["strandedness"])
+    if scanned != resolved:
+        raise PacusageError(
+            f"Sample {args.sample_id} was scanned as {'/'.join(scanned)}, but the run "
+            f"resolution says {'/'.join(resolved)}."
+        )
+    evidence_source = resolution["evidence_source"]
+    if evidence_source not in scan.sources:
+        raise PacusageError(
+            f"Sample {args.sample_id} was not scanned for evidence source {evidence_source}."
+        )
+    parquet_path, filtering = scan.sources[evidence_source]
+    observations = list(_iter_observation_file(parquet_path, require_sorted=True))
+    qc = dict(filtering)
     write_evidence(observations, args.tsv, args.parquet)
     write_bedgraphs(observations, args.plus_track, args.minus_track)
     use_readthrough_filter = (
@@ -825,20 +888,14 @@ def command_extract_evidence(args: argparse.Namespace) -> None:
         and bool(params["constitutive_readthrough_filter"])
     )
     if use_readthrough_filter:
-        continuations, splice_qc = extract_splice_continuations(
-            args.sample_id,
-            args.alignment,
-            args.reference,
-            sample_resolution["layout"],
-            sample_resolution["strandedness"],
-            min_mapq=int(params["min_mapq"]),
-            require_unique=bool(params["require_unique"]),
-            require_proper_pair=bool(params["require_proper_pair"]),
-            exclude_duplicates=bool(params["exclude_duplicates"]),
-            excluded_contigs=params["excluded_contigs"],
-            contig_aliases=_read_aliases(params.get("chromosome_aliases")),
-            threads=args.threads,
-        )
+        if scan.splice is None:
+            raise PacusageError(
+                f"Sample {args.sample_id}: the run uses the constitutive-readthrough filter, "
+                "but the alignment scan did not collect splice continuations."
+            )
+        splice_path, splice_filtering = scan.splice
+        continuations = list(_iter_splice_continuations([str(splice_path)]))
+        splice_qc = dict(splice_filtering)
         splice_qc["splice_filter_enabled"] = True
     else:
         continuations = []
@@ -1065,10 +1122,19 @@ def command_merge_counts(args: argparse.Namespace) -> None:
         sample_id = sample_ids[0]
         per_sample[sample_id] = frame.set_index(frame["pac_id"].astype(str))["count"]
     wide, long, totals, pau = build_count_outputs(per_sample, atlas)
-    wide.to_csv(args.wide, sep="\t", index=False, compression="infer")
+    wide.to_csv(
+        args.wide, sep="\t", index=False, compression=gzip_compression(args.wide)
+    )
     long.to_parquet(args.long, index=False)
-    totals.to_csv(args.gene_totals, sep="\t", index=False, compression="infer")
-    pau.to_csv(args.pau, sep="\t", index=False, compression="infer")
+    totals.to_csv(
+        args.gene_totals,
+        sep="\t",
+        index=False,
+        compression=gzip_compression(args.gene_totals),
+    )
+    pau.to_csv(
+        args.pau, sep="\t", index=False, compression=gzip_compression(args.pau)
+    )
     _, filtering = filter_testable_features(
         wide,
         int(params["min_gene_total"]),
@@ -1080,7 +1146,12 @@ def command_merge_counts(args: argparse.Namespace) -> None:
         (wide["gene_id"].astype(str) != "")
         & ~wide["gene_id"].astype(str).str.contains(",", regex=False)
     ]
-    model_input.to_csv(args.testable, sep="\t", index=False, compression="infer")
+    model_input.to_csv(
+        args.testable,
+        sep="\t",
+        index=False,
+        compression=gzip_compression(args.testable),
+    )
     filtering.to_csv(args.filtering, sep="\t", index=False)
 
 
@@ -1097,7 +1168,12 @@ def command_merge_statistics(args: argparse.Namespace) -> None:
 
     aggregate_names = {"gene_precision.tsv.gz", "fitted_pau.tsv.gz"}
     for name in sorted(aggregate_names):
-        shards = [path for path in inputs if path.name == name]
+        # Family directories are numbered in task-creation order, which can
+        # change between runs; order shards by family so reruns are identical.
+        shards = sorted(
+            (path for path in inputs if path.name == name),
+            key=lambda path: (_shard_family(path), str(path)),
+        )
         if shards:
             _concatenate_tsv_files(shards, output_directory / name)
 
@@ -1110,6 +1186,17 @@ def command_merge_statistics(args: argparse.Namespace) -> None:
                 f"Duplicate comparison-family output filename: {source.name}"
             )
         shutil.copyfile(source, destination)
+
+
+def _shard_family(path: Path) -> str:
+    """Return the comparison family of a per-family statistics shard."""
+    with open_text(path) as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+        first = handle.readline().rstrip("\n").split("\t")
+    for column in ("family", "control_condition"):
+        if column in header and len(first) == len(header):
+            return first[header.index(column)]
+    return ""
 
 
 def _concatenate_tsv_files(inputs: list[Path], output: Path) -> None:
@@ -1387,10 +1474,7 @@ def _read_transcript_ends(
 
 
 def _write_bed(rows: list[dict[str, object]], path: str | Path) -> None:
-    import gzip
-
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "wt") as handle:
+    with open_text(path, "wt") as handle:
         for row in rows:
             coordinate = int(row["coordinate"])
             if row["endpoint_model"] == "proximal_tag":

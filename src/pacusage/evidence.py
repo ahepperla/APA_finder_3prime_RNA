@@ -17,7 +17,7 @@ import pysam
 from .errors import PacusageError
 from .models import EvidenceObservation, SpliceContinuation
 from .reference import GenomicFeature
-from .tableio import write_tsv
+from .tableio import open_text, write_tsv
 
 REFERENCE_CONSUMING = {0, 2, 3, 7, 8}
 
@@ -417,39 +417,52 @@ def _query_name_groups(
         yield current
 
 
+EVIDENCE_FIELDS = [
+    "sample_id",
+    "contig",
+    "strand",
+    "coordinate",
+    "count",
+    "poly_a_clip_count",
+    "evidence_source",
+]
+EVIDENCE_SCHEMA = pa.schema(
+    [
+        ("sample_id", pa.string()),
+        ("contig", pa.string()),
+        ("strand", pa.string()),
+        ("coordinate", pa.int64()),
+        ("count", pa.int64()),
+        ("poly_a_clip_count", pa.int64()),
+        ("evidence_source", pa.string()),
+    ]
+)
+EVIDENCE_PARQUET_BATCH = 100_000
+
+
 def write_evidence(
     observations: list[EvidenceObservation],
     tsv_path: str | Path,
     parquet_path: str | Path,
 ) -> None:
-    fields = [
-        "sample_id",
-        "contig",
-        "strand",
-        "coordinate",
-        "count",
-        "poly_a_clip_count",
-        "evidence_source",
-    ]
-    write_tsv((asdict(observation) for observation in observations), tsv_path, fields)
-    schema = pa.schema(
-        [
-            ("sample_id", pa.string()),
-            ("contig", pa.string()),
-            ("strand", pa.string()),
-            ("coordinate", pa.int64()),
-            ("count", pa.int64()),
-            ("poly_a_clip_count", pa.int64()),
-            ("evidence_source", pa.string()),
-        ]
-    )
-    with pq.ParquetWriter(parquet_path, schema) as writer:
-        for start in range(0, len(observations), 100_000):
-            rows = [
-                asdict(observation)
-                for observation in observations[start : start + 100_000]
-            ]
-            writer.write_table(pa.Table.from_pylist(rows, schema=schema))
+    write_tsv((asdict(observation) for observation in observations), tsv_path, EVIDENCE_FIELDS)
+    write_evidence_parquet(observations, parquet_path)
+
+
+def write_evidence_parquet(
+    observations: Iterable[EvidenceObservation],
+    path: str | Path,
+) -> None:
+    """Write evidence in fixed-size row groups, streaming the observations."""
+    with pq.ParquetWriter(path, EVIDENCE_SCHEMA) as writer:
+        rows: list[dict[str, Any]] = []
+        for observation in observations:
+            rows.append(asdict(observation))
+            if len(rows) == EVIDENCE_PARQUET_BATCH:
+                writer.write_table(pa.Table.from_pylist(rows, schema=EVIDENCE_SCHEMA))
+                rows = []
+        if rows:
+            writer.write_table(pa.Table.from_pylist(rows, schema=EVIDENCE_SCHEMA))
 
 
 def write_splice_continuations(
@@ -474,11 +487,8 @@ def write_bedgraphs(
     plus_path: str | Path,
     minus_path: str | Path,
 ) -> None:
-    import gzip
-
     for strand, path in (("+", plus_path), ("-", minus_path)):
-        opener = gzip.open if str(path).endswith(".gz") else open
-        with opener(path, "wt") as handle:
+        with open_text(path, "wt") as handle:
             for item in observations:
                 if item.strand == strand:
                     handle.write(

@@ -307,6 +307,13 @@ For each BAM or CRAM:
 7. Never modify the source file.
 8. Record whether the file was reused, indexed, or sorted and indexed.
 
+A reused alignment is a symbolic link to the source, not a copy, and a
+reusable index is linked the same way. Hash each source once, and record its
+size and modification time. Every later step that reads a linked alignment
+checks both before and after its pass. The prepared FASTA is also a link;
+validate or generate its index beside the link in the work directory, and
+pass the FASTA and index together to every step that needs them.
+
 Prepared files remain in the Nextflow cache unless publication is requested.
 
 ### 3. Resolve Protocol, Layout, Strandedness, and Calibration
@@ -520,6 +527,16 @@ Aggregate identical chromosome, strand, and boundary combinations per sample.
 Store the observation as exact-boundary evidence only for an
 `exact_boundary` profile. For `proximal_tag`, retain it as an observed endpoint
 whose offset distribution is interpreted by the calibrated profile.
+
+Read each alignment once for calibration and extraction. `SCAN_ALIGNMENT`
+makes one pass, with one name-collate for paired-end data, and collects for
+every candidate evidence source:
+- aggregated observations;
+- filtering counters, kept per source in first-seen order;
+- direct splice continuations, when the readthrough filter can apply.
+
+`EXTRACT_3PRIME_EVIDENCE` then writes the resolved source's evidence from
+that scan.
 
 ### 5. Build the PAC Atlas
 
@@ -1128,8 +1145,9 @@ pacusage/
 ```
 
 Name modules after the workflow operations above, including
-`PREPARE_REFERENCE`, `PREPARE_ALIGNMENT`, `CALIBRATE_LIBRARY_PROFILE`,
-`INFER_STRANDEDNESS`, `EXTRACT_3PRIME_EVIDENCE`, `CLUSTER_PACS`,
+`PREPARE_REFERENCE`, `PREPARE_ALIGNMENT`, `RECORD_INPUT_CHECKSUMS`,
+`INFER_STRANDEDNESS`, `SCAN_ALIGNMENT` (per-sample calibration and evidence),
+`AGGREGATE_CALIBRATION`, `EXTRACT_3PRIME_EVIDENCE`, `CLUSTER_PACS`,
 `ANNOTATE_PACS`, `QUANTIFY_PACS`, `FIT_USAGE_MODEL`, and `BUILD_REPORT`.
 
 ## Coding Standards

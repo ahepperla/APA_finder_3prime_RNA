@@ -135,6 +135,19 @@ bind_paths:
 PACusage passes each entry as an Apptainer bind mount with the same host and
 container path. Nextflow work directories are mounted separately.
 
+Prepared alignments, their indexes, and the prepared FASTA are symbolic links
+to your source files, not copies. Only an unsorted alignment is sorted into a
+new file, and a missing index is generated in the work directory. Therefore:
+- keep the source files in place and unmodified until the analysis is
+  accepted;
+- with Apptainer, make sure `bind_paths` covers their directories.
+
+Each step that reads a linked alignment first checks that the file's size and
+modification time still match what `PREPARE_ALIGNMENT` recorded. If they
+don't, the step fails and asks for a rerun with `-resume`. The
+`save_prepared_alignments` and `save_prepared_reference` options still
+publish real copies.
+
 Explicit command-line values override YAML values:
 
 ```bash
@@ -162,10 +175,20 @@ prefers `polyA_junction` evidence when enough genes support it and otherwise
 uses the profile-compatible aligned edge.
 
 Calibration is parallelized by sample. Nextflow first builds one compact table
-of annotated transcript ends, submits one calibration task per BAM/CRAM, and
-then combines the small per-sample summaries into the run-level calibration
-files. On Slurm, a 48-sample run can therefore schedule up to 48 independent
-calibration jobs instead of scanning all alignments in one large-memory job.
+of annotated transcript ends, then submits one `SCAN_ALIGNMENT` task per
+BAM/CRAM, and finally combines the small per-sample summaries into the
+run-level calibration files. On Slurm, a 48-sample run can therefore schedule
+up to 48 independent jobs instead of scanning all alignments in one
+large-memory job. Each scan reads its alignment once, name-collating a
+paired-end file once, for every candidate evidence source together:
+- calibration summaries;
+- aggregated end observations;
+- splice continuations;
+- filtering counts.
+
+After calibration picks the run's evidence source, `EXTRACT_3PRIME_EVIDENCE`
+writes that source's evidence from the scan without reading the alignment
+again.
 
 When multiple library chemistries resolve differently, run them separately.
 A batch term cannot recover information lost through incompatible endpoint
@@ -292,6 +315,12 @@ python tests/fixtures/build_fixture.py
 nextflow run . -profile test,conda -resume
 ```
 
+`tests/run_nextflow.sh` runs the R tests and the fixture pipeline, then
+checks the results. It also checks that:
+- the fixture files are unchanged afterwards;
+- a fresh run in a new work directory reproduces every published file;
+- a sample sheet mixing two protocols fails at calibration, before discovery.
+
 The statistical process requires DRIMSeq, stageR, and limma. The supplied
 Conda files install them from Bioconda and pin DRIMSeq to 1.38.0, the version
 the statistics were validated with. Runs are network-independent after the
@@ -299,7 +328,18 @@ environment or container has been prepared.
 
 ## Reproducibility
 
-PACusage never modifies source FASTA or alignment files. It records input
-checksums, resolved parameters, software versions, preparation actions, and a
-checksum of the frozen atlas. Nextflow work directories provide resumability;
-retain them until the analysis is accepted.
+PACusage never modifies source FASTA or alignment files, and never writes
+beside them. It records all of the following:
+- input checksums, with each alignment hashed once by its own
+  `PREPARE_ALIGNMENT` task;
+- resolved parameters;
+- software versions;
+- preparation actions;
+- a checksum of the frozen atlas.
+
+Gzip files are written without timestamps. So a rerun with the same inputs,
+parameters, and software reproduces every published file byte for byte,
+including the atlas checksum that seeds the statistics.
+
+Nextflow work directories provide resumability; retain them until the
+analysis is accepted.
