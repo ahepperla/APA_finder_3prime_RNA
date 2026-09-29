@@ -11,6 +11,9 @@ process ANNOTATE_PACS {
     path annotation
     path run_resolution
     path resolved_params
+    // Staged only so that -resume reruns annotation, and every step after it,
+    // when the annotation code changes. Nextflow does not track the package.
+    path annotation_code, stageAs: 'annotation-code/*'
 
     output:
     path 'pacs.v1.metadata.tsv.gz', emit: metadata

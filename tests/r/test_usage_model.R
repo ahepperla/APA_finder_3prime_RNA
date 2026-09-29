@@ -945,4 +945,155 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
   }
 })
 
+test_case("M-25", "APA patterns follow region shares and direction-matched calls", {
+  params <- list(min_abs_delta_pau = 0.10, event_min_treatment_pau = 0.05, gene_fdr = 0.05)
+  # One row per PAC: coordinate, class, last exon, fitted PAU in each group,
+  # event, and confidence.
+  gene <- function(gene_id, strand, coordinate, class, last_exon, control, treatment, event,
+                   confidence = "high", gene_fdr = 0.01) {
+    data.frame(
+      gene_id = gene_id, strand = strand, coordinate = coordinate, assignment_class = class,
+      last_exon = last_exon, fitted_control_pau = control, fitted_treatment_pau = treatment,
+      event_type = event, confidence = confidence, gene_fdr = gene_fdr,
+      stringsAsFactors = FALSE
+    )
+  }
+  intron <- "intronic"
+  last <- "terminal_exon"
+  cases <- list(
+    # Tanc2 in AS_NT_PHA vs AS_NT_DMSO: usage moves from the last exon into
+    # introns. Every call in the last exon is a decrease, which the intronic
+    # shift alone explains, so there is no UTR class.
+    tanc2 = gene(
+      "tanc2", "+",
+      c(105481650, 105488375, 105613600, 105748725, 105752550, 105754075, 105776150,
+        105814650, 105815100, 105817300, 105819650, 105820125),
+      c(rep(intron, 7), rep(last, 5)), c(rep(NA, 7), rep("chr11:105812001-105820300", 5)),
+      c(0.026083873, 0.012972031, 0.023594885, 0.000386844, 0.004493291, 0.032067591,
+        0.020962887, 0.087370443, 0.364917433, 0.043324496, 0.018143946, 0.36568228),
+      c(0.060759901, 0.028172593, 0.061173605, 0.189594627, 0.213368603, 0.029396933,
+        0.025721693, 0.041423914, 0.176342297, 0.050776227, 0.011048109, 0.112221497),
+      c("complexity_gain", "complexity_gain", "complexity_gain", "gained", "increased_usage",
+        "complexity_gain", "complexity_gain", "complexity_gain", "decreased_usage",
+        "complexity_gain", "complexity_gain", "decreased_usage"),
+      c("low", "moderate", "moderate", "moderate", "moderate", "moderate", "low", "moderate",
+        "moderate", "low", "moderate", "moderate"),
+      gene_fdr = 0
+    ),
+    # The intronic rise is on an internal-priming site, which cannot gate.
+    primed = gene(
+      "primed", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.1, 0.9), c(0.4, 0.6), c("increased_usage", "decreased_usage"), c("low", "high")
+    ),
+    intronic_loss = gene(
+      "intronic_loss", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.5, 0.5), c(0.1, 0.9), c("decreased_usage", "increased_usage")
+    ),
+    # Two last exons of equal usage: the main one is the 3'-most.
+    ale = gene(
+      "ale", "+", c(1100, 2100), c(last, last), c("chr1:1001-1100", "chr1:2001-2100"),
+      c(0.8, 0.2), c(0.2, 0.8), c("decreased_usage", "increased_usage")
+    ),
+    # Minus strand: the distal PAC has the smaller coordinate.
+    shortening = gene(
+      "shortening", "-", c(5100, 5000), c(last, last), rep("chr1:4901-5100", 2),
+      c(0.3, 0.7), c(0.6, 0.4), c("increased_usage", "decreased_usage")
+    ),
+    lengthening = gene(
+      "lengthening", "+", c(5000, 5100), c(last, last), rep("chr1:4901-5100", 2),
+      c(0.6, 0.4), c(0.3, 0.7), c("decreased_usage", "increased_usage")
+    ),
+    # An intronic gain whose last exon also shifts toward its proximal PAC:
+    # the proximal increase is a call the intronic shift cannot make.
+    two_classes = gene(
+      "two_classes", "+", c(100, 400, 500), c(intron, last, last), c(NA, rep("chr1:301-500", 2)),
+      c(0.1, 0.2, 0.7), c(0.4, 0.4, 0.2), c("increased_usage", "increased_usage", "decreased_usage")
+    ),
+    candidate_only = gene(
+      "candidate_only", "+", c(400, 500), c(last, last), rep("chr1:301-500", 2),
+      c(0.0, 1.0), c(0.3, 0.7), c("gained_candidate", "none")
+    ),
+    unscreened = gene(
+      "unscreened", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.1, 0.9), c(0.6, 0.4), c("increased_usage", "decreased_usage"), gene_fdr = 0.5
+    ),
+    unfitted = gene(
+      "unfitted", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(NA, NA), c(NA, NA), c("none", "none")
+    ),
+    # Equal usage in two last exons: the 3'-most is the main one, and its
+    # shift toward the distal PAC makes a UTR call.
+    tie = gene(
+      "tie", "+", c(1100, 2050, 2100), rep(last, 3),
+      c("chr1:1001-1100", "chr1:2001-2100", "chr1:2001-2100"),
+      c(0.5, 0.3, 0.2), c(0.5, 0.1, 0.4), c("none", "decreased_usage", "increased_usage")
+    ),
+    # An intronic gain that every last exon loses to is no last-exon switch.
+    all_lose = gene(
+      "all_lose", "+", c(100, 1100, 2100), c(intron, last, last),
+      c(NA, "chr1:1001-1100", "chr1:2001-2100"),
+      c(0.1, 0.45, 0.45), c(0.5, 0.25, 0.25),
+      c("increased_usage", "decreased_usage", "decreased_usage")
+    ),
+    # A last exon holding under 5% of the gene has no UTR share.
+    faint_exon = gene(
+      "faint_exon", "+", c(100, 400, 500), c(intron, last, last), c(NA, rep("chr1:301-500", 2)),
+      c(0.97, 0.02, 0.01), c(0.97, 0.01, 0.02), c("none", "none", "none")
+    )
+  )
+  pacs <- do.call(rbind, unname(cases))
+  patterns <- model$apa_patterns(pacs, pacs$coordinate, params)
+  observed <- stats::setNames(patterns$apa_pattern, patterns$gene_id)
+  expected <- c(
+    tanc2 = "intronic_gain", primed = "other", intronic_loss = "intronic_loss",
+    ale = "alternative_last_exon", shortening = "utr_shortening",
+    lengthening = "utr_lengthening", two_classes = "intronic_gain;utr_shortening",
+    candidate_only = "none", unscreened = "none", unfitted = "none", tie = "utr_lengthening",
+    all_lose = "intronic_gain", faint_exon = "none"
+  )
+  check(
+    identical(observed, expected),
+    "patterns were ", paste(names(observed), observed, sep = "=", collapse = ", ")
+  )
+  metric <- function(gene_id, column) patterns[[column]][patterns$gene_id == gene_id]
+  near <- function(value, target) isTRUE(abs(value - target) < 1e-9)
+  tanc2 <- cases$tanc2
+  exon <- tanc2$assignment_class == last
+  check(
+    near(metric("tanc2", "delta_intronic_share"),
+      sum(tanc2$fitted_treatment_pau[!exon]) - sum(tanc2$fitted_control_pau[!exon])),
+    "Tanc2 intronic share: ", metric("tanc2", "delta_intronic_share")
+  )
+  check(
+    near(metric("tanc2", "delta_utr_distal_share"),
+      0.112221497 / sum(tanc2$fitted_treatment_pau[exon]) -
+        0.36568228 / sum(tanc2$fitted_control_pau[exon])),
+    "Tanc2 distal share: ", metric("tanc2", "delta_utr_distal_share")
+  )
+  check(is.na(metric("tanc2", "last_exon_switch")), "one last exon has no switch.")
+  check(near(metric("ale", "last_exon_switch"), 0.6), "ALE switch: ", metric("ale", "last_exon_switch"))
+  check(is.na(metric("ale", "delta_utr_distal_share")), "a one-PAC main last exon has a UTR share.")
+  check(near(metric("shortening", "delta_utr_distal_share"), -0.3), "minus-strand distal share.")
+  check(near(metric("unscreened", "delta_intronic_share"), 0.5), "unscreened genes lack numbers.")
+  check(
+    all(is.na(unlist(patterns[patterns$gene_id == "unfitted", model$APA_METRIC_COLUMNS]))),
+    "an unfitted gene has numbers."
+  )
+  check(is.na(metric("faint_exon", "delta_utr_distal_share")), "a faint last exon has a UTR share.")
+  check(near(metric("tie", "delta_utr_distal_share"), 0.4), "the tie took the wrong last exon.")
+  check(near(metric("all_lose", "last_exon_switch"), -0.2), "switch: ", metric("all_lose", "last_exon_switch"))
+
+  # The fitted run's genes tables carry one valid pattern per gene.
+  run <- require_run(run_a)
+  classes <- c(model$APA_PATTERN_CLASSES, "other", "none")
+  for (comparison in c("T1_vs_C", "T2_vs_C")) {
+    genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))
+    parts <- strsplit(genes$apa_pattern, ";", fixed = TRUE)
+    check(
+      all(vapply(parts, function(part) length(part) && all(part %in% classes), logical(1))),
+      comparison, ": invalid patterns ", paste(unique(genes$apa_pattern), collapse = ", ")
+    )
+  }
+})
+
 finish_tests()

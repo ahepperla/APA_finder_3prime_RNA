@@ -48,13 +48,23 @@ pac_table <- function(...) {
 }
 
 gene_row <- function(gene_id, dominant_switch = FALSE, complexity_change = "none",
-                     gene_fdr = 0.5) {
+                     gene_fdr = 0.5, apa_pattern = "none") {
   data.frame(
     gene_id = gene_id, gene_name = toupper(gene_id), condition = "T",
     control_condition = "C", dominant_switch = dominant_switch,
-    complexity_change = complexity_change, gene_fdr = gene_fdr,
+    complexity_change = complexity_change, apa_pattern = apa_pattern, gene_fdr = gene_fdr,
     exploratory_insufficient_replicates = FALSE, stringsAsFactors = FALSE
   )
+}
+
+# A genes table for a PAC table's genes, with the given APA patterns by gene.
+genes_of <- function(pacs, patterns = character()) {
+  ids <- unique(pacs$gene_id)
+  rows <- lapply(ids, function(id) {
+    gene_row(id, apa_pattern = if (id %in% names(patterns)) patterns[[id]] else "none")
+  })
+  if (!length(rows)) return(gene_row("x")[0, , drop = FALSE])
+  do.call(rbind, rows)
 }
 
 comparison <- data.frame(
@@ -98,12 +108,13 @@ test_case("F-01", "the distal PAC is the most 3' terminal-exon or downstream PAC
     pac_id = c("p100", "p200", "p300", "m500", "m400", "i1", "i2"),
     coordinate = c(100, 200, 300, 500, 400, 50, 60)
   )
-  result <- figures$distal_usage_table(pacs, coordinates)
+  result <- figures$distal_usage_table(pacs, coordinates, genes_of(pacs, c(plus = "utr_lengthening")))
   table <- result$table
   check(identical(names(table), figures$DISTAL_COLUMNS), "columns: ", paste(names(table), collapse = ", "))
   check(identical(table$gene_id, c("plus", "minus")), "genes: ", paste(table$gene_id, collapse = ", "))
   check(identical(table$distal_pac_id, c("p200", "m400")), "distal PACs: ", paste(table$distal_pac_id, collapse = ", "))
-  check(identical(table$direction, c("lengthened", "shortened")), "directions: ", paste(table$direction, collapse = ", "))
+  check(identical(table$direction, c("distal_up", "distal_down")), "directions: ", paste(table$direction, collapse = ", "))
+  check(identical(table$apa_pattern, c("utr_lengthening", "none")), "patterns: ", paste(table$apa_pattern, collapse = ", "))
   check(isTRUE(all.equal(table$delta_distal_pau, c(0.25, -0.3))), "delta: ", paste(table$delta_distal_pau, collapse = ", "))
   check(identical(table$distal_pac_fdr, c(0.001, 0.002)), "distal pac_fdr was not the distal row's.")
   check(identical(table$distal_assignment_class, c("downstream", "terminal_exon")), "classes.")
@@ -121,12 +132,12 @@ test_case("F-02", "the direction is the distal PAC's own call", {
     pac_row(paste0("pac", index), genes[[index]], event_type = events[[index]], gene_fdr = index / 100)
   }))
   coordinates <- data.frame(pac_id = pacs$pac_id, coordinate = seq_along(events) * 10)
-  table <- figures$distal_usage_table(pacs, coordinates)$table
+  table <- figures$distal_usage_table(pacs, coordinates, genes_of(pacs))$table
   directions <- stats::setNames(table$direction, table$distal_event_type)
   expected <- c(
-    gained = "lengthened", increased_usage = "lengthened", lost = "shortened",
-    decreased_usage = "shortened", gained_candidate = "lengthened_candidate",
-    lost_candidate = "shortened_candidate", dominant_switch = "none",
+    gained = "distal_up", increased_usage = "distal_up", lost = "distal_down",
+    decreased_usage = "distal_down", gained_candidate = "distal_up_candidate",
+    lost_candidate = "distal_down_candidate", dominant_switch = "none",
     complexity_gain = "none", complexity_loss = "none", none = "none"
   )
   check(identical(directions, expected), "directions: ", paste(names(directions), directions, sep = "=", collapse = ", "))
@@ -140,13 +151,13 @@ test_case("F-03", "distal rows sort by gene FDR with missing FDRs last", {
     pac_row("d", "gene_c", gene_fdr = 0.01)
   )
   coordinates <- data.frame(pac_id = pacs$pac_id, coordinate = 1:4)
-  table <- figures$distal_usage_table(pacs, coordinates)$table
+  table <- figures$distal_usage_table(pacs, coordinates, genes_of(pacs))$table
   check(identical(table$gene_id, c("gene_c", "gene_a", "gene_b", "gene_na")), "order: ", paste(table$gene_id, collapse = ", "))
-  empty <- figures$distal_usage_table(pac_table(), coordinates)
+  empty <- figures$distal_usage_table(pac_table(), coordinates, genes_of(pac_table()))
   check(nrow(empty$table) == 0L && identical(names(empty$table), figures$DISTAL_COLUMNS), "empty table.")
   check(identical(empty$without_distal, 0L), "empty without_distal: ", empty$without_distal)
   missing <- tryCatch(
-    figures$distal_usage_table(pac_table(pac_row("absent", "g")), coordinates),
+    figures$distal_usage_table(pac_table(pac_row("absent", "g")), coordinates, gene_row("g")),
     error = function(error) conditionMessage(error)
   )
   check(grepl("atlas lacks coordinates for PACs: absent", missing, fixed = TRUE), "missing coordinate: ", missing)
@@ -269,23 +280,57 @@ test_case("F-18", "volcano labels stop at 20 genes in each direction", {
 })
 
 test_case("F-19", "distal labels go on the 20 largest changes in each direction", {
-  lengthened <- lapply(1:22, function(index) {
+  rising <- lapply(1:22, function(index) {
     pac_row(sprintf("l%02d", index), sprintf("long%02d", index), event_type = "increased_usage",
       control = 0.2, treatment = 0.2 + index / 100, pac_fdr = 0.01)
   })
-  pacs <- do.call(pac_table, c(lengthened, list(
+  pacs <- do.call(pac_table, c(rising, list(
     pac_row("s1", "short1", event_type = "decreased_usage", control = 0.6, treatment = 0.1, pac_fdr = 0.01),
     pac_row("s2", "short2", event_type = "lost", control = 0.3, treatment = 0.0, pac_fdr = 0.01),
     pac_row("c1", "candidate", event_type = "gained_candidate", control = 0, treatment = 0.9),
     pac_row("n1", "unchanged", control = 0.1, treatment = 0.95)
   )))
   coordinates <- data.frame(pac_id = pacs$pac_id, coordinate = seq_len(nrow(pacs)))
-  table <- figures$distal_usage_table(pacs, coordinates)$table
+  table <- figures$distal_usage_table(pacs, coordinates, genes_of(pacs))$table
   labels <- figures$distal_labels(table)
   # By size of change: short1 (0.5), short2 (0.3), then long22 (0.22) down to
-  # long03, the 20th lengthened gene; long01, long02, and the candidate are left.
+  # long03, the 20th rising gene; long01, long02, and the candidate are left.
   check(identical(labels$gene_id, c("short1", "short2", sprintf("long%02d", 22:3))),
     "labels: ", paste(labels$gene_id, collapse = ", "))
+})
+
+test_case("F-21", "pattern counts give each class its genes, counting two-class genes twice", {
+  comparisons <- data.frame(stem = c("A_vs_C", "B_vs_C"), stringsAsFactors = FALSE)
+  genes <- rbind(
+    gene_row("g1", apa_pattern = "intronic_gain;utr_shortening"),
+    gene_row("g2", apa_pattern = "intronic_gain"),
+    gene_row("g3", apa_pattern = "alternative_last_exon"),
+    gene_row("g4", apa_pattern = "other"),
+    gene_row("g5", apa_pattern = "none")
+  )
+  counts <- figures$pattern_count_table(
+    comparisons, list(A_vs_C = genes, B_vs_C = genes[0, , drop = FALSE])
+  )
+  classes <- c(
+    "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
+    "utr_lengthening", "other"
+  )
+  check(identical(levels(counts$pattern), classes), "pattern levels.")
+  first <- counts[counts$comparison == "A_vs_C", , drop = FALSE]
+  observed <- stats::setNames(first$count, as.character(first$pattern))
+  expected <- c(
+    intronic_gain = 2L, intronic_loss = 0L, alternative_last_exon = 1L,
+    utr_shortening = 1L, utr_lengthening = 0L, other = 1L
+  )
+  check(identical(observed, expected), "counts: ", paste(names(observed), observed, sep = "=", collapse = ", "))
+  check(all(counts$count[counts$comparison == "B_vs_C"] == 0L), "the empty comparison.")
+})
+
+test_case("F-22", "a gene is colored by its first APA pattern", {
+  colors <- figures$first_pattern(c("intronic_gain;utr_shortening", "other", "none", NA, "unknown"))
+  check(identical(as.character(colors), c("intronic_gain", "other", "none", "none", "none")),
+    "first patterns: ", paste(colors, collapse = ", "))
+  check(identical(levels(colors), names(figures$APA_CLASSES)), "levels.")
 })
 
 test_case("F-20", "the coverage figure counts the PACs it leaves out", {
@@ -373,18 +418,23 @@ test_case("F-10", "separate processes write byte-identical PDFs and PNGs", {
     "plot <- ggplot2::ggplot(points, ggplot2::aes(x, y)) + ggplot2::geom_point() +",
     "  ggplot2::geom_text(ggplot2::aes(label = label), check_overlap = TRUE) +",
     "  ggplot2::labs(title = 'Rendering test') + figures$figure_theme()",
-    "figures$save_figure(plot, arguments[[2]], 4, 3)"
+    "figures$save_figure(plot, arguments[[2]], 4, 3)",
+    "stack <- figures$figure_stack(list(plot, plot), heights = c(2, 1))",
+    "figures$save_figure(stack, paste0(arguments[[2]], '_stack'), 4, 3)"
   ), driver)
   stems <- file.path(work, c("first", "second"), "render")
   for (stem in stems) {
     dir.create(dirname(stem))
     run_rscript(c(driver, script, stem))
   }
-  for (suffix in c(".pdf", ".png")) {
+  for (suffix in c(".pdf", ".png", "_stack.pdf", "_stack.png")) {
     files <- paste0(stems, suffix)
     bytes <- lapply(files, function(path) readBin(path, "raw", file.size(path)))
     check(identical(bytes[[1]], bytes[[2]]), suffix, " differs between processes.")
   }
+  stack_pdf <- readBin(paste0(stems[[1]], "_stack.pdf"), "raw", file.size(paste0(stems[[1]], "_stack.pdf")))
+  check(!length(grepRaw("/CreationDate", stack_pdf, fixed = TRUE)), "the stacked PDF records a date.")
+  check(identical(png_size(paste0(stems[[1]], "_stack.png")), c(800, 600)), "stacked PNG size.")
 })
 
 test_case("F-11", "a percent sign in a comparison name is written literally", {
@@ -412,7 +462,10 @@ write_inputs <- function(directory, filled) {
     pac_row("g2_p1", "g2", "-", "none", control = 0.5, treatment = 0.55, gene_fdr = 0.8, pvalue = 0.7, condition = "T1"),
     pac_row("g2_p2", "g2", "-", "none", assignment_class = "intronic", control = 0.5, treatment = 0.45, gene_fdr = 0.8, pvalue = 0.7, condition = "T1")
   )
-  genes <- rbind(gene_row("g1", dominant_switch = TRUE, gene_fdr = 0.001), gene_row("g2", gene_fdr = 0.8))
+  genes <- rbind(
+    gene_row("g1", dominant_switch = TRUE, gene_fdr = 0.001, apa_pattern = "utr_lengthening"),
+    gene_row("g2", gene_fdr = 0.8)
+  )
   genes$condition <- "T1"
   model <- new.env(parent = globalenv())
   sys.source(statistics_script, envir = model)
@@ -458,7 +511,8 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   # other PAC is intronic.
   check(identical(distal$gene_id, c("g1", "g2")), "genes: ", paste(distal$gene_id, collapse = ", "))
   check(identical(distal$distal_pac_id, c("g1_p2", "g2_p1")), "distal PACs.")
-  check(identical(distal$direction, c("lengthened", "none")), "directions: ", paste(distal$direction, collapse = ", "))
+  check(identical(distal$direction, c("distal_up", "none")), "directions: ", paste(distal$direction, collapse = ", "))
+  check(identical(distal$apa_pattern, c("utr_lengthening", "none")), "patterns: ", paste(distal$apa_pattern, collapse = ", "))
   check(identical(distal$tested_pacs, c("2", "2")), "tested_pacs.")
   check(identical(distal$distal_pac_fdr, c("0.001", "")), "pac_fdr: ", paste(distal$distal_pac_fdr, collapse = ", "))
   empty <- utils::read.delim(file.path(directory, "figures", "T2_vs_C.distal_usage.tsv.gz"))
@@ -466,7 +520,7 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   for (name in c("event_counts.png", "effect_vs_coverage.png", "T1_vs_C.volcano.png")) {
     check(file.size(file.path(directory, "figures", name)) > 1000, name, " is nearly empty.")
   }
-  check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 550)), "event_counts size.")
+  check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1000)), "event_counts size.")
   check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 650)), "coverage size.")
 })
 

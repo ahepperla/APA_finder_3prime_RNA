@@ -8,6 +8,81 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-29: Gene-level APA patterns and refined terminal exons
+
+Status: accepted (project lead)
+
+**APA patterns**
+- Each `.genes` table gains `apa_pattern`: `intronic_gain`, `intronic_loss`,
+  `alternative_last_exon`, `utr_shortening`, `utr_lengthening`, `other`, or
+  `none`. A gene can carry several, joined by `;`.
+- Three numbers come with it: `delta_intronic_share`,
+  `delta_utr_distal_share`, and `last_exon_switch`.
+- Patterns come from each region's share of the fitted usage, gated by
+  confirmed PAC calls on PACs that are not low confidence. Internal-priming
+  sites therefore never make a pattern.
+- A UTR pattern needs a call pointing the same way. When usage also moves
+  into or out of the main last exon, only calls against that movement count.
+- The alternative was a positional rule: every confirmed gain upstream of
+  every confirmed loss. It was not chosen because it leaves one-sided genes
+  unclassified.
+
+**Within-last-exon metric**
+- The UTR patterns use the distal PAC's share of the main last exon, the
+  counterpart of DaPars' PDUI.
+- LABRAT's rank-based ψ was considered. It moves by ΔPAU/(n − 1), so genes
+  with more PACs would need larger shifts, and its value depends on which
+  minor PACs the atlas found.
+
+**Alternative last exons**
+- The atlas gains `last_exon`: each terminal-exon PAC's last exon, made of a
+  gene's overlapping terminal exons. A downstream PAC gets the gene's 3′-most
+  last exon.
+- The atlas bytes change, so every R seed changes. Stabilized p-values and
+  bootstrap intervals move slightly on rerun; in the simulation, S6 coverage
+  went from 83% to 85%.
+
+**Terminal exons, everywhere**
+- A transcript's final exon is a terminal exon unless:
+  - it overlaps an internal exon of another transcript of the gene; or
+  - it is a single-exon model apart from the gene's multi-exon transcripts.
+- This removes the false last exons that retained-intron, 3′-incomplete, and
+  intronic-fragment models create in Ensembl and GENCODE annotations.
+- `assignment_class` changes with it, so the site-class figure, the distal
+  PAC, and the patterns agree.
+
+**Distal-usage wording**
+- The distal-usage table and figure call the distal PAC's own call
+  `distal_up` and `distal_down`. This supersedes "lengthened" and
+  "shortened" from the 2026-09-28 figures entry.
+- Shortening and lengthening now mean only the UTR patterns, and the figure
+  colors each gene by its pattern.
+
+**Rerunning**
+- ANNOTATE_PACS stages `annotation.py` and `reference.py`, so `-resume`
+  reruns annotation and every step after it when they change.
+- A stale atlas stops the statistics at once, with a message that says what
+  to do.
+- The version rises to 0.2.0.
+
+**Fixture**
+- chr3 gains `ipa01`, which gains an intronic PAC in TreatmentA, and `ale01`,
+  which switches between two last exons.
+
+**Answers to the overseer's review.** All three rules stay as they are, and
+their consequences are documented in the README, the design, and the methods.
+1. **The single-exon rule.** A single-exon model lying 3′ of the gene's
+   spliced transcripts is excluded, and its PACs count as upstream region.
+   An intronic model that overlaps a retained-intron final exon is kept, and
+   can form a false last exon.
+2. **Spliced-through last exons.** A canonical last exon that a minor
+   isoform splices through counts as internal. Its tandem UTR changes then
+   read as intronic patterns. Telling it from a composite terminal exon would
+   need transcript tags, which is out of scope for now.
+3. **Same-direction changes under a region shift.** A within-exon change in
+   the same direction as the shift stays unclassified, and appears only in
+   `delta_utr_distal_share`.
+
 ## 2026-09-28: Treatment–control figures, drawn with ggplot2
 
 Status: accepted (project lead)

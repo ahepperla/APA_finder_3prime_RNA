@@ -5,7 +5,9 @@ chr1 carries the original hand-made genes: gene_plus with PACs at 300, 350,
 and 400 (350 is gained in TreatmentA) and single-PAC gene_minus at 800. chr2
 adds 32 background genes so that DRIMSeq's cross-gene precision moderation
 behaves as it does on real data. Designed chr2 genes have known effects, and
-the remaining null genes are seeded Dirichlet-multinomial draws.
+the remaining null genes are seeded Dirichlet-multinomial draws. chr3 holds
+two multi-exon genes for the APA patterns: ipa01 gains an intronic PAC in
+TreatmentA, and ale01 switches between two alternative last exons.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import numpy as np
 import pysam
 
 ROOT = Path(__file__).resolve().parent
-CONTIGS = {"chr1": 2000, "chr2": 34000}
+CONTIGS = {"chr1": 2000, "chr2": 34000, "chr3": 8000}
 READ_LENGTH = 30
 
 # (sample_id, condition, control), in sample-sheet order.
@@ -155,6 +157,48 @@ def background_counts(random: np.random.RandomState) -> dict[tuple[str, str, int
     return sites
 
 
+# chr3 genes, plus strand: (gene_id, transcripts as 1-based exons, interbase
+# PAC coordinates, proportions in controls and in TreatmentA). ipa01's
+# intronic PAC lies 1,250 nt from its annotated end, outside calibration's
+# 1,000-nt window, and ale01 has two ends, so neither changes the kernel.
+CHR3_GENES = [
+    (
+        "ipa01",
+        {"ipa01_tx": [(1001, 1100), (2201, 2400)]},
+        (1150, 2400),
+        (0.1, 0.9),
+        (0.6, 0.4),
+    ),
+    (
+        "ale01",
+        {
+            "ale01_short": [(4001, 4100), (4801, 5000)],
+            "ale01_long": [(4001, 4100), (5401, 5600)],
+        },
+        (5000, 5600),
+        (0.8, 0.2),
+        (0.2, 0.8),
+    ),
+]
+
+
+def chr3_counts(random: np.random.RandomState) -> dict[tuple[str, str, int], dict[str, int]]:
+    """Counts for the chr3 genes, drawn after chr2's so its draws stay the same."""
+    sites: dict[tuple[str, str, int], dict[str, int]] = {}
+    for _, _, coordinates, baseline, treated in CHR3_GENES:
+        per_sample = {}
+        for sample_number, sample_id in enumerate(SAMPLES):
+            depth = 280 + 20 * (sample_number % 3)
+            proportions = treated if CONDITION[sample_id] == "TreatmentA" else baseline
+            draw = random.multinomial(depth, np.asarray(proportions, dtype=float))
+            per_sample[sample_id] = tuple(int(value) for value in draw)
+        for position, coordinate in enumerate(coordinates):
+            sites[("chr3", "+", coordinate)] = {
+                sample_id: per_sample[sample_id][position] for sample_id in SAMPLES
+            }
+    return sites
+
+
 def chr1_counts() -> dict[tuple[str, str, int], dict[str, int]]:
     keys = [("chr1", "+", 300), ("chr1", "+", 350), ("chr1", "+", 400), ("chr1", "-", 800)]
     return {
@@ -211,8 +255,28 @@ def write_reference() -> None:
         fields = f"chr2\tfixture\t{{}}\t{origin + 1}\t{origin + 400}\t.\t{strand}\t."
         gtf.append(fields.format("gene") + f'\tgene_id "{gene_id}"; gene_name "{gene_id.upper()}";')
         gtf.append(fields.format("exon") + f'\tgene_id "{gene_id}"; transcript_id "{gene_id}_tx";')
+    chr3 = list("C" * CONTIGS["chr3"])
+    for gene_id, transcripts, coordinates, _, _ in CHR3_GENES:
+        for coordinate in coordinates:
+            chr3[coordinate - 20 : coordinate - 14] = list("AATAAA")
+        exons = [exon for parts in transcripts.values() for exon in parts]
+        start = min(first for first, _ in exons)
+        end = max(last for _, last in exons)
+        gtf.append(
+            f"chr3\tfixture\tgene\t{start}\t{end}\t.\t+\t.\t"
+            f'gene_id "{gene_id}"; gene_name "{gene_id.upper()}";'
+        )
+        for transcript_id, parts in transcripts.items():
+            for first, last in parts:
+                gtf.append(
+                    f"chr3\tfixture\texon\t{first}\t{last}\t.\t+\t.\t"
+                    f'gene_id "{gene_id}"; transcript_id "{transcript_id}";'
+                )
     fasta = ROOT / "genome.fa"
-    fasta.write_text(">chr1\n" + "".join(chr1) + "\n>chr2\n" + "".join(chr2) + "\n")
+    fasta.write_text(
+        ">chr1\n" + "".join(chr1) + "\n>chr2\n" + "".join(chr2)
+        + "\n>chr3\n" + "".join(chr3) + "\n"
+    )
     pysam.faidx(str(fasta))
     (ROOT / "genes.gtf").write_text("\n".join(gtf) + "\n")
 
@@ -277,6 +341,9 @@ def write_expected_counts(sites: dict[tuple[str, str, int], dict[str, int]]) -> 
     for index in range(1, BACKGROUND_GENES + 1):
         for coordinate in pac_coordinates(index, pac_count_for(index)):
             gene_by_site[("chr2", gene_strand(index), coordinate)] = f"bg{index:02d}"
+    for gene_id, _, coordinates, _, _ in CHR3_GENES:
+        for coordinate in coordinates:
+            gene_by_site[("chr3", "+", coordinate)] = gene_id
     lines = ["\t".join(["gene_id", "pac_id", *SAMPLES])]
     for key in sorted(sites, key=lambda item: (item[0], item[2], item[1])):
         contig, strand, coordinate = key
@@ -293,7 +360,7 @@ def main() -> None:
             path.unlink()
     # RandomState keeps a frozen stream across NumPy versions.
     random = np.random.RandomState(20260927)
-    sites = {**chr1_counts(), **background_counts(random)}
+    sites = {**chr1_counts(), **background_counts(random), **chr3_counts(random)}
     check_support(sites)
     write_reference()
     layout = {"DMSO_1": (False, True), "VEH_2": (True, False)}

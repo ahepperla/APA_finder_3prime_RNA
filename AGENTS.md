@@ -44,6 +44,9 @@ coverage before making broad or negative structural claims.
   - RECORD_SOFTWARE_VERSIONS loads the R packages of both R scripts right
     after validation. Keep the R scripts out of VALIDATE_INPUTS, or every edit
     to one reruns the whole pipeline on `-resume`.
+  - ANNOTATE_PACS stages `annotation.py` and `reference.py` as inputs, so
+    `-resume` reruns annotation and every step after it when they change.
+    Nextflow tracks no other part of the Python package.
 - Do not modify source FASTA or alignment inputs.
   - Prepared alignments, indexes, and the prepared FASTA are symlinks to the
     sources. Never write through them.
@@ -63,8 +66,9 @@ coverage before making broad or negative structural claims.
 - Statistical filtering belongs to `fit_usage_model.R`: it filters each
   comparison family's own samples and writes the reasons, per PAC, to
   `FAMILY.statistical_filtering.tsv.gz`.
-- Calls belong to `fit_usage_model.R` too. PLOT_FIGURES draws the calls in
-  the `.pacs` and `.genes` tables and never makes its own.
+- Calls belong to `fit_usage_model.R` too, including each gene's
+  `apa_pattern`. PLOT_FIGURES draws the calls in the `.pacs` and `.genes`
+  tables and never makes its own.
 
 ## Input And Data Invariants
 
@@ -83,6 +87,10 @@ coverage before making broad or negative structural claims.
   proximal-tag PAC; `locus` is the same interval, 1-based. Gene assignment treats an
   exon or gene as containing coordinates `start` through `end` inclusive,
   because a 3′ boundary equals its exon's `end`.
+- A transcript's final exon is a terminal exon unless it overlaps an internal
+  exon of another transcript of the gene, or is a single-exon model apart
+  from the gene's multi-exon transcripts. A gene's overlapping terminal exons
+  form one last exon, the atlas's `last_exon`.
 - Keep exact-boundary and proximal-tag discovery semantics distinct. Do not
   represent a proximal-tag estimate as nucleotide-resolution cleavage evidence.
 - Counts are raw assigned fragment counts. PAU is each PAC count divided by
@@ -144,7 +152,10 @@ The integration script:
 
 Keep that fixture's calibration genes single-ended. Its multi-PAC genes
 annotate one transcript per PAC, so alternative ends stay out of the
-calibration kernel.
+calibration kernel. In the main fixture, the chr3 genes (`ipa01`, `ale01`)
+keep their other PACs more than 1,000 nt from any single-ended gene's end.
+`ale01` has two annotated ends, so the only chr3 reads calibration uses are
+those at `ipa01`'s own end.
 
 When running the fixture manually with Conda:
 

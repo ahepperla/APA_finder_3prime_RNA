@@ -299,8 +299,8 @@ evidence. In `.pacs` and `.events` the groups are:
 
 The `.pacs` tables are the main results: one row per tested PAC. The
 `.events` tables keep only the PACs with an event. The `.genes` tables have
-one row per tested gene, with the gene-level events (`dominant_switch` and
-`complexity_change`) before the gene FDR.
+one row per tested gene: the gene-level events (`dominant_switch` and
+`complexity_change`), the APA pattern and its numbers, then the gene FDR.
 
 | Event | When |
 |---|---|
@@ -315,6 +315,82 @@ whose PACs all have their own calls carries no label. Every gene with a
 dominant switch or a complexity change is flagged in the `.genes` table's
 `dominant_switch` (`TRUE` or `FALSE`) and `complexity_change` (`gain`,
 `loss`, or `none`).
+
+### APA patterns
+
+Each `.genes` table's `apa_pattern` says how a gene's usage moved, following
+the usual split between 3′ UTR APA, among tandem sites of a last exon, and
+upstream-region APA, at sites in introns or internal exons (Tian and Manley,
+2017). A gene gets a pattern only when it passes `gene_fdr`, and each pattern
+needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
+`decreased_usage`) on a PAC that is not low confidence, so internal-priming
+sites never make a pattern. The threshold is `min_abs_delta_pau`.
+
+| `apa_pattern` | When |
+|---|---|
+| `intronic_gain` | The share of the gene's usage at intronic and internal-exon PACs (`delta_intronic_share`) rises by at least the threshold, with a confirmed increase at one of them. This is premature intronic polyadenylation. |
+| `intronic_loss` | That share falls by at least the threshold, with a confirmed decrease at one of them. |
+| `alternative_last_exon` | One last exon gains and another loses at least the threshold of the gene's usage (`last_exon_switch`), each with a confirmed call in that direction. |
+| `utr_shortening`, `utr_lengthening` | In the gene's main last exon, the distal PAC's share of that exon (`delta_utr_distal_share`, the 3′-end counterpart of DaPars' PDUI) falls or rises by at least the threshold. A confirmed call must point the same way: for shortening, an increase at a more proximal PAC or a decrease at the distal one. |
+| `other` | The gene passes `gene_fdr` and has confirmed calls, but no pattern applies. |
+| `none` | Anything else. |
+
+- **Several patterns:** a gene can have more than one, joined by `;`, such as
+  `intronic_gain;utr_shortening`.
+- **Shifts into or out of the last exon:** when a gene's usage also moves
+  into or out of its main last exon, every PAC there moves the same way. So
+  only calls in the other direction can show a UTR shift: after an intronic
+  gain, only increases in the last exon count.
+- **The numbers:** the three columns are given for every gene with fitted
+  usage, screened or not, so genes can be ranked by effect size.
+  `delta_utr_distal_share` is empty when the main last exon has fewer than 2
+  tested PACs, or less than `event_min_treatment_pau` of the gene's usage in
+  either group.
+- **The main last exon** is the one with the most usage over both groups; a
+  tie goes to the 3′-most.
+
+**Where PACs sit.**
+- **Last exons:** the atlas column `last_exon` names the last exon of each
+  terminal-exon PAC, as a 1-based locus. Overlapping last exons of a gene's
+  transcripts merge into one. A PAC downstream of a gene belongs to the
+  gene's 3′-most last exon.
+- **Terminal exons:** a transcript's final exon counts as a terminal exon
+  unless:
+  - it overlaps an internal exon of another transcript of the gene, as the
+    final exons of retained-intron and 3′-incomplete models do; or
+  - it is a single-exon model apart from every exon of the gene's multi-exon
+    transcripts, such as a fragment inside an intron.
+  PACs in such exons are `other_exon`, so they count toward the intronic
+  share.
+
+**Caveats.**
+- **Spliced-through last exons.** A final exon that another transcript of
+  the gene splices through counts as internal, so its PACs are upstream
+  region.
+  - This rightly treats a composite terminal exon, an internal exon extended
+    into its intron and ended there, as intronic polyadenylation.
+  - It also demotes a canonical last exon whenever a minor isoform continues
+    past it, into a downstream exon or through an intron in its 3′ UTR. In
+    such genes a tandem 3′ UTR change reads as `intronic_gain` or
+    `intronic_loss`.
+- **Single-exon models.**
+  - A single-exon model within a gene, apart from its spliced transcripts,
+    isn't a terminal exon even when it lies 3′ of all of them. A PAC in it
+    counts as upstream region. Without the model, the PAC would be
+    downstream and join the 3′-most last exon.
+  - An intronic single-exon model that overlaps a retained-intron
+    transcript's final exon is kept. It then forms its own last exon, and
+    can give a false `alternative_last_exon`.
+- **Same-direction changes under a shift.** When usage moves into or out of
+  the main last exon, a within-exon change in the same direction can't be
+  confirmed by a call. It shows only in `delta_utr_distal_share`.
+- With three or more PACs in a last exon, losing a middle PAC raises the
+  distal share, so the gene reads as `utr_lengthening`.
+- A PAC just past a last exon that is not the gene's 3′-most is `intronic`.
+- Genes annotated without transcript IDs have only their 3′-most exon as a
+  terminal exon, so they cannot show `alternative_last_exon`.
+- In an exploratory comparison, gained and lost calls are candidates, so
+  only increases and decreases can make a pattern.
 
 ### Figures
 
@@ -332,23 +408,24 @@ calls in the statistics tables; they never make calls of their own.
   as unstable zero-boundary fits, are counted in the subtitle, and p-values
   of 0 are drawn as triangles at the top.
 - **`CONDITION_vs_CONTROL.distal_usage`**: for each tested gene, the fitted
-  usage of its distal PAC in the control against the treatment. The distal
-  PAC is the gene's most 3′ tested PAC in the terminal exon or downstream of
-  the annotated end; its share is the 3′-end counterpart of DaPars' PDUI.
-  A gene is **lengthened** or **shortened** only when that PAC itself has a
-  confirmed increase or gain, or decrease or loss. A shift toward any
-  upstream PAC, a tandem 3′ UTR site or an intronic one, lowers the distal
-  share. With three or more PACs, losing a middle PAC raises the distal
-  share, so such a gene can be called lengthened. Up to 20 lengthened and 20
-  shortened genes, those with the largest changes, are labeled with their
-  gene names. The genes and their calls are in
-  `CONDITION_vs_CONTROL.distal_usage.tsv.gz`.
+  usage of its distal PAC in the control against the treatment.
+  - The distal PAC is the gene's most 3′ tested PAC in a last exon or
+    downstream of the annotated end.
+  - Points are colored by the gene's APA pattern, the first one when it has
+    several. They are filled when the distal PAC has a confirmed call.
+  - `direction` in `CONDITION_vs_CONTROL.distal_usage.tsv.gz` is that PAC's
+    own call: `distal_up`, `distal_down`, their `_candidate` forms, or
+    `none`. A distal PAC can fall because usage moved to a tandem site or
+    into an intron; the color tells which.
+  - Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, those
+    with the largest changes, are labeled with their gene names.
 - **`CONDITION_vs_CONTROL.site_classes`**: confirmed PAC calls by where the
   PAC lies (terminal exon, other exon, intron, downstream of the gene), with
   losses to the left of zero and gains to the right. A shift to intronic
   polyadenylation shows as intron gains.
 - **`event_counts`**: PAC events, candidates in lighter shades, and gene
-  events from the `.genes` tables, for every comparison.
+  events from the `.genes` tables, for every comparison. A lower panel counts
+  genes per APA pattern; a gene with two patterns counts in both.
 - **`effect_vs_coverage`**: each PAC's change in fitted PAU against the reads
   at its gene in the less-covered group, one panel per comparison, with
   `min_gene_total` marked. Calls driven by low coverage would cluster on the
@@ -384,13 +461,13 @@ the same image or environment.
      report each PAC with its resolution interval rather than as a cleavage
      site. Candidates inside exon blocks that are spliced onward in every
      condition are rejected as readthrough.
-6. **Annotate.** Genes, poly(A) signals, internal-priming flags, and known-PAC
-   matches are added, and the atlas is frozen and checksummed.
+6. **Annotate.** Genes, last exons, poly(A) signals, internal-priming flags,
+   and known-PAC matches are added, and the atlas is frozen and checksummed.
 7. **Count.** Each sample's read ends are assigned to the frozen atlas, giving
    raw counts, gene totals, and PAU.
 8. **Test.** Each comparison family (a control and the treatments that name
-   it) is fitted and tested. Motif-class preference and an exploratory k-mer
-   enrichment follow.
+   it) is fitted and tested, and each gene's APA pattern is classified.
+   Motif-class preference and an exploratory k-mer enrichment follow.
 9. **Figures and report.** ggplot2 draws the figures in `figures/` from the
    statistics tables, and everything is summarized in `report/index.html`.
 
@@ -482,10 +559,18 @@ finished steps from it.
   includes `outdir`, the `save_*` flags, and the Slurm and CPU settings.
   Alignment preparation and strandedness inference are reused unless their
   own inputs change. Set those parameters before the first run.
-- **After updating PACusage.** Nextflow does not track the Python package, so
-  start a fresh run: use a new work directory, or leave out `-resume`. The R
-  scripts are tracked: changes to the statistics script rerun the
-  statistics, and changes to the figure script redraw the figures.
+- **After updating PACusage.** Rebuild the image first under
+  `-profile apptainer`.
+  - **Python package:** Nextflow does not track most of it, so start a fresh
+    run: use a new work directory, or leave out `-resume`.
+  - **Annotation:** the one exception. Its step stages `annotation.py` and
+    `reference.py`, so `-resume` reruns annotation and every step after it
+    when they change.
+  - **R scripts:** tracked. Changes to the statistics script rerun the
+    statistics, and changes to the figure script redraw the figures.
+  - **Version 0.2.0** changes the atlas (the `last_exon` column and refined
+    terminal exons). The atlas checksum seeds the statistics, so a rerun
+    moves stabilized genes' p-values and bootstrap intervals slightly.
 
 ## Troubleshooting
 

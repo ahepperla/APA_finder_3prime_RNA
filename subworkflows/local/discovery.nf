@@ -54,12 +54,17 @@ workflow DISCOVERY {
         kernel,
         resolved_params
     )
+    annotation_code = [
+        file("${projectDir}/src/pacusage/annotation.py", checkIfExists: true),
+        file("${projectDir}/src/pacusage/reference.py", checkIfExists: true)
+    ]
     ANNOTATE_PACS(
         CLUSTER_PACS.out.accepted,
         reference,
         annotation,
         run_resolution,
-        resolved_params
+        resolved_params,
+        annotation_code
     )
 
     emit:

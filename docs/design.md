@@ -730,6 +730,33 @@ Assign genes in this order:
    crossing an intervening same-strand gene.
 5. Intergenic.
 
+**Terminal exons.** A transcript's final exon is a terminal exon unless:
+- it overlaps an internal exon of another transcript of the gene, as the
+  final exons of retained-intron and 3'-incomplete models do; or
+- it is a single-exon model apart from every exon of the gene's multi-exon
+  transcripts, such as a fragment inside an intron.
+
+PACs in such exons are nonterminal-exon PACs. Without transcript IDs, a gene
+is one transcript, so only its 3'-most exon is terminal.
+
+The rule cannot tell a composite terminal exon, an internal exon extended into
+its intron, from a canonical last exon that a minor isoform splices through.
+Both have a final exon containing another transcript's internal exon, so both
+count as internal. In genes of the second kind, tandem 3' UTR changes
+therefore read as intronic patterns. Telling them apart would need transcript
+biotypes or tags, which the pipeline does not use.
+
+The single-exon rule compares a model with every exon of the gene's multi-exon
+transcripts. So a single-exon model lying 3' of all of them is excluded, and a
+PAC in it counts as upstream region. An intronic single-exon model that
+overlaps a retained-intron transcript's final exon is kept, and can form a
+false last exon.
+
+**Last exons.** A gene's terminal exons that overlap, sharing even a single
+coordinate, form one last exon. The atlas records each terminal-exon PAC's
+last exon as a 1-based locus in `last_exon`. A PAC downstream of a gene gets
+the gene's 3'-most last exon. Every other PAC gets none.
+
 Retain ambiguous assignments in the atlas but exclude them from primary
 within-gene testing.
 
@@ -982,13 +1009,62 @@ Classify PACs using both statistical evidence and detection evidence:
 A PAC carries one `event_type`, so the dominant-switch and complexity labels
 go only on PACs without a call of their own. The `.genes` table records these
 two events for every gene, in `dominant_switch` and `complexity_change`, after
-`control_condition`:
+`control_condition`, followed by the APA pattern:
 
 ```text
 gene_id  gene_name  condition  control_condition  dominant_switch  complexity_change
+apa_pattern  delta_intronic_share  delta_utr_distal_share  last_exon_switch
 gene_fdr  pvalue  lr  df  model_status  stabilization_successes
 exploratory_insufficient_replicates
 ```
+
+#### APA Patterns
+
+Classify each gene's change by where its usage moved. This follows the split
+between 3' UTR APA, among tandem sites of a last exon, and upstream-region APA,
+at sites in introns or internal exons (Tian and Manley, 2017).
+
+**Regions.**
+- **Upstream region:** intronic and nonterminal-exon PACs.
+- **3' region:** terminal-exon and downstream PACs, grouped by `last_exon`.
+
+**Gating calls.**
+- A gating call is a confirmed call (`gained`, `increased_usage`, `lost`,
+  `decreased_usage`) on a PAC that is not low confidence.
+- The threshold is `min_abs_delta_pau`, with 1e-9 of slack for sums of
+  fitted proportions.
+
+**Numbers,** reported for every gene with fitted usage:
+- `delta_intronic_share`: the change in the upstream region's share of the
+  gene's fitted usage.
+- `last_exon_switch`: the smaller of the largest gain and the largest loss
+  in any last exon's share of the gene. It needs at least 2 last exons.
+- `delta_utr_distal_share`: the change in the distal PAC's share of the main
+  last exon, the 3' counterpart of DaPars' PDUI.
+  - The main last exon is the one with the most usage over both groups; a
+    tie goes to the 3'-most.
+  - The number needs 2 or more tested PACs in that exon, and at least
+    `event_min_treatment_pau` of the gene's usage there in both groups.
+
+**Patterns.** A gene is classified when it passes `gene_fdr`, has fitted
+usage, and has a confirmed call.
+- `intronic_gain`: `delta_intronic_share` of at least the threshold, and a
+  gating increase in the upstream region. `intronic_loss` is the mirror
+  image.
+- `alternative_last_exon`: `last_exon_switch` of at least the threshold, a
+  gating increase in the gaining last exon, and a gating decrease in the
+  losing one.
+- `utr_shortening`: `delta_utr_distal_share` of at most minus the threshold,
+  and either a gating increase at a more proximal PAC of the main last exon
+  or a gating decrease at its distal PAC. `utr_lengthening` is the mirror
+  image.
+- **Shifts into or out of the main last exon:** when the gene also has an
+  upstream-region or last-exon shift of at least the threshold, all of the
+  main last exon's PACs move one way. Only calls against that movement count
+  then: increases if the exon's share falls, decreases if it rises.
+- `apa_pattern` joins the patterns found, in this order, with `;`. It is
+  `other` for a classified gene with no pattern, and `none` for every other
+  gene.
 
 When detection and effect-size requirements for `gained` or `lost` pass but a
 stable PAC-level p-value cannot be obtained, report `gained_candidate` or
@@ -1019,7 +1095,7 @@ pac_id  gene_id  gene_name  chrom  start  end  strand  locus
 condition  control_condition  event_type
 fitted_control_pau  fitted_treatment_pau  delta_pau  delta_pau_ci_low  delta_pau_ci_high
 pac_fdr  gene_fdr  pvalue_pac  pvalue_gene  lr  df
-assignment_class  confidence  internal_priming_flag  known_pac  known_rescue_only
+assignment_class  last_exon  confidence  internal_priming_flag  known_pac  known_rescue_only
 primary_pas_motif  primary_pas_motif_rna  primary_motif_class
 control_/treatment_supporting_samples  control_/treatment_gene_total
 raw_control_/treatment_counts  observed_control_/treatment_pau
@@ -1129,18 +1205,19 @@ make no calls of their own. For each comparison:
   axis. Up to 20 genes in each direction are labeled by gene name, at their
   most significant PACs.
 - **distal usage:** each tested gene's distal PAC, its most 3' tested PAC in
-  the terminal exon or downstream, with its fitted usage in the control
-  against the treatment. A gene is lengthened or shortened only when the
-  distal PAC has a confirmed gain or loss of usage, so the direction carries
-  stageR's error control. Up to 20 lengthened and 20 shortened genes, the
-  largest changes, are labeled by gene name.
+  a last exon or downstream, with its fitted usage in the control against
+  the treatment. `direction` is that PAC's own confirmed call (`distal_up`,
+  `distal_down`, their candidates, or `none`), so it carries stageR's error
+  control. Points are colored by the gene's APA pattern and filled when the
+  distal PAC has a call. Up to 20 genes whose distal PAC rose and 20 whose
+  distal PAC fell, the largest changes, are labeled by gene name.
   `CONDITION_vs_CONTROL.distal_usage.tsv.gz` lists the genes.
 - **site classes:** confirmed gains and losses by assignment class, so
   intronic polyadenylation shows as intron gains.
 
-Across comparisons, `event_counts` shows the PAC and gene events, and
-`effect_vs_coverage` shows each PAC's change in PAU against the reads at its
-gene in the less-covered group.
+Across comparisons, `event_counts` shows the PAC and gene events above the
+genes per APA pattern, and `effect_vs_coverage` shows each PAC's change in PAU
+against the reads at its gene in the less-covered group.
 
 PDFs are written without dates or a producer, so reruns reproduce them byte
 for byte. Uncalled PACs are drawn as a density above 5,000 per panel, which
@@ -1345,6 +1422,10 @@ Cover:
 - YAML and command-line parameter precedence;
 - gene-level dominant-switch and complexity events on PACs with their own
   calls;
+- terminal exons without retained-intron, 3'-incomplete, or stray
+  single-exon ends, and last exons merged by overlap, on both strands;
+- APA patterns from region shares and direction-matched calls, including
+  low-confidence PACs that cannot gate and ties between last exons;
 - figure data: the distal PAC on both strands, site-class and event counts,
   and dropped p-values and coverage rows;
 - figures without dates, byte-identical across processes, for empty
@@ -1371,7 +1452,10 @@ Create a small synthetic FASTA, annotation, and alignment collection containing:
 - changing PAU with unchanged original-PAC count;
 - internal-priming-like sequence;
 - ambiguous gene assignment;
-- proper and improper pairs.
+- proper and improper pairs;
+- a gene that gains an intronic PAC and a gene that switches between two
+  alternative last exons (chr3), with the intronic PAC kept more than 1,000
+  nt from any annotated end so calibration is unchanged.
 
 The complete `test` profile must run this fixture and compare stable tables with
 expected outputs.

@@ -148,6 +148,8 @@ def test_atlas_gene_names_line_up_with_gene_ids(tmp_path: Path) -> None:
     assert rows[0]["gene_id"] == "g_a,g_b,g_c"
     assert rows[0]["gene_name"] == "Zeta,Alpha,g_c"
     assert rows[0]["ambiguous_gene_assignment"] is True
+    # A PAC shared by several genes belongs to no one gene's last exon.
+    assert rows[0]["last_exon"] == ""
 
 
 def test_annotation_contigs_scans_without_materializing_features(tmp_path: Path) -> None:
@@ -203,15 +205,39 @@ def _reference_assign(
         key = (exon.contig, exon.strand, exon.transcript_id or exon.gene_id)
         transcript_exons[key].append(exon)
 
+    # A transcript's final exon is terminal unless it overlaps an internal
+    # exon of another transcript of the gene, or it is a single-exon model
+    # apart from every exon of the gene's multi-exon transcripts.
+    def overlap(first: GenomicFeature, second: GenomicFeature) -> bool:
+        return first.start < second.end and second.start < first.end
+
+    by_gene: dict[tuple[str, str, str], list[list[GenomicFeature]]] = defaultdict(list)
     for exons_list in transcript_exons.values():
-        terminal = (
+        first = exons_list[0]
+        by_gene[(first.contig, first.strand, first.gene_id)].append(exons_list)
+    for transcripts in by_gene.values():
+        finals = [
             max(exons_list, key=lambda item: item.end)
             if exons_list[0].strand == "+"
             else min(exons_list, key=lambda item: item.start)
-        )
-        terminal_exons.add(
-            (terminal.contig, terminal.strand, terminal.start, terminal.end, terminal.gene_id)
-        )
+            for exons_list in transcripts
+        ]
+        spliced = [exon for exons_list in transcripts if len(exons_list) > 1 for exon in exons_list]
+        for index, final in enumerate(finals):
+            other_internal = [
+                exon
+                for other, exons_list in enumerate(transcripts)
+                if other != index
+                for exon in exons_list
+                if exon is not finals[other]
+            ]
+            if any(overlap(final, exon) for exon in other_internal):
+                continue
+            if len(transcripts[index]) == 1 and spliced and not any(
+                overlap(final, exon) for exon in spliced
+            ):
+                continue
+            terminal_exons.add((final.contig, final.strand, final.start, final.end, final.gene_id))
 
     # Implement the matching logic (inclusive rule)
     exon_matches = [
@@ -316,6 +342,15 @@ WITH_GENE_RECORDS = [
     ("exon", 280, 300, "-", "g9", "g9_t1"),
     ("gene", 280, 290, "-", "g10", ""),
     ("exon", 280, 290, "-", "g10", "g10_t1"),
+    # A retained-intron model whose final exon covers an internal exon, and a
+    # single-exon fragment inside an intron: neither ends the gene.
+    ("gene", 330, 390, "+", "g11", ""),
+    ("exon", 330, 340, "+", "g11", "g11_t1"),
+    ("exon", 350, 360, "+", "g11", "g11_t1"),
+    ("exon", 370, 390, "+", "g11", "g11_t1"),
+    ("exon", 330, 340, "+", "g11", "g11_retained"),
+    ("exon", 350, 390, "+", "g11", "g11_retained"),
+    ("exon", 363, 367, "+", "g11", "g11_fragment"),
 ]
 
 WITHOUT_GENE_RECORDS = [row for row in WITH_GENE_RECORDS if row[0] == "exon"]
@@ -344,6 +379,95 @@ def test_feature_index_matches_brute_force_assignment(tmp_path: Path, rows) -> N
                 assert key(observed) == key(expected), (coordinate, strand, maximum_downstream)
                 classes.update(label for label, _ in expected)
     assert classes == {"terminal_exon", "other_exon", "intronic", "downstream"}
+
+
+def _index(rows: list[tuple[str, int, int, str, str, str]], tmp_path: Path) -> FeatureIndex:
+    gtf = tmp_path / "genes.gtf"
+    gtf.write_text(_gtf(rows))
+    return FeatureIndex(parse_annotation(gtf))
+
+
+def test_retained_intron_and_fragment_ends_are_not_terminal_exons(tmp_path: Path) -> None:
+    index = _index(
+        [
+            ("gene", 101, 1000, "+", "g1", ""),
+            ("exon", 101, 200, "+", "g1", "main"),
+            ("exon", 401, 500, "+", "g1", "main"),
+            ("exon", 801, 1000, "+", "g1", "main"),
+            # Its final exon keeps the intron after exon 2.
+            ("exon", 101, 200, "+", "g1", "retained"),
+            ("exon", 401, 1000, "+", "g1", "retained"),
+            # 3'-incomplete: it stops inside exon 2.
+            ("exon", 101, 200, "+", "g1", "incomplete"),
+            ("exon", 401, 450, "+", "g1", "incomplete"),
+            # A single-exon model inside intron 1.
+            ("exon", 251, 300, "+", "g1", "fragment"),
+        ],
+        tmp_path,
+    )
+
+    def classify(coordinate: int) -> tuple[str, list[tuple[int, int]], str]:
+        assignments = index.assign("chr1", "+", coordinate, 100)
+        spans = sorted((feature.start, feature.end) for _, feature in assignments)
+        return assignments[0][0], spans, index.last_exon(assignments)
+
+    # The retained intron is an exon of one model, not a transcript end.
+    assert classify(700) == ("other_exon", [(400, 1000)], "")
+    assert classify(450) == ("other_exon", [(400, 450), (400, 500), (400, 1000)], "")
+    assert classify(280) == ("other_exon", [(250, 300)], "")
+    assert classify(1000) == ("terminal_exon", [(800, 1000)], "chr1:801-1000")
+    assert classify(350) == ("intronic", [(100, 1000)], "")
+
+
+def test_last_exons_merge_overlapping_ends_and_separate_alternative_ones(
+    tmp_path: Path,
+) -> None:
+    index = _index(
+        [
+            ("gene", 101, 900, "+", "g1", ""),
+            ("exon", 101, 200, "+", "g1", "short"),
+            ("exon", 401, 500, "+", "g1", "short"),
+            # A longer 3' UTR on the same last exon.
+            ("exon", 101, 200, "+", "g1", "long"),
+            ("exon", 401, 650, "+", "g1", "long"),
+            # A last exon that starts where the longer one ends.
+            ("exon", 101, 200, "+", "g1", "touching"),
+            ("exon", 651, 700, "+", "g1", "touching"),
+            # An alternative last exon.
+            ("exon", 101, 200, "+", "g1", "alternative"),
+            ("exon", 801, 900, "+", "g1", "alternative"),
+        ],
+        tmp_path,
+    )
+
+    def last_exon(coordinate: int) -> str:
+        return index.last_exon(index.assign("chr1", "+", coordinate, 100))
+
+    assert last_exon(500) == "chr1:401-700"
+    assert last_exon(650) == "chr1:401-700"
+    assert last_exon(700) == "chr1:401-700"
+    assert last_exon(900) == "chr1:801-900"
+    # A PAC past the gene's end belongs to its 3'-most last exon.
+    assert index.assign("chr1", "+", 950, 100)[0][0] == "downstream"
+    assert last_exon(950) == "chr1:801-900"
+
+
+def test_minus_strand_downstream_pacs_take_the_three_prime_last_exon(tmp_path: Path) -> None:
+    index = _index(
+        [
+            ("gene", 2001, 2600, "-", "g2", ""),
+            ("exon", 2501, 2600, "-", "g2", "proximal"),
+            ("exon", 2201, 2300, "-", "g2", "proximal"),
+            ("exon", 2501, 2600, "-", "g2", "distal"),
+            ("exon", 2001, 2100, "-", "g2", "distal"),
+        ],
+        tmp_path,
+    )
+    downstream = index.assign("chr1", "-", 1950, 100)
+    assert downstream[0][0] == "downstream"
+    assert index.last_exon(downstream) == "chr1:2001-2100"
+    assert index.last_exon(index.assign("chr1", "-", 2200, 100)) == "chr1:2201-2300"
+    assert index.last_exon(index.assign("chr1", "-", 2550, 100)) == ""
 
 
 def test_known_site_index_matches() -> None:

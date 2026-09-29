@@ -27,10 +27,10 @@ PACS_NUMERIC <- c(
 )
 GENES_REQUIRED <- c(
   "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-  "complexity_change", "gene_fdr", "exploratory_insufficient_replicates"
+  "complexity_change", "apa_pattern", "gene_fdr", "exploratory_insufficient_replicates"
 )
 DISTAL_COLUMNS <- c(
-  "gene_id", "gene_name", "condition", "control_condition", "direction",
+  "gene_id", "gene_name", "condition", "control_condition", "direction", "apa_pattern",
   "distal_pac_id", "distal_locus", "distal_assignment_class",
   "fitted_control_distal_pau", "fitted_treatment_distal_pau", "delta_distal_pau",
   "distal_event_type", "gene_fdr", "distal_pac_fdr", "tested_pacs"
@@ -53,13 +53,15 @@ UP_EVENTS <- c("gained", "increased_usage")
 DOWN_EVENTS <- c("lost", "decreased_usage")
 CALLS <- c("up", "down", "up_candidate", "down_candidate", "none")
 DISTAL_DIRECTIONS <- c(
-  up = "lengthened", down = "shortened", up_candidate = "lengthened_candidate",
-  down_candidate = "shortened_candidate", none = "none"
+  up = "distal_up", down = "distal_down", up_candidate = "distal_up_candidate",
+  down_candidate = "distal_down_candidate", none = "none"
 )
-DIRECTION_LABELS <- c(
-  lengthened = "Lengthened", shortened = "Shortened",
-  lengthened_candidate = "Lengthened (candidate)",
-  shortened_candidate = "Shortened (candidate)", none = "No call"
+# Gene-level APA patterns from the genes tables, in the order apa_pattern
+# lists them; a gene is drawn with its first.
+APA_CLASSES <- c(
+  intronic_gain = "Intronic gain", intronic_loss = "Intronic loss",
+  alternative_last_exon = "Alternative last exon", utr_shortening = "UTR shortening",
+  utr_lengthening = "UTR lengthening", other = "Other change", none = "No pattern"
 )
 PAC_EVENTS <- c(
   "gained", "increased_usage", "decreased_usage", "lost", "gained_candidate",
@@ -92,6 +94,10 @@ EVENT_COLORS <- c(
   dominant_switch = "#CC79A7", complexity_gain = "#009E73", complexity_loss = "#80CEB9"
 )
 DIRECTION_COLORS <- c(up = COLOR_UP, down = COLOR_DOWN)
+APA_COLORS <- c(
+  intronic_gain = "#8C510A", intronic_loss = "#D8B365", alternative_last_exon = "#762A83",
+  utr_shortening = "#0072B2", utr_lengthening = "#D55E00", other = "#555555", none = "grey75"
+)
 CALL_DIRECTION_LABELS <- c(up = "Increased or gained", down = "Decreased or lost")
 MARK_SHAPES <- c(
   "Confirmed" = 16, "Candidate" = 1, "Confirmed, p = 0" = 17, "Candidate, p = 0" = 2
@@ -220,8 +226,9 @@ pac_calls <- function(event_type) {
 
 # One row per tested gene with a distal PAC: its most 3' tested PAC in the
 # terminal exon or downstream of the gene. The direction is that PAC's own
-# call, so a change among upstream PACs alone leaves the gene at "none".
-distal_usage_table <- function(pacs, coordinates) {
+# call, so a change among upstream PACs alone leaves the gene at "none"; the
+# gene's APA pattern comes from the genes table.
+distal_usage_table <- function(pacs, coordinates, genes) {
   eligible <- pacs[pacs$assignment_class %in% DISTAL_CLASSES, , drop = FALSE]
   coordinate <- coordinates$coordinate[match(eligible$pac_id, coordinates$pac_id)]
   if (anyNA(coordinate)) {
@@ -240,6 +247,7 @@ distal_usage_table <- function(pacs, coordinates) {
     condition = distal$condition,
     control_condition = distal$control_condition,
     direction = unname(DISTAL_DIRECTIONS[as.character(pac_calls(distal$event_type))]),
+    apa_pattern = genes$apa_pattern[match(distal$gene_id, genes$gene_id)],
     distal_pac_id = distal$pac_id,
     distal_locus = distal$locus,
     distal_assignment_class = distal$assignment_class,
@@ -253,6 +261,7 @@ distal_usage_table <- function(pacs, coordinates) {
     stringsAsFactors = FALSE,
     check.names = FALSE
   )
+  table$apa_pattern[is.na(table$apa_pattern)] <- "none"
   table <- table[order(is.na(table$gene_fdr), table$gene_fdr, table$gene_id, method = "radix"), ,
     drop = FALSE]
   rownames(table) <- NULL
@@ -306,6 +315,34 @@ event_count_table <- function(comparisons, pacs_tables, genes_tables) {
   )
 }
 
+# Genes per APA pattern in each comparison, with zeros; a gene with two
+# patterns counts in both.
+pattern_count_table <- function(comparisons, genes_tables) {
+  classes <- setdiff(names(APA_CLASSES), "none")
+  rows <- lapply(comparisons$stem, function(stem) {
+    genes <- genes_tables[[stem]]
+    genes <- genes[!duplicated(genes$gene_id), , drop = FALSE]
+    parts <- strsplit(genes$apa_pattern, ";", fixed = TRUE)
+    counts <- vapply(classes, function(class) {
+      sum(vapply(parts, function(part) class %in% part, logical(1)))
+    }, integer(1))
+    data.frame(comparison = stem, pattern = classes, count = unname(counts))
+  })
+  counts <- do.call(rbind, rows)
+  data.frame(
+    comparison = factor(counts$comparison, levels = comparisons$stem),
+    pattern = factor(counts$pattern, levels = classes),
+    count = counts$count
+  )
+}
+
+# A gene's first APA pattern, which colors it.
+first_pattern <- function(apa_pattern) {
+  first <- sub(";.*$", "", apa_pattern)
+  first[is.na(first) | !first %in% names(APA_CLASSES)] <- "none"
+  factor(first, levels = names(APA_CLASSES))
+}
+
 # PACs with a change and a p-value. A p-value that underflows to 0 is drawn
 # just above the most significant finite one; this happens before binning,
 # which would otherwise drop it. Labels go on each gene's most significant
@@ -347,10 +384,10 @@ limit_labels <- function(rows, direction) {
   rows[rank <= LABEL_LIMIT, , drop = FALSE]
 }
 
-# Lengthened and shortened genes, largest change first, for at most
-# LABEL_LIMIT genes in each direction. Candidates are not labelled.
+# Genes whose distal PAC has a confirmed call, largest change first, for at
+# most LABEL_LIMIT genes in each direction. Candidates are not labelled.
 distal_labels <- function(table) {
-  called <- table[table$direction %in% c("lengthened", "shortened") &
+  called <- table[table$direction %in% c("distal_up", "distal_down") &
     is.finite(table$delta_distal_pau), , drop = FALSE]
   called <- called[order(-abs(called$delta_distal_pau), called$distal_pac_fdr, called$gene_id,
     method = "radix"), , drop = FALSE]
@@ -518,8 +555,13 @@ plot_distal_usage <- function(result, comparison, params) {
   fitted <- is.finite(table$fitted_control_distal_pau) &
     is.finite(table$fitted_treatment_distal_pau)
   shown <- table[fitted, , drop = FALSE]
-  shown$direction <- factor(shown$direction, levels = names(DIRECTION_LABELS))
-  shown <- shown[order(shown$direction != "none", shown$gene_id, method = "radix"), ,
+  shown$pattern <- first_pattern(shown$apa_pattern)
+  shown$call <- factor(
+    ifelse(shown$direction %in% c("distal_up", "distal_down"), "Confirmed", "None or candidate"),
+    levels = c("Confirmed", "None or candidate")
+  )
+  # Genes without a pattern first, under the others.
+  shown <- shown[order(shown$pattern != "none", shown$gene_id, method = "radix"), ,
     drop = FALSE]
   subtitle <- plural(nrow(table), "gene")
   if (result$without_distal) {
@@ -529,34 +571,32 @@ plot_distal_usage <- function(result, comparison, params) {
     subtitle <- paste0(subtitle, sprintf("; %d without fitted usage, not shown", sum(!fitted)))
   }
   subtitle <- paste0(
-    subtitle, "\nDistal PAC: the most 3' tested PAC in the terminal exon or downstream"
+    subtitle, "\nDistal PAC: the most 3' tested PAC in a last exon or downstream"
   )
   labels <- distal_labels(shown)
   labels$gene_name <- ascii_text(labels$gene_name)
   counts <- sprintf(
-    "Lengthened: %d\nShortened: %d",
-    sum(table$direction == "lengthened"), sum(table$direction == "shortened")
+    "Distal PAC up: %d\nDistal PAC down: %d",
+    sum(table$direction == "distal_up"), sum(table$direction == "distal_down")
   )
-  candidates <- sum(table$direction %in% c("lengthened_candidate", "shortened_candidate"))
+  candidates <- sum(table$direction %in% c("distal_up_candidate", "distal_down_candidate"))
   if (candidates) counts <- paste0(counts, sprintf("\nCandidates: %d", candidates))
   threshold <- params$min_abs_delta_pau
   ggplot(shown, aes(x = fitted_control_distal_pau, y = fitted_treatment_distal_pau)) +
     geom_abline(slope = 1, intercept = 0, colour = "grey40", linewidth = 0.3) +
     geom_abline(slope = 1, intercept = c(-threshold, threshold), colour = "grey60",
       linetype = "dashed", linewidth = 0.3) +
-    geom_point(aes(colour = direction, shape = direction), size = 1.6) +
+    geom_point(aes(colour = pattern, shape = call), size = 1.6) +
     geom_text(data = labels, aes(label = gene_name), size = 2.4, vjust = -0.7,
       check_overlap = TRUE) +
     annotate("text", x = 0.02, y = 0.98, hjust = 0, vjust = 1, size = 2.8, label = counts) +
     scale_colour_manual(
-      values = c(lengthened = COLOR_UP, shortened = COLOR_DOWN,
-        lengthened_candidate = COLOR_UP, shortened_candidate = COLOR_DOWN, none = COLOR_NONE),
-      labels = DIRECTION_LABELS, name = NULL
+      values = APA_COLORS, labels = APA_CLASSES, name = "APA pattern",
+      guide = guide_legend(order = 1, ncol = 2)
     ) +
     scale_shape_manual(
-      values = c(lengthened = 16, shortened = 16, lengthened_candidate = 1,
-        shortened_candidate = 1, none = 16),
-      labels = DIRECTION_LABELS, name = NULL
+      values = c("Confirmed" = 16, "None or candidate" = 1), name = "Distal PAC call",
+      guide = guide_legend(order = 2, nrow = 1)
     ) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
     labs(
@@ -565,7 +605,13 @@ plot_distal_usage <- function(result, comparison, params) {
       x = ascii_text(sprintf("Distal PAC usage in %s (fitted PAU)", comparison$control_condition)),
       y = ascii_text(sprintf("Distal PAC usage in %s (fitted PAU)", comparison$condition))
     ) +
-    figure_theme()
+    figure_theme() +
+    # Two legends side by side would not fit the square figure; stacked, they
+    # are kept tight so the panel stays large.
+    theme(
+      legend.box = "vertical", legend.spacing.y = grid::unit(2, "pt"),
+      legend.key.spacing.y = grid::unit(0, "pt"), legend.margin = margin(0, 0, 0, 0)
+    )
 }
 
 plot_site_classes <- function(counts, comparison) {
@@ -606,7 +652,40 @@ plot_site_classes <- function(counts, comparison) {
   plot
 }
 
-plot_event_counts <- function(counts, comparisons) {
+# Two plots stacked in one figure: the PAC and gene events, and the genes per
+# APA pattern, each with its own legend.
+plot_event_counts <- function(counts, patterns, comparisons) {
+  rows <- nrow(comparisons)
+  figure_stack(
+    list(plot_event_bars(counts, comparisons), plot_pattern_bars(patterns, comparisons)),
+    heights = c(2 + 0.375 * rows, 1.5 + 0.375 * rows)
+  )
+}
+
+figure_stack <- function(plots, heights) {
+  structure(list(plots = plots, heights = heights), class = "figure_stack")
+}
+
+plot_pattern_bars <- function(patterns, comparisons) {
+  titles <- stats::setNames(comparisons$title, comparisons$stem)
+  totals <- stats::aggregate(count ~ comparison, data = patterns, FUN = sum)
+  ggplot(patterns, aes(x = count, y = comparison, fill = pattern)) +
+    geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
+    geom_text(data = totals, aes(x = count, y = comparison, label = count),
+      inherit.aes = FALSE, hjust = -0.3, size = 2.6) +
+    scale_fill_manual(values = APA_COLORS, labels = APA_CLASSES, name = NULL, drop = FALSE) +
+    scale_y_discrete(limits = rev(comparisons$stem), labels = titles) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+    guides(fill = guide_legend(nrow = 2)) +
+    labs(
+      title = "APA patterns per comparison",
+      subtitle = "Genes per pattern, from the genes tables; a gene with two patterns counts in both",
+      x = "Genes", y = NULL
+    ) +
+    figure_theme()
+}
+
+plot_event_bars <- function(counts, comparisons) {
   titles <- stats::setNames(comparisons$title, comparisons$stem)
   totals <- stats::aggregate(count ~ comparison + level, data = counts, FUN = sum)
   ggplot(counts, aes(x = count, y = comparison, fill = event)) +
@@ -654,6 +733,22 @@ plot_effect_vs_coverage <- function(data, comparisons, params, dropped) {
     figure_theme()
 }
 
+# Draws a ggplot, or a figure stack with each plot in its own row.
+draw_figure <- function(plot) {
+  if (!inherits(plot, "figure_stack")) return(print(plot))
+  grid::grid.newpage()
+  layout <- grid::grid.layout(length(plot$plots), 1, heights = grid::unit(plot$heights, "null"))
+  grid::pushViewport(grid::viewport(layout = layout))
+  for (index in seq_along(plot$plots)) {
+    print(
+      plot$plots[[index]], newpage = FALSE,
+      vp = grid::viewport(layout.pos.row = index, layout.pos.col = 1)
+    )
+  }
+  grid::popViewport()
+  invisible(plot)
+}
+
 # Writes STEM.pdf and STEM.png. The PDF has no creation date, modification
 # date, or producer, so reruns reproduce it byte for byte. The PNG uses the
 # platform's default bitmap device: cairo on Linux, quartz on macOS.
@@ -665,12 +760,12 @@ save_figure <- function(plot, stem, width, height) {
     escape(paste0(stem, ".pdf")), width = width, height = height,
     timestamp = FALSE, producer = FALSE, title = title
   )
-  tryCatch(print(plot), finally = grDevices::dev.off())
+  tryCatch(draw_figure(plot), finally = grDevices::dev.off())
   grDevices::png(
     escape(paste0(stem, ".png")), width = round(width * FIGURE_DPI),
     height = round(height * FIGURE_DPI), units = "px", res = FIGURE_DPI
   )
-  tryCatch(print(plot), finally = grDevices::dev.off())
+  tryCatch(draw_figure(plot), finally = grDevices::dev.off())
   invisible(stem)
 }
 
@@ -698,7 +793,7 @@ run_figures_mode <- function(arguments) {
     output <- file.path(arguments$output_dir, stem)
     save_figure(plot_volcano(pacs, comparison, params, exploratory), paste0(output, ".volcano"),
       6.5, 5)
-    distal <- distal_usage_table(pacs, coordinates)
+    distal <- distal_usage_table(pacs, coordinates, genes)
     write_gzip_tsv(distal$table[, DISTAL_COLUMNS], paste0(output, ".distal_usage.tsv.gz"))
     save_figure(plot_distal_usage(distal, comparison, params), paste0(output, ".distal_usage"),
       5.5, 5.5)
@@ -706,8 +801,9 @@ run_figures_mode <- function(arguments) {
       paste0(output, ".site_classes"), 6.5, 3.5)
   }
   counts <- event_count_table(comparisons, pacs_tables, genes_tables)
-  save_figure(plot_event_counts(counts, comparisons),
-    file.path(arguments$output_dir, "event_counts"), 7.5, 2 + 0.375 * nrow(comparisons))
+  patterns <- pattern_count_table(comparisons, genes_tables)
+  save_figure(plot_event_counts(counts, patterns, comparisons),
+    file.path(arguments$output_dir, "event_counts"), 7.5, 3.5 + 0.75 * nrow(comparisons))
   coverage <- coverage_data(comparisons, pacs_tables)
   dropped <- sum(vapply(pacs_tables, nrow, integer(1))) - nrow(coverage)
   rows <- ceiling(nrow(comparisons) / min(3, nrow(comparisons)))

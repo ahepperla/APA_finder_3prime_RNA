@@ -27,10 +27,10 @@ COMPARISON_FIGURES = (
         "distal_usage",
         "Distal PAC usage",
         "Each point is a tested gene: the fitted usage of its most 3' tested PAC in the "
-        "terminal exon or downstream, control against treatment. A gene is lengthened or "
-        "shortened only when that PAC itself has a confirmed increase or decrease. With "
-        "three or more PACs, losing a middle PAC also raises the distal share. Up to "
-        "20 lengthened and 20 shortened genes, the largest changes, are labeled.",
+        "terminal exon or downstream, control against treatment. Colors show the gene's "
+        "APA pattern from the .genes table; filled points have a confirmed call at the "
+        "distal PAC. Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, "
+        "the largest changes, are labeled.",
     ),
     (
         "site_classes",
@@ -46,7 +46,8 @@ SUMMARY_FIGURES = (
         "Events per comparison",
         "PAC events count PACs, with candidates in lighter shades. Gene events count "
         "genes that pass the gene-level screen, from the dominant_switch and "
-        "complexity_change columns of the .genes tables.",
+        "complexity_change columns of the .genes tables. The lower panel counts genes "
+        "per APA pattern (apa_pattern); a gene with two patterns counts in both.",
     ),
     (
         "effect_vs_coverage",

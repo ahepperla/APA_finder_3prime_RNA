@@ -22,7 +22,7 @@ REQUIRED_PRECISION_SLOTS <- c(
 )
 TEXT_COLUMNS <- c(
   "gene_id", "gene_name", "chrom", "locus", "pac_id", "feature_id", "sample_id", "condition", "control",
-  "control_condition", "comparison", "bootstrap_status", "model_status"
+  "control_condition", "comparison", "bootstrap_status", "model_status", "last_exon"
 )
 BOOTSTRAP_STATUSES <- c(
   "ok", "insufficient_successes", "fit_unavailable", "not_selected", "disabled"
@@ -56,16 +56,28 @@ OMNIBUS_COLUMNS <- c(
   "gene_id", "gene_name", "family", "gene_fdr", "pvalue", "lr", "df", "model_status",
   "stabilization_successes", "exploratory_insufficient_replicates"
 )
+APA_METRIC_COLUMNS <- c("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
 GENE_COLUMNS <- c(
   "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-  "complexity_change", "gene_fdr", "pvalue", "lr", "df", "model_status",
-  "stabilization_successes", "exploratory_insufficient_replicates"
+  "complexity_change", "apa_pattern", APA_METRIC_COLUMNS, "gene_fdr", "pvalue", "lr", "df",
+  "model_status", "stabilization_successes", "exploratory_insufficient_replicates"
 )
 ATLAS_ANNOTATION_COLUMNS <- c(
-  "assignment_class", "confidence", "internal_priming_flag", "known_pac",
+  "assignment_class", "last_exon", "confidence", "internal_priming_flag", "known_pac",
   "known_rescue_only", "primary_pas_motif", "primary_pas_motif_rna",
   "primary_motif_class"
 )
+# Gene-level APA patterns, in the order apa_pattern lists them.
+APA_PATTERN_CLASSES <- c(
+  "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
+  "utr_lengthening"
+)
+# PACs in introns or internal exons form a gene's upstream region (Tian and
+# Manley, 2017); PACs in a last exon or downstream of the gene, its 3' region.
+UPSTREAM_CLASSES <- c("intronic", "other_exon")
+THREE_PRIME_CLASSES <- c("terminal_exon", "downstream")
+# Slack for comparing sums of fitted proportions with a threshold.
+APA_TOLERANCE <- 1e-9
 PAC_COLUMNS <- c(
   IDENTITY_COLUMNS,
   "condition", "control_condition", "event_type",
@@ -1289,6 +1301,121 @@ gene_level_events <- function(pacs, params) {
   )
 }
 
+# ---- APA patterns -----------------------------------------------------------
+
+# One row per gene: its APA pattern and the numbers behind it, from each
+# region's share of the fitted usage and the confirmed PAC calls. A call gates
+# a pattern only on a PAC that is not low confidence, so internal-priming
+# sites never do. A pattern needs a gene that passes the gene-level screen;
+# the numbers are given for every gene with fitted usage.
+apa_patterns <- function(pacs, coordinate, params) {
+  up <- pacs$event_type %in% c("gained", "increased_usage")
+  down <- pacs$event_type %in% c("lost", "decreased_usage")
+  gating <- is.na(pacs$confidence) | pacs$confidence != "low"
+  groups <- split(seq_len(nrow(pacs)), factor(pacs$gene_id, levels = unique(pacs$gene_id)))
+  rows <- lapply(groups, function(index) {
+    gene_apa_pattern(
+      pacs[index, , drop = FALSE], coordinate[index], up[index] & gating[index],
+      down[index] & gating[index], up[index] | down[index], params
+    )
+  })
+  result <- do.call(rbind, c(list(empty_apa_patterns()), rows))
+  rownames(result) <- NULL
+  result
+}
+
+empty_apa_patterns <- function() {
+  data.frame(
+    gene_id = character(), apa_pattern = character(), delta_intronic_share = numeric(),
+    delta_utr_distal_share = numeric(), last_exon_switch = numeric(), stringsAsFactors = FALSE
+  )
+}
+
+gene_apa_pattern <- function(rows, coordinate, gate_up, gate_down, called, params) {
+  result <- data.frame(
+    gene_id = rows$gene_id[[1]], apa_pattern = "none", delta_intronic_share = NA_real_,
+    delta_utr_distal_share = NA_real_, last_exon_switch = NA_real_, stringsAsFactors = FALSE
+  )
+  control <- rows$fitted_control_pau
+  treatment <- rows$fitted_treatment_pau
+  if (!all(is.finite(control)) || !all(is.finite(treatment))) return(result)
+  threshold <- params$min_abs_delta_pau - APA_TOLERANCE
+  upstream <- rows$assignment_class %in% UPSTREAM_CLASSES
+  three_prime <- which(rows$assignment_class %in% THREE_PRIME_CLASSES)
+  # Positions in transcript orientation, so larger is more 3'.
+  oriented <- if (rows$strand[[1]] == "-") -coordinate else coordinate
+  delta_intronic <- sum(treatment[upstream]) - sum(control[upstream])
+  result$delta_intronic_share <- delta_intronic
+
+  # Last exons, each with its share of the gene in each group.
+  last_exon <- rows$last_exon[three_prime]
+  last_exon[is.na(last_exon)] <- ""
+  # Levels in row order, not the locale's collation, keep ties deterministic.
+  exons <- split(three_prime, factor(last_exon, levels = unique(last_exon)))
+  exon_control <- vapply(exons, function(index) sum(control[index]), numeric(1))
+  exon_treatment <- vapply(exons, function(index) sum(treatment[index]), numeric(1))
+  exon_position <- vapply(exons, function(index) max(oriented[index]), numeric(1))
+  exon_delta <- exon_treatment - exon_control
+  if (length(exons) >= 2L) {
+    result$last_exon_switch <- min(max(exon_delta), -min(exon_delta))
+  }
+
+  # The main last exon has the most usage over both groups; a tie goes to
+  # the 3'-most. Its distal PAC's share of it is the 3' counterpart of PDUI.
+  main <- integer()
+  distal <- NA_integer_
+  if (length(exons)) {
+    main_exon <- order(-(exon_control + exon_treatment), -exon_position)[[1]]
+    main <- exons[[main_exon]]
+    minimum <- params$event_min_treatment_pau - APA_TOLERANCE
+    if (
+      length(main) >= 2L && exon_control[[main_exon]] >= minimum &&
+        exon_treatment[[main_exon]] >= minimum
+    ) {
+      distal <- main[[which.max(oriented[main])]]
+      result$delta_utr_distal_share <- treatment[[distal]] / exon_treatment[[main_exon]] -
+        control[[distal]] / exon_control[[main_exon]]
+    }
+  }
+
+  screened <- !is.na(rows$gene_fdr[[1]]) && rows$gene_fdr[[1]] <= params$gene_fdr
+  if (!screened || !any(called)) return(result)
+  classes <- character()
+  if (delta_intronic >= threshold && any(gate_up & upstream)) {
+    classes <- c(classes, "intronic_gain")
+  }
+  if (delta_intronic <= -threshold && any(gate_down & upstream)) {
+    classes <- c(classes, "intronic_loss")
+  }
+  if (!is.na(result$last_exon_switch) && result$last_exon_switch >= threshold) {
+    gaining <- exons[[which.max(exon_delta)]]
+    losing <- exons[[which.min(exon_delta)]]
+    if (any(gate_up[gaining]) && any(gate_down[losing])) {
+      classes <- c(classes, "alternative_last_exon")
+    }
+  }
+  utr_change <- result$delta_utr_distal_share
+  if (!is.na(utr_change) && abs(utr_change) >= threshold) {
+    # A shift into or out of the main last exon moves all of its PACs one
+    # way, so only calls in the other direction can show a change within it.
+    shifted <- abs(delta_intronic) >= threshold ||
+      (!is.na(result$last_exon_switch) && result$last_exon_switch >= threshold)
+    main_change <- sum(treatment[main]) - sum(control[main])
+    use_up <- !shifted || main_change < 0
+    use_down <- !shifted || main_change > 0
+    proximal <- setdiff(main, distal)
+    if (utr_change < 0) {
+      evidence <- (use_up && any(gate_up[proximal])) || (use_down && gate_down[[distal]])
+      if (evidence) classes <- c(classes, "utr_shortening")
+    } else {
+      evidence <- (use_up && gate_up[[distal]]) || (use_down && any(gate_down[proximal]))
+      if (evidence) classes <- c(classes, "utr_lengthening")
+    }
+  }
+  result$apa_pattern <- if (length(classes)) paste(classes, collapse = ";") else "other"
+  result
+}
+
 # ---- Per-comparison tables --------------------------------------------------
 
 comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params, gene_names) {
@@ -1362,6 +1489,11 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
   event_index <- match(genes$gene_id, gene_events$gene_id)
   genes$dominant_switch <- gene_events$dominant_switch[event_index]
   genes$complexity_change <- gene_events$complexity_change[event_index]
+  patterns <- apa_patterns(pacs, as.numeric(atlas$coordinate[annotation_index]), params)
+  pattern_index <- match(genes$gene_id, patterns$gene_id)
+  for (column in c("apa_pattern", APA_METRIC_COLUMNS)) {
+    genes[[column]] <- patterns[[column]][pattern_index]
+  }
   genes$condition <- treatment
   genes$control_condition <- control
   genes$exploratory_insufficient_replicates <- layout$exploratory
@@ -1681,6 +1813,14 @@ run_fit_mode <- function(arguments) {
   samples <- read_tsv(arguments$samples)
   counts <- read_tsv(arguments$counts)
   atlas <- read_tsv(arguments$atlas)
+  # Checked before the fit, so a stale atlas stops the run in minutes.
+  if (!"last_exon" %in% names(atlas)) {
+    stop(
+      "The atlas lacks the last_exon column, so an older PACusage package wrote it. ",
+      "Rebuild containers/pacusage.sif, or reinstall the package, from this checkout ",
+      "and rerun; -resume reruns annotation and every step after it."
+    )
+  }
 
   available_families <- unique(samples$control_condition[
     samples$condition != samples$control_condition

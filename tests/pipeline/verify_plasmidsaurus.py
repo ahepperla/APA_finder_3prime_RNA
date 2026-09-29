@@ -117,16 +117,18 @@ def main(root: Path) -> None:
     assert (nulls["delta_pau"].abs() < 0.01).all(), list(nulls["delta_pau"])
     assert (nulls["pvalue_gene"] > 0.5).all(), list(nulls["pvalue_gene"])
 
-    # Shifted genes lose usage at their distal PAC, so they are shortened, and
+    # Shifted genes lose usage at their distal PAC, their 3' UTRs shorten, and
     # their most-used PAC switches from distal to proximal.
     distal = pd.read_csv(root / "figures" / "TreatmentA_vs_DMSO.distal_usage.tsv.gz", sep="\t")
     distal = distal.set_index("gene_id")
     shifted_genes = sorted(shifted["gene_id"].unique())
     expected_distal = sorted(shifted.loc[shifted["rank_from_distal"] == 0, "pac_id"])
     assert sorted(distal.loc[shifted_genes, "distal_pac_id"]) == expected_distal
-    assert set(distal.loc[shifted_genes, "direction"]) == {"shortened"}
+    assert set(distal.loc[shifted_genes, "direction"]) == {"distal_down"}
+    assert set(distal.loc[shifted_genes, "apa_pattern"]) == {"utr_shortening"}
     null_genes = sorted(nulls["gene_id"].unique())
     assert set(distal.loc[null_genes, "direction"]) == {"none"}
+    assert set(distal.loc[null_genes, "apa_pattern"]) == {"none"}
     genes = pd.read_csv(root / "statistics" / "TreatmentA_vs_DMSO.genes.tsv.gz", sep="\t")
     switched = genes.loc[genes["dominant_switch"].astype(str).str.lower() == "true", "gene_id"]
     assert set(shifted_genes) <= set(switched), sorted(switched)

@@ -223,6 +223,10 @@ assemble_usage_dataset <- function(genes, sample_ids, sample_condition, control,
       known_pac = FALSE,
       known_rescue_only = FALSE,
       assignment_class = "terminal_exon",
+      # Every test gene has one last exon holding all of its PACs.
+      last_exon = sprintf(
+        "%s:%d-%d", gene$contig, min(gene$coordinates) - 99L, max(gene$coordinates)
+      ),
       ambiguous_gene_assignment = FALSE,
       upstream_sequence = "",
       primary_pas_motif = "AATAAA",

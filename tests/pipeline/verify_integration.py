@@ -29,47 +29,75 @@ FIGURE_PIXELS = {
     "volcano": (1300, 1000),
     "distal_usage": (1100, 1100),
     "site_classes": (1300, 700),
-    "event_counts": (1500, 625),
+    "event_counts": (1500, 1150),
     "effect_vs_coverage": (1500, 650),
 }
 DISTAL_COLUMNS = [
-    "gene_id", "gene_name", "condition", "control_condition", "direction", "distal_pac_id",
-    "distal_locus", "distal_assignment_class", "fitted_control_distal_pau",
+    "gene_id", "gene_name", "condition", "control_condition", "direction", "apa_pattern",
+    "distal_pac_id", "distal_locus", "distal_assignment_class", "fitted_control_distal_pau",
     "fitted_treatment_distal_pau", "delta_distal_pau", "distal_event_type", "gene_fdr",
     "distal_pac_fdr", "tested_pacs",
 ]
 DISTAL_DIRECTIONS = {
-    "gained": "lengthened",
-    "increased_usage": "lengthened",
-    "lost": "shortened",
-    "decreased_usage": "shortened",
-    "gained_candidate": "lengthened_candidate",
-    "lost_candidate": "shortened_candidate",
+    "gained": "distal_up",
+    "increased_usage": "distal_up",
+    "lost": "distal_down",
+    "decreased_usage": "distal_down",
+    "gained_candidate": "distal_up_candidate",
+    "lost_candidate": "distal_down_candidate",
 }
-# The designed genes whose distal PAC has a call; every other gene is "none".
-# bg01 loses its middle PAC in TreatmentA, which raises the distal share.
+# The genes the fixture designs; the others are seeded nulls, whose chance
+# results are checked only against an independent recomputation.
+DESIGNED_GENES = {"gene_plus", *(f"bg{index:02d}" for index in range(1, 10)), "ipa01", "ale01"}
+# The designed genes whose distal PAC has a call; the other designed genes
+# have none. bg01 loses its middle PAC in TreatmentA, which raises the distal
+# share.
 EXPECTED_DISTAL_CALLS = {
     "TreatmentA_vs_DMSO": {
-        "bg01": "lengthened", "bg03": "lengthened", "bg05": "lengthened",
-        "bg04": "shortened", "bg06": "shortened", "gene_plus": "shortened",
+        "bg01": "distal_up", "bg03": "distal_up", "bg05": "distal_up", "ale01": "distal_up",
+        "bg04": "distal_down", "bg06": "distal_down", "gene_plus": "distal_down",
+        "ipa01": "distal_down",
     },
-    "TreatmentB_vs_Vehicle": {"bg02": "shortened", "gene_plus": "shortened"},
+    "TreatmentB_vs_Vehicle": {"bg02": "distal_down", "gene_plus": "distal_down"},
     "Rescue_vs_TreatmentA": {
-        "bg04": "lengthened", "bg06": "lengthened", "gene_plus": "lengthened",
-        "bg01": "shortened", "bg03": "shortened", "bg05": "shortened",
+        "bg04": "distal_up", "bg06": "distal_up", "gene_plus": "distal_up", "ipa01": "distal_up",
+        "bg01": "distal_down", "bg03": "distal_down", "bg05": "distal_down",
+        "ale01": "distal_down",
     },
 }
-# Genes with a dominant switch, a complexity gain, and a complexity loss.
+# Designed genes with a dominant switch, a complexity gain, and a complexity
+# loss; the other designed genes have none.
 EXPECTED_GENE_EVENTS = {
     "TreatmentA_vs_DMSO": (
-        {"bg01", "bg03", "bg04", "bg05", "bg06", "bg12", "gene_plus"},
+        {"bg01", "bg03", "bg04", "bg05", "bg06", "gene_plus", "ipa01", "ale01"},
         {"bg09", "gene_plus"},
         {"bg01"},
     ),
     "TreatmentB_vs_Vehicle": ({"gene_plus"}, {"bg02"}, set()),
-    "Rescue_vs_TreatmentA": ({"bg01", "bg03", "bg04", "bg05", "bg06"}, {"bg01"}, {"bg09"}),
+    "Rescue_vs_TreatmentA": (
+        {"bg01", "bg03", "bg04", "bg05", "bg06", "ipa01", "ale01"}, {"bg01"}, {"bg09"}
+    ),
 }
-
+# Each designed gene's APA pattern; any designed gene not listed is "none".
+EXPECTED_APA_PATTERNS = {
+    "TreatmentA_vs_DMSO": {
+        "gene_plus": "utr_shortening", "bg04": "utr_shortening", "bg06": "utr_shortening",
+        "bg01": "utr_lengthening", "bg03": "utr_lengthening", "bg05": "utr_lengthening",
+        "bg09": "other", "ipa01": "intronic_gain", "ale01": "alternative_last_exon",
+    },
+    "TreatmentB_vs_Vehicle": {"gene_plus": "utr_shortening", "bg02": "utr_shortening"},
+    "Rescue_vs_TreatmentA": {
+        "gene_plus": "utr_lengthening", "bg04": "utr_lengthening", "bg06": "utr_lengthening",
+        "bg01": "utr_shortening", "bg03": "utr_shortening", "bg05": "utr_shortening",
+        "bg09": "other", "ipa01": "intronic_loss", "ale01": "alternative_last_exon",
+    },
+}
+APA_PATTERN_CLASSES = (
+    "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
+    "utr_lengthening",
+)
+APA_METRIC_COLUMNS = ("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
+APA_TOLERANCE = 1e-9
 
 def pac(contig: str, strand: str, coordinate: int) -> str:
     return f"PACv1.synthetic.{contig}.{strand}.{coordinate}"
@@ -186,26 +214,171 @@ def png_size(path: Path) -> tuple[int, int]:
     return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
-def check_gene_events(tables: dict[str, pd.DataFrame]) -> None:
+def check_gene_events(tables: dict[str, pd.DataFrame], params: dict) -> None:
     """The genes tables flag every gene with a switch or a complexity change,
     including genes whose PACs all carry their own calls."""
     for name, (switched, gained, lost) in EXPECTED_GENE_EVENTS.items():
         genes = statistics_table(f"{name}.genes.tsv.gz")
-        assert list(genes.columns[:6]) == [
+        assert list(genes.columns[:7]) == [
             "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-            "complexity_change",
+            "complexity_change", "apa_pattern",
         ], name
-        assert set(genes.loc[is_true(genes["dominant_switch"]), "gene_id"]) == switched, name
-        assert set(genes.loc[genes["complexity_change"] == "gain", "gene_id"]) == gained, name
-        assert set(genes.loc[genes["complexity_change"] == "loss", "gene_id"]) == lost, name
+        flagged = {
+            "switch": set(genes.loc[is_true(genes["dominant_switch"]), "gene_id"]),
+            "gain": set(genes.loc[genes["complexity_change"] == "gain", "gene_id"]),
+            "loss": set(genes.loc[genes["complexity_change"] == "loss", "gene_id"]),
+        }
+        kinds = zip(("switch", "gain", "loss"), (switched, gained, lost), strict=True)
+        for kind, expected in kinds:
+            observed = flagged[kind] & DESIGNED_GENES
+            assert observed == expected, f"{name}: designed {kind} genes {sorted(observed)}"
+        # Every gene's flags follow from its PAC rows, recomputed here.
         pacs = tables[name]
-        for label, flagged in (
-            ("dominant_switch", switched),
-            ("complexity_gain", gained),
-            ("complexity_loss", lost),
+        first = pacs.drop_duplicates("gene_id").set_index("gene_id")
+        fitted = pacs.groupby("gene_id")[["fitted_control_pau", "fitted_treatment_pau"]].apply(
+            lambda rows: bool(np.isfinite(rows.to_numpy(dtype=float)).all())
+        )
+        screened = first["gene_fdr"] <= params["gene_fdr"]
+        switch = screened & (first["dominant_pac_control"] != first["dominant_pac_treatment"])
+        switch &= first["dominant_pac_control"].notna() & first["dominant_pac_treatment"].notna()
+        change = first["treatment_detected_complexity"] - first["control_detected_complexity"]
+        change = change.where(screened & fitted.reindex(first.index), 0)
+        assert flagged["switch"] == set(first.index[switch]), f"{name}: dominant_switch"
+        assert flagged["gain"] == set(first.index[change > 0]), f"{name}: complexity gain"
+        assert flagged["loss"] == set(first.index[change < 0]), f"{name}: complexity loss"
+        for label, kind in (
+            ("dominant_switch", "switch"),
+            ("complexity_gain", "gain"),
+            ("complexity_loss", "loss"),
         ):
             labelled = set(pacs.loc[pacs["event_type"] == label, "gene_id"])
-            assert labelled <= flagged, f"{name}: {label} labels outside flagged genes"
+            assert labelled <= flagged[kind], f"{name}: {label} labels outside flagged genes"
+
+
+def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -> dict:
+    """APA patterns recomputed from a PAC table, independently of the R code:
+    region shares of the fitted usage, gated by confirmed calls on PACs that
+    are not low confidence."""
+    threshold = params["min_abs_delta_pau"] - APA_TOLERANCE
+    minimum = params["event_min_treatment_pau"] - APA_TOLERANCE
+    results = {}
+    for gene_id, rows in pacs.groupby("gene_id", sort=False):
+        metrics = dict.fromkeys(APA_METRIC_COLUMNS, math.nan)
+        control = rows["fitted_control_pau"].to_numpy(dtype=float)
+        treatment = rows["fitted_treatment_pau"].to_numpy(dtype=float)
+        if not (np.isfinite(control).all() and np.isfinite(treatment).all()):
+            results[gene_id] = ("none", metrics)
+            continue
+        coordinate = rows["pac_id"].map(coordinates).to_numpy(dtype=float)
+        oriented = -coordinate if rows["strand"].iloc[0] == "-" else coordinate
+        classes = rows["assignment_class"].to_numpy()
+        upstream = np.isin(classes, ["intronic", "other_exon"])
+        three_prime = np.flatnonzero(np.isin(classes, ["terminal_exon", "downstream"]))
+        events = rows["event_type"].to_numpy()
+        confident = rows["confidence"].to_numpy() != "low"
+        gate_up = np.isin(events, ["gained", "increased_usage"]) & confident
+        gate_down = np.isin(events, ["lost", "decreased_usage"]) & confident
+        called = np.isin(events, ["gained", "increased_usage", "lost", "decreased_usage"])
+        delta_intronic = treatment[upstream].sum() - control[upstream].sum()
+        metrics["delta_intronic_share"] = delta_intronic
+        last_exon = rows["last_exon"].fillna("").to_numpy()[three_prime]
+        exons = [three_prime[last_exon == name] for name in dict.fromkeys(last_exon)]
+        exon_control = [control[index].sum() for index in exons]
+        exon_treatment = [treatment[index].sum() for index in exons]
+        exon_delta = [
+            after - before for before, after in zip(exon_control, exon_treatment, strict=True)
+        ]
+        if len(exons) >= 2:
+            metrics["last_exon_switch"] = min(max(exon_delta), -min(exon_delta))
+        main: np.ndarray = np.asarray([], dtype=int)
+        distal = -1
+        if exons:
+            main_exon = min(
+                range(len(exons)),
+                key=lambda k: (-(exon_control[k] + exon_treatment[k]), -oriented[exons[k]].max()),
+            )
+            main = exons[main_exon]
+            if (
+                len(main) >= 2
+                and exon_control[main_exon] >= minimum
+                and exon_treatment[main_exon] >= minimum
+            ):
+                distal = int(main[np.argmax(oriented[main])])
+                metrics["delta_utr_distal_share"] = (
+                    treatment[distal] / exon_treatment[main_exon]
+                    - control[distal] / exon_control[main_exon]
+                )
+        gene_fdr = rows["gene_fdr"].iloc[0]
+        if not (np.isfinite(gene_fdr) and gene_fdr <= params["gene_fdr"]) or not called.any():
+            results[gene_id] = ("none", metrics)
+            continue
+        found = []
+        if delta_intronic >= threshold and (gate_up & upstream).any():
+            found.append("intronic_gain")
+        if delta_intronic <= -threshold and (gate_down & upstream).any():
+            found.append("intronic_loss")
+        switch = metrics["last_exon_switch"]
+        if np.isfinite(switch) and switch >= threshold:
+            gaining = exons[int(np.argmax(exon_delta))]
+            losing = exons[int(np.argmin(exon_delta))]
+            if gate_up[gaining].any() and gate_down[losing].any():
+                found.append("alternative_last_exon")
+        utr = metrics["delta_utr_distal_share"]
+        if np.isfinite(utr) and abs(utr) >= threshold:
+            shifted = abs(delta_intronic) >= threshold or (
+                np.isfinite(switch) and switch >= threshold
+            )
+            main_change = treatment[main].sum() - control[main].sum()
+            use_up = not shifted or main_change < 0
+            use_down = not shifted or main_change > 0
+            proximal = np.setdiff1d(main, [distal])
+            if utr < 0:
+                if (use_up and gate_up[proximal].any()) or (use_down and gate_down[distal]):
+                    found.append("utr_shortening")
+            elif (use_up and gate_up[distal]) or (use_down and gate_down[proximal].any()):
+                found.append("utr_lengthening")
+        results[gene_id] = (";".join(found) if found else "other", metrics)
+    return results
+
+
+def check_apa_patterns(tables: dict[str, pd.DataFrame], params: dict) -> None:
+    """Every gene's APA pattern and numbers match a recomputation, and the
+    designed genes get the patterns their design implies. The atlas records
+    the chr3 genes' last exons."""
+    atlas = pd.read_csv(
+        ROOT / "atlas" / "pacs.v1.metadata.tsv.gz", sep="\t", keep_default_na=False
+    )
+    last_exons = dict(zip(atlas["pac_id"], atlas["last_exon"], strict=True))
+    classes = dict(zip(atlas["pac_id"], atlas["assignment_class"], strict=True))
+    assert (classes[pac("chr3", "+", 1150)], last_exons[pac("chr3", "+", 1150)]) == ("intronic", "")
+    assert last_exons[pac("chr3", "+", 2400)] == "chr3:2201-2400"
+    assert last_exons[pac("chr3", "+", 5000)] == "chr3:4801-5000"
+    assert last_exons[pac("chr3", "+", 5600)] == "chr3:5401-5600"
+    assert last_exons[pac("chr1", "+", 350)] == "chr1:101-400"
+    terminal = atlas["assignment_class"] == "terminal_exon"
+    assert (atlas.loc[terminal, "last_exon"] != "").all(), "a terminal-exon PAC lacks its last exon"
+    coordinates = dict(zip(atlas["pac_id"], atlas["coordinate"].astype(float), strict=True))
+    for name, table in tables.items():
+        genes = statistics_table(f"{name}.genes.tsv.gz").set_index("gene_id")
+        expected = expected_apa_patterns(table, coordinates, params)
+        assert set(expected) == set(genes.index), f"{name}: genes differ from the PAC table"
+        for gene_id, (pattern, metrics) in expected.items():
+            row = genes.loc[gene_id]
+            label = f"{name}: {gene_id}"
+            assert row["apa_pattern"] == pattern, f"{label} is {row['apa_pattern']}, not {pattern}"
+            for column, value in metrics.items():
+                observed = number(row[column])
+                same = (math.isnan(value) and math.isnan(observed)) or abs(observed - value) < 1e-9
+                assert same, f"{name}: {gene_id} {column} is {observed}, not {value}"
+        designed = {
+            gene_id: genes.loc[gene_id, "apa_pattern"]
+            for gene_id in sorted(DESIGNED_GENES & set(genes.index))
+        }
+        wanted = {gene_id: EXPECTED_APA_PATTERNS[name].get(gene_id, "none") for gene_id in designed}
+        assert designed == wanted, f"{name}: designed patterns {designed}"
+        valid = {*APA_PATTERN_CLASSES, "other", "none"}
+        for pattern in genes["apa_pattern"]:
+            assert set(pattern.split(";")) <= valid, f"{name}: invalid pattern {pattern}"
 
 
 def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text: str) -> None:
@@ -254,8 +427,14 @@ def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text:
         assert list(rows["tested_pacs"]) == list(table.groupby("gene_id").size().loc[rows.index])
         directions = chosen["event_type"].map(DISTAL_DIRECTIONS).fillna("none")
         assert list(rows["direction"]) == list(directions), name
-        calls = rows.loc[rows["direction"] != "none", "direction"].to_dict()
+        calls = {
+            gene_id: direction
+            for gene_id, direction in rows.loc[rows["direction"] != "none", "direction"].items()
+            if gene_id in DESIGNED_GENES
+        }
         assert calls == EXPECTED_DISTAL_CALLS[name], f"{name}: distal calls {calls}"
+        genes = statistics_table(f"{name}.genes.tsv.gz").set_index("gene_id")
+        assert list(rows["apa_pattern"]) == list(genes.loc[rows.index, "apa_pattern"]), name
 
 
 def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
@@ -407,9 +586,11 @@ def main() -> None:
 
     # PAC-level FDRs exist wherever stageR confirms genes.
     designed = {
-        "TreatmentA_vs_DMSO": ["gene_plus", "bg01", "bg03", "bg04", "bg05", "bg06", "bg09"],
+        "TreatmentA_vs_DMSO": [
+            "gene_plus", "bg01", "bg03", "bg04", "bg05", "bg06", "bg09", "ipa01", "ale01"
+        ],
         "TreatmentB_vs_Vehicle": ["bg02"],
-        "Rescue_vs_TreatmentA": ["bg01"],
+        "Rescue_vs_TreatmentA": ["bg01", "ipa01", "ale01"],
     }
     for name, table in tables.items():
         rows = table[table["gene_id"].isin(designed[name])]
@@ -491,7 +672,8 @@ def main() -> None:
     trace_text = (ROOT / "pipeline_info" / "execution_trace.txt").read_text()
     check_alignment_handling(trace_text)
     check_input_checksums()
-    check_gene_events(tables)
+    check_gene_events(tables, params)
+    check_apa_patterns(tables, params)
     check_figures(tables, trace_text, report_text)
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:FINALIZE_USAGE_MODEL") == 3

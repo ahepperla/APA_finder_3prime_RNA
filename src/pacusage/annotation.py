@@ -22,6 +22,7 @@ ATLAS_COLUMNS = [
     "resolution_nt",
     "merged_candidate_coordinates",
     "assignment_class",
+    "last_exon",
     "ambiguous_gene_assignment",
     "proximal_distal_rank",
     "proximal_distal_label",
@@ -161,6 +162,7 @@ def annotate_candidates(
             # Names line up with the IDs, one per gene.
             gene_names = [names.get(gene_id, gene_id) for gene_id in gene_ids]
             ambiguous = len(gene_ids) > 1
+            last_exon = "" if ambiguous else feature_index.last_exon(assignments)
             upstream = oriented_interval_sequence(
                 fasta,
                 candidate.contig,
@@ -240,6 +242,7 @@ def annotate_candidates(
                     "gene_id": ",".join(gene_ids),
                     "gene_name": ",".join(gene_names),
                     "assignment_class": assignment_class,
+                    "last_exon": last_exon,
                     "ambiguous_gene_assignment": ambiguous,
                     # Ranked below for PACs of a single gene; blank otherwise.
                     "proximal_distal_rank": "",
@@ -315,16 +318,29 @@ class FeatureIndex:
                     gene_id=first.gene_id,
                     gene_name=first.gene_name,
                 )
-        self.terminal_exons: set[tuple[str, str, int, int, str]] = set()
+        transcripts_by_gene: dict[tuple[str, str, str], list[list[GenomicFeature]]] = (
+            defaultdict(list)
+        )
         for transcript in transcript_exons.values():
-            terminal = (
-                max(transcript, key=lambda item: item.end)
-                if transcript[0].strand == "+"
-                else min(transcript, key=lambda item: item.start)
-            )
-            self.terminal_exons.add(
-                (terminal.contig, terminal.strand, terminal.start, terminal.end, terminal.gene_id)
-            )
+            first = transcript[0]
+            transcripts_by_gene[(first.contig, first.strand, first.gene_id)].append(transcript)
+        self.terminal_exons: set[tuple[str, str, int, int, str]] = set()
+        # Each terminal exon's last-exon cluster, and each gene's 3'-most
+        # cluster, as 1-based loci.
+        self.last_exon_of: dict[tuple[str, str, int, int, str], str] = {}
+        self.three_prime_last_exon: dict[tuple[str, str, str], str] = {}
+        for gene_key, transcripts in transcripts_by_gene.items():
+            terminals = gene_terminal_exons(transcripts)
+            clusters = last_exon_clusters(terminals)
+            for exon in terminals:
+                key = (exon.contig, exon.strand, exon.start, exon.end, exon.gene_id)
+                self.terminal_exons.add(key)
+                self.last_exon_of[key] = next(
+                    locus for start, end, locus in clusters if start <= exon.start <= end
+                )
+            if clusters:
+                three_prime = clusters[-1] if gene_key[1] == "+" else clusters[0]
+                self.three_prime_last_exon[gene_key] = three_prime[2]
         self.exon_bins = self._bins(exons)
         self.gene_bins = self._bins(genes.values())
         by_strand: dict[tuple[str, str], list[GenomicFeature]] = defaultdict(list)
@@ -364,6 +380,29 @@ class FeatureIndex:
         candidates = bins.get((contig, strand, coordinate // self.bin_size), [])
         return [item for item in candidates if item.start <= coordinate <= item.end]
 
+    def last_exon(self, assignments: list[tuple[str, GenomicFeature]]) -> str:
+        """The last exon of one gene that holds a PAC: its terminal exon's
+        cluster, or for a PAC downstream of the gene, the gene's 3'-most
+        cluster. Other PACs have none."""
+        if not assignments:
+            return ""
+        label = assignments[0][0]
+        if label == "terminal_exon":
+            loci = {
+                self.last_exon_of[
+                    (exon.contig, exon.strand, exon.start, exon.end, exon.gene_id)
+                ]
+                for _, exon in assignments
+            }
+        elif label == "downstream":
+            loci = {
+                self.three_prime_last_exon.get((gene.contig, gene.strand, gene.gene_id), "")
+                for _, gene in assignments
+            }
+        else:
+            return ""
+        return loci.pop() if len(loci) == 1 else ""
+
     def assign(
         self, contig: str, strand: str, coordinate: int, maximum_downstream: int
     ) -> list[tuple[str, GenomicFeature]]:
@@ -399,6 +438,65 @@ class FeatureIndex:
                 upper = bisect_right(starts, starts[lower])
                 return [("downstream", gene) for gene in self.genes_by_start[key][lower:upper]]
         return []
+
+
+def final_exon(transcript: list[GenomicFeature]) -> GenomicFeature:
+    """A transcript's 3'-most exon."""
+    if transcript[0].strand == "+":
+        return max(transcript, key=lambda item: item.end)
+    return min(transcript, key=lambda item: item.start)
+
+
+def exons_overlap(first: GenomicFeature, second: GenomicFeature) -> bool:
+    return first.start < second.end and second.start < first.end
+
+
+def gene_terminal_exons(transcripts: list[list[GenomicFeature]]) -> list[GenomicFeature]:
+    """The final exons of a gene's transcripts that are true transcript ends.
+
+    A final exon is left out when it overlaps an internal exon of another
+    transcript of the gene, as the final exons of retained-intron and
+    3'-incomplete models do, or when it is a single-exon model apart from
+    every exon of the gene's multi-exon transcripts, such as a fragment inside
+    an intron. Without transcript IDs a gene is one transcript, so only its
+    3'-most exon is terminal.
+    """
+    finals = [final_exon(transcript) for transcript in transcripts]
+    internal = [
+        [exon for exon in transcript if exon is not finals[index]]
+        for index, transcript in enumerate(transcripts)
+    ]
+    spliced = [exon for transcript in transcripts if len(transcript) > 1 for exon in transcript]
+    terminals = []
+    for index, final in enumerate(finals):
+        inside_internal = any(
+            exons_overlap(final, exon)
+            for other, exons in enumerate(internal)
+            if other != index
+            for exon in exons
+        )
+        stray = (
+            len(transcripts[index]) == 1
+            and bool(spliced)
+            and not any(exons_overlap(final, exon) for exon in spliced)
+        )
+        if not inside_internal and not stray:
+            terminals.append(final)
+    return terminals
+
+
+def last_exon_clusters(terminals: list[GenomicFeature]) -> list[tuple[int, int, str]]:
+    """A gene's terminal exons merged into last exons, in genomic order, as
+    (start, end, 1-based locus). Exons sharing a coordinate merge, because
+    containment is inclusive."""
+    clusters: list[list[int]] = []
+    for exon in sorted(terminals, key=lambda item: (item.start, item.end)):
+        if clusters and exon.start <= clusters[-1][1]:
+            clusters[-1][1] = max(clusters[-1][1], exon.end)
+        else:
+            clusters.append([exon.start, exon.end])
+    contig = terminals[0].contig if terminals else ""
+    return [(start, end, f"{contig}:{start + 1}-{end}") for start, end in clusters]
 
 
 def oriented_interval_sequence(
