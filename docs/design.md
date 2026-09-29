@@ -979,6 +979,17 @@ Classify PACs using both statistical evidence and detection evidence:
   test, the number of tested PACs with fitted PAU at least
   `event_min_treatment_pau` differs between the groups.
 
+A PAC carries one `event_type`, so the dominant-switch and complexity labels
+go only on PACs without a call of their own. The `.genes` table records these
+two events for every gene, in `dominant_switch` and `complexity_change`, after
+`control_condition`:
+
+```text
+gene_id  gene_name  condition  control_condition  dominant_switch  complexity_change
+gene_fdr  pvalue  lr  df  model_status  stabilization_successes
+exploratory_insufficient_replicates
+```
+
 When detection and effect-size requirements for `gained` or `lost` pass but a
 stable PAC-level p-value cannot be obtained, report `gained_candidate` or
 `lost_candidate`. These labels are detection-supported but not statistically
@@ -1102,10 +1113,38 @@ Produce a static HTML report with:
 - zero-boundary stabilization and bootstrap success summaries;
 - searchable gained, lost, switched, and redistributed PAC events;
 - top genes for every condition-versus-control test;
-- per-gene plots of genomic PAC positions, raw counts, observed replicate PAU,
-  and fitted PAU.
+- per-gene plots of mean observed PAU per condition, for the genes with the
+  most reads;
+- the treatment-control figures below, embedded as PNGs.
 
 The report must remain usable after being copied off the cluster.
+
+`scripts/plot_usage_figures.R` draws the figures with ggplot2, as PDF and PNG,
+into `figures/`. They show the calls in the `.pacs` and `.genes` tables and
+make no calls of their own. For each comparison:
+
+- **volcano:** each tested PAC's change in fitted PAU against its PAC-level
+  p-value, with confirmed gains and losses colored and candidates open.
+  `pac_fdr` is missing outside screened genes, so the raw p-value is the
+  axis. Up to 20 genes in each direction are labeled by gene name, at their
+  most significant PACs.
+- **distal usage:** each tested gene's distal PAC, its most 3' tested PAC in
+  the terminal exon or downstream, with its fitted usage in the control
+  against the treatment. A gene is lengthened or shortened only when the
+  distal PAC has a confirmed gain or loss of usage, so the direction carries
+  stageR's error control. Up to 20 lengthened and 20 shortened genes, the
+  largest changes, are labeled by gene name.
+  `CONDITION_vs_CONTROL.distal_usage.tsv.gz` lists the genes.
+- **site classes:** confirmed gains and losses by assignment class, so
+  intronic polyadenylation shows as intron gains.
+
+Across comparisons, `event_counts` shows the PAC and gene events, and
+`effect_vs_coverage` shows each PAC's change in PAU against the reads at its
+gene in the less-covered group.
+
+PDFs are written without dates or a producer, so reruns reproduce them byte
+for byte. Uncalled PACs are drawn as a density above 5,000 per panel, which
+keeps real-data figures small.
 
 ## Outputs
 
@@ -1165,6 +1204,13 @@ results/
   tracks/
     SAMPLE.plus.3prime_evidence.bedGraph.gz
     SAMPLE.minus.3prime_evidence.bedGraph.gz
+  figures/
+    CONDITION_vs_CONTROL.volcano.pdf/.png
+    CONDITION_vs_CONTROL.distal_usage.pdf/.png
+    CONDITION_vs_CONTROL.distal_usage.tsv.gz
+    CONDITION_vs_CONTROL.site_classes.pdf/.png
+    event_counts.pdf/.png
+    effect_vs_coverage.pdf/.png
   report/
     index.html
   pipeline_info/               # Nextflow's reports for the latest run
@@ -1192,7 +1238,7 @@ pacusage/
   conf/                   # resources, Slurm, and test profiles
   src/pacusage/           # tested Python scientific logic
   bin/                    # the pacusage command Nextflow tasks run
-  scripts/                # R statistical model
+  scripts/                # R statistical model and figures
   containers/             # Apptainer recipe
   envs/                   # Conda environment
   tests/                  # unit, integration, R, pipeline, and fixtures
@@ -1203,7 +1249,8 @@ Name modules after the workflow operations above, including
 `PREPARE_REFERENCE`, `PREPARE_ALIGNMENT`, `RECORD_INPUT_CHECKSUMS`,
 `INFER_STRANDEDNESS`, `SCAN_ALIGNMENT` (per-sample calibration and evidence),
 `AGGREGATE_CALIBRATION`, `EXTRACT_3PRIME_EVIDENCE`, `CLUSTER_PACS`,
-`ANNOTATE_PACS`, `QUANTIFY_PACS`, `FIT_USAGE_MODEL`, and `BUILD_REPORT`.
+`ANNOTATE_PACS`, `QUANTIFY_PACS`, `FIT_USAGE_MODEL`, `PLOT_FIGURES`, and
+`BUILD_REPORT`.
 
 ## Coding Standards
 
@@ -1295,7 +1342,13 @@ Cover:
 - deterministic all-zero stabilization, instability flags, and parametric
   bootstrap intervals;
 - separate plus- and minus-strand browser tracks;
-- YAML and command-line parameter precedence.
+- YAML and command-line parameter precedence;
+- gene-level dominant-switch and complexity events on PACs with their own
+  calls;
+- figure data: the distal PAC on both strands, site-class and event counts,
+  and dropped p-values and coverage rows;
+- figures without dates, byte-identical across processes, for empty
+  comparisons too.
 
 ### Integration Fixture
 

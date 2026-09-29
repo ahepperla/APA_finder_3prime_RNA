@@ -8,6 +8,58 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-28: Treatment–control figures, drawn with ggplot2
+
+Status: accepted (project lead)
+
+**Figures**
+- Each comparison gets three: a volcano plot, distal PAC usage, and PAC calls
+  by site class.
+- Two figures cover all comparisons together: event counts, and effect
+  against coverage.
+- The per-gene panels with fitted PAU, and a figure of motif-class shifts,
+  were offered and not chosen.
+
+**How they are made**
+- `scripts/plot_usage_figures.R` draws them with ggplot2, as PDF and PNG, in
+  PLOT_FIGURES after the statistics.
+- They are published to `figures/`, and the report embeds the PNGs.
+- The alternative was hand-drawn SVG in the report, which needs no new
+  dependency. It was not chosen.
+
+**Dependency**
+- ggplot2 is declared directly in `envs/pacusage.yml` (`r-ggplot2>=4.0`), and
+  `r-base` rises to `>=4.5`. Both already came in with DRIMSeq 1.38.0.
+- R 4.5 is needed for `pdf(timestamp = FALSE, producer = FALSE)`, which
+  leaves the dates and producer out of PDFs, so reruns are byte-identical.
+
+**Distal usage**
+- The distal PAC is a gene's most 3′ tested PAC in the terminal exon or
+  downstream of the gene.
+- A gene is `lengthened` or `shortened` only when that PAC has a confirmed
+  call of its own: `gained` or `increased_usage`, or `lost` or
+  `decreased_usage`.
+- The alternative was "the gene passes `gene_fdr` and the distal PAU changes
+  by at least `min_abs_delta_pau`". It is more sensitive: it would call
+  fixture gene bg12, whose distal PAC rises by 0.17 with a PAC FDR of 0.10.
+  But it leaves the direction untested, so it was not chosen.
+- The figure only puts existing calls side by side, so its table,
+  `CONDITION_vs_CONTROL.distal_usage.tsv.gz`, lives in `figures/`.
+
+**Gene labels**
+- The volcano and distal-usage plots label genes by `gene_name`, falling back
+  to the ID, with at most 20 genes in each direction.
+- The volcano labels a gene's most significant confirmed PAC. The distal
+  plot labels the largest changes of the lengthened and shortened genes.
+
+**Gene-level events**
+- The `.genes` tables gain `dominant_switch` and `complexity_change`, and the
+  event-count figure reads them.
+- The `.events` labels go only on PACs without a call of their own, so they
+  undercount these events. In the fixture, TreatmentA_vs_DMSO labels 1 of 7
+  dominant switches, and Rescue_vs_TreatmentA 0 of 5.
+- No statistic changes.
+
 ## 2026-09-28: Peer-review follow-up: event rules, motif classes, mitochondria, names, and columns
 
 Status: accepted (project lead, answering the overseer's review of the methods

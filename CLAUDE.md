@@ -85,8 +85,9 @@ MAIN="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
 PYTHONPATH="$PWD/src" "$MAIN/.venv/bin/python" -m pytest
 "$MAIN/.venv/bin/ruff" check src tests
 R_LIBS="$MAIN/.Rlib" Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
+R_LIBS="$MAIN/.Rlib" Rscript tests/r/test_usage_figures.R scripts/plot_usage_figures.R scripts/fit_usage_model.R
 ```
 
 For `tests/pipeline/run_nextflow.sh`, also put `$MAIN/.venv/bin` first on `PATH`, keep
 the same `PYTHONPATH`, and set `R_LIBS="$MAIN/.Rlib"` so the pipeline's R steps
-find DRIMSeq and stageR.
+find DRIMSeq, stageR, and ggplot2.

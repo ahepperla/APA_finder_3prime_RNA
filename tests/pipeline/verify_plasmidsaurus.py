@@ -117,11 +117,32 @@ def main(root: Path) -> None:
     assert (nulls["delta_pau"].abs() < 0.01).all(), list(nulls["delta_pau"])
     assert (nulls["pvalue_gene"] > 0.5).all(), list(nulls["pvalue_gene"])
 
+    # Shifted genes lose usage at their distal PAC, so they are shortened, and
+    # their most-used PAC switches from distal to proximal.
+    distal = pd.read_csv(root / "figures" / "TreatmentA_vs_DMSO.distal_usage.tsv.gz", sep="\t")
+    distal = distal.set_index("gene_id")
+    shifted_genes = sorted(shifted["gene_id"].unique())
+    expected_distal = sorted(shifted.loc[shifted["rank_from_distal"] == 0, "pac_id"])
+    assert sorted(distal.loc[shifted_genes, "distal_pac_id"]) == expected_distal
+    assert set(distal.loc[shifted_genes, "direction"]) == {"shortened"}
+    null_genes = sorted(nulls["gene_id"].unique())
+    assert set(distal.loc[null_genes, "direction"]) == {"none"}
+    genes = pd.read_csv(root / "statistics" / "TreatmentA_vs_DMSO.genes.tsv.gz", sep="\t")
+    switched = genes.loc[genes["dominant_switch"].astype(str).str.lower() == "true", "gene_id"]
+    assert set(shifted_genes) <= set(switched), sorted(switched)
+    figures = {path.name for path in (root / "figures").iterdir()}
+    stems = [f"TreatmentA_vs_DMSO.{kind}" for kind in ("volcano", "distal_usage", "site_classes")]
+    stems += ["event_counts", "effect_vs_coverage"]
+    expected_figures = {f"{stem}.{suffix}" for stem in stems for suffix in ("pdf", "png")}
+    expected_figures.add("TreatmentA_vs_DMSO.distal_usage.tsv.gz")
+    assert figures == expected_figures, sorted(figures ^ expected_figures)
+
     report = root / "report" / "index.html"
     assert report.stat().st_size > 10000
     report_text = report.read_text()
     assert "<h2>Calibration kernel</h2>" in report_text
     assert "Calibration warning" not in report_text
+    assert report_text.count("<img src='data:image/png;base64,") == len(stems)
     print(f"Plasmidsaurus-like run verified: {len(atlas)} proximal-tag PACs.")
 
 

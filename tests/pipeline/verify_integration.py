@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import math
 import re
@@ -20,6 +21,54 @@ ROOT = REPOSITORY / "results-test"
 FIXTURES = REPOSITORY / "tests" / "fixtures"
 COMPARISONS = ("TreatmentA_vs_DMSO", "TreatmentB_vs_Vehicle", "Rescue_vs_TreatmentA")
 FAMILIES = ("DMSO", "Vehicle", "TreatmentA")
+COMPARISON_FIGURES = ("volcano", "distal_usage", "site_classes")
+SUMMARY_FIGURES = ("event_counts", "effect_vs_coverage")
+# Figure sizes in pixels at 200 dpi, from scripts/plot_usage_figures.R; the
+# summaries grow with the three comparisons.
+FIGURE_PIXELS = {
+    "volcano": (1300, 1000),
+    "distal_usage": (1100, 1100),
+    "site_classes": (1300, 700),
+    "event_counts": (1500, 625),
+    "effect_vs_coverage": (1500, 650),
+}
+DISTAL_COLUMNS = [
+    "gene_id", "gene_name", "condition", "control_condition", "direction", "distal_pac_id",
+    "distal_locus", "distal_assignment_class", "fitted_control_distal_pau",
+    "fitted_treatment_distal_pau", "delta_distal_pau", "distal_event_type", "gene_fdr",
+    "distal_pac_fdr", "tested_pacs",
+]
+DISTAL_DIRECTIONS = {
+    "gained": "lengthened",
+    "increased_usage": "lengthened",
+    "lost": "shortened",
+    "decreased_usage": "shortened",
+    "gained_candidate": "lengthened_candidate",
+    "lost_candidate": "shortened_candidate",
+}
+# The designed genes whose distal PAC has a call; every other gene is "none".
+# bg01 loses its middle PAC in TreatmentA, which raises the distal share.
+EXPECTED_DISTAL_CALLS = {
+    "TreatmentA_vs_DMSO": {
+        "bg01": "lengthened", "bg03": "lengthened", "bg05": "lengthened",
+        "bg04": "shortened", "bg06": "shortened", "gene_plus": "shortened",
+    },
+    "TreatmentB_vs_Vehicle": {"bg02": "shortened", "gene_plus": "shortened"},
+    "Rescue_vs_TreatmentA": {
+        "bg04": "lengthened", "bg06": "lengthened", "gene_plus": "lengthened",
+        "bg01": "shortened", "bg03": "shortened", "bg05": "shortened",
+    },
+}
+# Genes with a dominant switch, a complexity gain, and a complexity loss.
+EXPECTED_GENE_EVENTS = {
+    "TreatmentA_vs_DMSO": (
+        {"bg01", "bg03", "bg04", "bg05", "bg06", "bg12", "gene_plus"},
+        {"bg09", "gene_plus"},
+        {"bg01"},
+    ),
+    "TreatmentB_vs_Vehicle": ({"gene_plus"}, {"bg02"}, set()),
+    "Rescue_vs_TreatmentA": ({"bg01", "bg03", "bg04", "bg05", "bg06"}, {"bg01"}, {"bg09"}),
+}
 
 
 def pac(contig: str, strand: str, coordinate: int) -> str:
@@ -129,6 +178,84 @@ def expected_gene_name(gene_id: str) -> str:
 
 def is_true(values: pd.Series) -> pd.Series:
     return values.astype(str).str.strip().str.lower().isin({"true", "t", "1"})
+
+
+def png_size(path: Path) -> tuple[int, int]:
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR", path.name
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def check_gene_events(tables: dict[str, pd.DataFrame]) -> None:
+    """The genes tables flag every gene with a switch or a complexity change,
+    including genes whose PACs all carry their own calls."""
+    for name, (switched, gained, lost) in EXPECTED_GENE_EVENTS.items():
+        genes = statistics_table(f"{name}.genes.tsv.gz")
+        assert list(genes.columns[:6]) == [
+            "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
+            "complexity_change",
+        ], name
+        assert set(genes.loc[is_true(genes["dominant_switch"]), "gene_id"]) == switched, name
+        assert set(genes.loc[genes["complexity_change"] == "gain", "gene_id"]) == gained, name
+        assert set(genes.loc[genes["complexity_change"] == "loss", "gene_id"]) == lost, name
+        pacs = tables[name]
+        for label, flagged in (
+            ("dominant_switch", switched),
+            ("complexity_gain", gained),
+            ("complexity_loss", lost),
+        ):
+            labelled = set(pacs.loc[pacs["event_type"] == label, "gene_id"])
+            assert labelled <= flagged, f"{name}: {label} labels outside flagged genes"
+
+
+def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text: str) -> None:
+    """Figures exist for every comparison, carry no dates, and the distal-usage
+    table agrees with the PAC tables and the fixture's designed genes."""
+    figures = ROOT / "figures"
+    stems = [f"{name}.{kind}" for name in COMPARISONS for kind in COMPARISON_FIGURES]
+    stems += list(SUMMARY_FIGURES)
+    expected = {f"{stem}.{suffix}" for stem in stems for suffix in ("pdf", "png")}
+    expected |= {f"{name}.distal_usage.tsv.gz" for name in COMPARISONS}
+    observed = {path.name for path in figures.iterdir()}
+    assert observed == expected, sorted(observed ^ expected)
+    assert trace_text.count("PACUSAGE:PLOT_FIGURES") == 1
+    for stem in stems:
+        pdf = (figures / f"{stem}.pdf").read_bytes()
+        assert pdf.startswith(b"%PDF-"), stem
+        for field in (b"/CreationDate", b"/ModDate", b"/Producer"):
+            assert field not in pdf, f"{stem}.pdf records {field.decode()}"
+        kind = stem.rsplit(".", 1)[-1]
+        assert png_size(figures / f"{stem}.png") == FIGURE_PIXELS[kind], stem
+        image = base64.b64encode((figures / f"{stem}.png").read_bytes()).decode("ascii")
+        assert f"src='data:image/png;base64,{image}'" in report_text, f"{stem} is not in the report"
+    assert report_text.count("<img src='data:image/png;base64,") == len(stems)
+
+    atlas = pd.read_csv(
+        ROOT / "atlas" / "pacs.v1.metadata.tsv.gz", sep="\t", usecols=["pac_id", "coordinate"]
+    )
+    coordinates = dict(zip(atlas["pac_id"], atlas["coordinate"], strict=True))
+    for name, table in tables.items():
+        distal = pd.read_csv(figures / f"{name}.distal_usage.tsv.gz", sep="\t")
+        assert list(distal.columns) == DISTAL_COLUMNS, name
+        ordered = distal.sort_values(["gene_fdr", "gene_id"], na_position="last", kind="stable")
+        assert list(distal["gene_id"]) == list(ordered["gene_id"]), f"{name}: rows are not sorted"
+        # The distal PAC, recomputed: the most 3' tested PAC in the terminal
+        # exon or downstream of the gene.
+        eligible = table[table["assignment_class"].isin(["terminal_exon", "downstream"])].copy()
+        coordinate = eligible["pac_id"].map(coordinates)
+        eligible["position"] = np.where(eligible["strand"] == "+", coordinate, -coordinate)
+        chosen = eligible.sort_values(["gene_id", "position"]).groupby("gene_id").tail(1)
+        chosen = chosen.set_index("gene_id")
+        rows = distal.set_index("gene_id")
+        assert sorted(rows.index) == sorted(chosen.index), name
+        chosen = chosen.loc[rows.index]
+        assert list(rows["distal_pac_id"]) == list(chosen["pac_id"]), name
+        assert np.allclose(rows["delta_distal_pau"], chosen["delta_pau"]), name
+        assert list(rows["tested_pacs"]) == list(table.groupby("gene_id").size().loc[rows.index])
+        directions = chosen["event_type"].map(DISTAL_DIRECTIONS).fillna("none")
+        assert list(rows["direction"]) == list(directions), name
+        calls = rows.loc[rows["direction"] != "none", "direction"].to_dict()
+        assert calls == EXPECTED_DISTAL_CALLS[name], f"{name}: distal calls {calls}"
 
 
 def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
@@ -327,7 +454,9 @@ def main() -> None:
     assert len(list((ROOT / "motifs").glob("*.preference.tsv.gz"))) == len(COMPARISONS)
 
     versions = pd.read_csv(ROOT / "manifest" / "software_versions.tsv", sep="\t")
-    assert {"pacusage", "pysam", "R", "DRIMSeq", "stageR", "limma"} <= set(versions["software"])
+    assert {"pacusage", "pysam", "R", "DRIMSeq", "stageR", "limma", "ggplot2"} <= set(
+        versions["software"]
+    )
 
     pau = pd.read_csv(ROOT / "counts" / "observed_pau.tsv.gz", sep="\t")
     positive = pau[pau["gene_total"] > 0]
@@ -362,6 +491,8 @@ def main() -> None:
     trace_text = (ROOT / "pipeline_info" / "execution_trace.txt").read_text()
     check_alignment_handling(trace_text)
     check_input_checksums()
+    check_gene_events(tables)
+    check_figures(tables, trace_text, report_text)
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:FINALIZE_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:MERGE_USAGE_MODELS") == 1

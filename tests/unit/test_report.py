@@ -1,9 +1,11 @@
+import base64
+import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from pacusage.report import _histogram_svg, build_report
+from pacusage.report import _figure_sections, _histogram_svg, build_report
 from pacusage.tableio import gzip_compression, write_tsv
 
 
@@ -364,3 +366,96 @@ def test_motif_class_preference_tables_are_rendered(tmp_path: Path) -> None:
     report = output.read_text()
     assert "<h2>Motif-class preference</h2>" in report
     assert "<td>C1</td>" in report and "<td>C2</td>" in report
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def write_figures(root: Path, stems: list[str]) -> None:
+    # Each file's bytes name the file, so a misplaced image is caught.
+    for stem in stems:
+        (root / f"{stem}.png").write_bytes(PNG_SIGNATURE + stem.encode())
+
+
+def figure_sources(section: str) -> list[str]:
+    return re.findall(r"src='data:image/png;base64,([^']*)'", section)
+
+
+def figure_links(section: str) -> list[str]:
+    return re.findall(r"href='([^']*)'", section)
+
+
+def encoded(stem: str) -> str:
+    return base64.b64encode(PNG_SIGNATURE + stem.encode()).decode("ascii")
+
+
+def test_figure_section_orders_comparisons_then_summaries(tmp_path: Path) -> None:
+    # Written out of order, to show that the section sorts comparisons.
+    write_figures(
+        tmp_path,
+        [
+            "B_vs_A.site_classes", "B_vs_A.volcano", "B_vs_A.distal_usage",
+            "A_vs_B.distal_usage", "A_vs_B.site_classes", "A_vs_B.volcano",
+            "effect_vs_coverage", "event_counts",
+        ],
+    )
+    section = _figure_sections(tmp_path)
+    expected = [
+        "A_vs_B.volcano", "A_vs_B.distal_usage", "A_vs_B.site_classes",
+        "B_vs_A.volcano", "B_vs_A.distal_usage", "B_vs_A.site_classes",
+        "event_counts", "effect_vs_coverage",
+    ]
+    assert section.startswith("<section><h2>Treatment-control figures</h2>")
+    assert re.findall(r"<h3>(.*?)</h3>", section) == ["A vs B", "B vs A", "All comparisons"]
+    assert figure_sources(section) == [encoded(stem) for stem in expected]
+    assert figure_links(section) == [f"../figures/{stem}.pdf" for stem in expected]
+    assert re.findall(r"alt='([^']*)'", section)[:3] == [
+        "Volcano plot for A vs B",
+        "Distal PAC usage for A vs B",
+        "PAC calls by site class for A vs B",
+    ]
+
+
+def test_figure_section_skips_a_missing_figure(tmp_path: Path) -> None:
+    write_figures(tmp_path, ["T_vs_C.volcano", "T_vs_C.distal_usage"])
+    section = _figure_sections(tmp_path)
+    assert figure_sources(section) == [encoded("T_vs_C.volcano"), encoded("T_vs_C.distal_usage")]
+    assert section.count("<figure>") == 2
+    assert "<h3>All comparisons</h3>" not in section
+
+
+def test_figure_links_are_percent_encoded(tmp_path: Path) -> None:
+    write_figures(tmp_path, ["Drug 10%_vs_DMSO.volcano"])
+    section = _figure_sections(tmp_path)
+    assert figure_links(section) == ["../figures/Drug%2010%25_vs_DMSO.volcano.pdf"]
+    assert "<h3>Drug 10% vs DMSO</h3>" in section
+
+
+def test_report_has_no_figure_section_without_figures(tmp_path: Path) -> None:
+    assert _figure_sections(tmp_path) == ""
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+    assert "Treatment-control figures" not in output.read_text()
+
+
+def test_figure_section_comes_before_the_events_tables(tmp_path: Path) -> None:
+    write_figures(tmp_path, ["A_vs_B.volcano"])
+    write_tsv(
+        [{"pac_id": "p1", "gene_id": "g1", "event_type": "increased_usage"}],
+        tmp_path / "A_vs_B.events.tsv.gz",
+    )
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+    report = output.read_text()
+    assert report.index("<h2>Treatment-control figures</h2>") < report.index(
+        "<h2>A vs B.events</h2>"
+    )
+
+
+def test_report_with_figures_is_byte_identical_across_runs(tmp_path: Path) -> None:
+    write_figures(tmp_path, ["A_vs_B.volcano", "A_vs_B.distal_usage", "event_counts"])
+    first = tmp_path / "first" / "index.html"
+    second = tmp_path / "second" / "index.html"
+    build_report(tmp_path, first, 1)
+    build_report(tmp_path, second, 1)
+    assert first.read_bytes() == second.read_bytes()

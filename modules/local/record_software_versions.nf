@@ -4,12 +4,13 @@ process RECORD_SOFTWARE_VERSIONS {
 
     publishDir "${params.outdir}/manifest", mode: 'copy'
 
-    // Loading the statistics packages also stops a run that lacks them in its
-    // first minutes. Kept apart from VALIDATE_INPUTS, so that changing the R
-    // script reruns only the statistics on -resume.
+    // Loading the statistics and figure packages also stops a run that lacks
+    // them in its first minutes. Kept apart from VALIDATE_INPUTS, so that
+    // changing an R script reruns only the steps that use it on -resume.
     input:
     path python_versions, stageAs: 'python/software_versions.tsv'
     path statistics_script
+    path figure_script
 
     output:
     path 'software_versions.tsv', emit: versions
@@ -18,5 +19,6 @@ process RECORD_SOFTWARE_VERSIONS {
     """
     cp '${python_versions}' software_versions.tsv
     Rscript '${statistics_script}' --mode versions --output software_versions.tsv
+    Rscript '${figure_script}' --mode versions --output software_versions.tsv
     """
 }

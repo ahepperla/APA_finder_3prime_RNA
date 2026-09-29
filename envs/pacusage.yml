@@ -14,8 +14,9 @@ dependencies:
   - pyarrow>=14
   - pyyaml>=6
   - jsonschema>=4.22
-  - r-base>=4.3
+  - r-base>=4.5
   - bioconductor-drimseq=1.38.0
   - bioconductor-stager
   - bioconductor-limma
+  - r-ggplot2>=4.0
   - r-yaml

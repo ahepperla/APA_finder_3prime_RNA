@@ -11,6 +11,7 @@ trap 'rm -rf "${scratch_root}"' EXIT
 
 Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
 Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_figures.R scripts/plot_usage_figures.R scripts/fit_usage_model.R
 python tests/fixtures/build_fixture.py
 
 # Prepared alignments and the FASTA link to the fixture files, so every run
@@ -33,6 +34,8 @@ test -s results-test/statistics/TreatmentB_vs_Vehicle.pacs.tsv.gz
 test -s results-test/statistics/Rescue_vs_TreatmentA.pacs.tsv.gz
 test -s results-test/statistics/gene_precision.tsv.gz
 test -s results-test/statistics/fitted_pau.tsv.gz
+test -s results-test/figures/TreatmentA_vs_DMSO.volcano.pdf
+test -s results-test/figures/event_counts.png
 test -s results-test/pipeline_info/execution_report.html
 test -s results-test/pipeline_info/execution_timeline.html
 test -s results-test/pipeline_info/pipeline_dag.html

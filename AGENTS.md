@@ -11,12 +11,13 @@ coverage before making broad or negative structural claims.
 ## Architecture And Conventions
 
 - PACusage is a Nextflow DSL2 pipeline with a Python package and CLI in
-  `src/pacusage` and the statistics in `scripts/fit_usage_model.R`. Nextflow
+  `src/pacusage`, the statistics in `scripts/fit_usage_model.R`, and the
+  figures in `scripts/plot_usage_figures.R`. Nextflow
   tasks run `bin/pacusage`, which uses the installed package (as in the
   Apptainer image) or else this checkout's `src/`.
 - `main.nf` is the workflow entry point. `workflows/pacusage.nf` orchestrates
   `VALIDATE_INPUTS`, `PREPARATION`, `DISCOVERY`, `QUANTIFICATION`,
-  `STATISTICS`, and `BUILD_REPORT`, in that order.
+  `STATISTICS`, `PLOT_FIGURES`, and `BUILD_REPORT`, in that order.
 - Preserve the analytical separation between protocol calibration and atlas
   construction. The frozen atlas is built without the treatment–control
   contrasts:
@@ -40,9 +41,9 @@ coverage before making broad or negative structural claims.
     `excluded_contigs` and the aliases, on the command line so that other
     parameter changes don't rerun it. Nextflow applies the
     resource, scheduling, and publication parameters itself.
-  - RECORD_SOFTWARE_VERSIONS loads the R packages right after validation. Keep
-    the R script out of VALIDATE_INPUTS, or every edit to it reruns the whole
-    pipeline on `-resume`.
+  - RECORD_SOFTWARE_VERSIONS loads the R packages of both R scripts right
+    after validation. Keep the R scripts out of VALIDATE_INPUTS, or every edit
+    to one reruns the whole pipeline on `-resume`.
 - Do not modify source FASTA or alignment inputs.
   - Prepared alignments, indexes, and the prepared FASTA are symlinks to the
     sources. Never write through them.
@@ -51,7 +52,8 @@ coverage before making broad or negative structural claims.
     task directory, never the source path.
 - The pipeline records checksums, resolved parameters, software versions,
   preparation actions, and the frozen-atlas checksum for reproducibility.
-  Published gzip files carry no timestamps, so reruns are byte-identical.
+  Published gzip files and PDFs carry no timestamps, so reruns are
+  byte-identical.
   The atlas checksum seeds the statistics, so any change to the atlas file's
   contents or columns changes the seeded results.
 - Each alignment is read in full twice: once by INFER_STRANDEDNESS, and once
@@ -61,6 +63,8 @@ coverage before making broad or negative structural claims.
 - Statistical filtering belongs to `fit_usage_model.R`: it filters each
   comparison family's own samples and writes the reasons, per PAC, to
   `FAMILY.statistical_filtering.tsv.gz`.
+- Calls belong to `fit_usage_model.R` too. PLOT_FIGURES draws the calls in
+  the `.pacs` and `.genes` tables and never makes its own.
 
 ## Input And Data Invariants
 
@@ -87,7 +91,7 @@ coverage before making broad or negative structural claims.
 ## Outputs And Generated State
 
 - Normal results contain `manifest/`, `qc/`, `evidence/`, `atlas/`, `counts/`,
-  `statistics/`, `motifs/`, `tracks/`, and `report/index.html`.
+  `statistics/`, `motifs/`, `tracks/`, `figures/`, and `report/index.html`.
 - Every PAC-level table starts with the identity block `pac_id, gene_id,
   gene_name, chrom, start, end, strand, locus`. It is `IDENTITY_COLUMNS` in
   `src/pacusage/models.py` and in the R script, and those names are reserved as
@@ -121,11 +125,12 @@ ruff check src tests
 ```bash
 Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
 Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_figures.R scripts/plot_usage_figures.R scripts/fit_usage_model.R
 tests/pipeline/run_nextflow.sh
 ```
 
 The integration script:
-- runs the R statistics tests and rebuilds the fixtures;
+- runs the R statistics and figure tests and rebuilds the fixtures;
 - executes the test Nextflow profile, checks the required result artifacts,
   and validates their contents (`tests/pipeline/verify_integration.py`);
 - checks that the fixture files are unchanged;

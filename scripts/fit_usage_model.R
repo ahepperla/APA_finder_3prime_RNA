@@ -57,8 +57,9 @@ OMNIBUS_COLUMNS <- c(
   "stabilization_successes", "exploratory_insufficient_replicates"
 )
 GENE_COLUMNS <- c(
-  "gene_id", "gene_name", "condition", "control_condition", "gene_fdr", "pvalue", "lr",
-  "df", "model_status", "stabilization_successes", "exploratory_insufficient_replicates"
+  "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
+  "complexity_change", "gene_fdr", "pvalue", "lr", "df", "model_status",
+  "stabilization_successes", "exploratory_insufficient_replicates"
 )
 ATLAS_ANNOTATION_COLUMNS <- c(
   "assignment_class", "confidence", "internal_priming_flag", "known_pac",
@@ -1243,14 +1244,31 @@ assign_events <- function(pacs, params) {
   exploratory <- as.logical(pacs$exploratory_insufficient_replicates)
   events[exploratory & events == "gained"] <- "gained_candidate"
   events[exploratory & events == "lost"] <- "lost_candidate"
-  # The descriptive labels below describe fitted usage, so they are given
-  # only in genes that pass the comparison's gene-level screen.
+  # A PAC carries a descriptive label only when it has no call of its own, so
+  # the genes table, not the PAC table, records every gene with these events.
+  gene_events <- gene_level_events(pacs, params)
+  gene_index <- match(pacs$gene_id, gene_events$gene_id)
+  switched <- gene_events$dominant_switch[gene_index]
+  complexity <- gene_events$complexity_change[gene_index]
+  events[events == "none" & switched &
+    pacs$feature_id == pacs$dominant_pac_treatment] <- "dominant_switch"
+  events[events == "none" & complexity == "gain"] <- "complexity_gain"
+  events[events == "none" & complexity == "loss"] <- "complexity_loss"
+  pacs$event_type <- events
+  pacs
+}
+
+# One row per gene: whether its most-used PAC differs between the groups, and
+# whether the number of PACs with fitted PAU of at least
+# event_min_treatment_pau rises or falls. These describe fitted usage, so they
+# are given only in genes that pass the comparison's gene-level screen. Needs
+# the dominant_pac_* and *_detected_complexity columns from assign_events.
+gene_level_events <- function(pacs, params) {
+  first <- !duplicated(pacs$gene_id)
   screened <- !is.na(pacs$gene_fdr) & pacs$gene_fdr <= params$gene_fdr
-  dominant_switch <- !is.na(pacs$dominant_pac_control) &
+  switched <- screened & !is.na(pacs$dominant_pac_control) &
     !is.na(pacs$dominant_pac_treatment) &
     pacs$dominant_pac_control != pacs$dominant_pac_treatment
-  events[events == "none" & screened & dominant_switch &
-    pacs$feature_id == pacs$dominant_pac_treatment] <- "dominant_switch"
   complexity_delta <- pacs$treatment_detected_complexity - pacs$control_detected_complexity
   # A gene without fitted usage in either group (a condition with no counts)
   # has no usage pattern to compare, so it gets no descriptive event.
@@ -1259,11 +1277,16 @@ assign_events <- function(pacs, params) {
     pacs$gene_id,
     FUN = any
   )
-  complexity_delta[as.logical(unfitted)] <- 0
-  events[events == "none" & screened & complexity_delta > 0] <- "complexity_gain"
-  events[events == "none" & screened & complexity_delta < 0] <- "complexity_loss"
-  pacs$event_type <- events
-  pacs
+  complexity_delta[!screened | as.logical(unfitted)] <- 0
+  complexity <- rep("none", sum(first))
+  complexity[complexity_delta[first] > 0] <- "gain"
+  complexity[complexity_delta[first] < 0] <- "loss"
+  data.frame(
+    gene_id = pacs$gene_id[first],
+    dominant_switch = switched[first],
+    complexity_change = complexity,
+    stringsAsFactors = FALSE
+  )
 }
 
 # ---- Per-comparison tables --------------------------------------------------
@@ -1335,6 +1358,10 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
   )
   pacs$effect_exceeds_threshold <- abs(pacs$delta_pau) >= params$min_abs_delta_pau
   pacs <- assign_events(pacs, params)
+  gene_events <- gene_level_events(pacs, params)
+  event_index <- match(genes$gene_id, gene_events$gene_id)
+  genes$dominant_switch <- gene_events$dominant_switch[event_index]
+  genes$complexity_change <- gene_events$complexity_change[event_index]
   genes$condition <- treatment
   genes$control_condition <- control
   genes$exploratory_insufficient_replicates <- layout$exploratory

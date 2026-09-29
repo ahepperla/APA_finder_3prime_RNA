@@ -2,13 +2,60 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import json
+import urllib.parse
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# Figures drawn by scripts/plot_usage_figures.R, in report order, as
+# (kind, label, caption). The numbers are drawn in the figures themselves.
+COMPARISON_FIGURES = (
+    (
+        "volcano",
+        "Volcano plot",
+        "Each point is a tested PAC: its change in fitted PAU against its PAC-level "
+        "p-value. Colored points have a confirmed call and open circles a candidate "
+        "call; grey PACs have no PAC call. Triangles at the top have p-values of 0. "
+        "Up to 20 genes in each direction are labeled with their names.",
+    ),
+    (
+        "distal_usage",
+        "Distal PAC usage",
+        "Each point is a tested gene: the fitted usage of its most 3' tested PAC in the "
+        "terminal exon or downstream, control against treatment. A gene is lengthened or "
+        "shortened only when that PAC itself has a confirmed increase or decrease. With "
+        "three or more PACs, losing a middle PAC also raises the distal share. Up to "
+        "20 lengthened and 20 shortened genes, the largest changes, are labeled.",
+    ),
+    (
+        "site_classes",
+        "PAC calls by site class",
+        "Confirmed PAC calls by where the PAC lies. Left of zero, PACs that lost usage "
+        "(lost or decreased); right of zero, PACs that gained usage (gained or "
+        "increased). Each label gives the number of PACs tested in that class.",
+    ),
+)
+SUMMARY_FIGURES = (
+    (
+        "event_counts",
+        "Events per comparison",
+        "PAC events count PACs, with candidates in lighter shades. Gene events count "
+        "genes that pass the gene-level screen, from the dominant_switch and "
+        "complexity_change columns of the .genes tables.",
+    ),
+    (
+        "effect_vs_coverage",
+        "Change in usage against gene coverage",
+        "Change in fitted PAU against the reads at the gene in the less-covered group, "
+        "one panel per comparison. The dashed line is min_gene_total, the coverage a "
+        "gained or lost call requires.",
+    ),
+)
 
 
 def build_report(
@@ -33,6 +80,7 @@ def build_report(
         _atlas_summary(_locate(root, "pacs.v1.metadata.tsv.gz")),
         _pau_qc_sections(root, minimum_gene_total),
         _model_diagnostic_sections(root),
+        _figure_sections(root),
         _statistics_sections(root),
         _top_genes_section(root),
         _gene_plot_section(root),
@@ -95,6 +143,12 @@ tr:last-child td {{ border-bottom:0; }}
 .histogram-x-label {{ grid-column:3; grid-row:3; text-align:center; font-size:12px; }}
 input[type=search] {{ width:min(420px,100%); border:1px solid #aeb9bd; padding:8px 10px;
   margin:0 0 8px; background:white; }}
+.figure-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  gap:14px; align-items:start; }}
+figure {{ margin:0; }}
+figure img {{ display:block; width:100%; height:auto; border:1px solid var(--line);
+  background:white; }}
+figcaption {{ color:var(--muted); font-size:12px; margin-top:6px; }}
 </style>
 </head>
 <body>
@@ -530,6 +584,56 @@ def _frame_section(title: str, frame: pd.DataFrame, limit: int = 200, note: str 
         f"<section><h2>{html.escape(title)}</h2>{note_html}"
         f"<input type='search' placeholder='Filter rows' data-table-filter='{table_id}'>"
         f"<div class='table-wrap'>{table}</div></section>"
+    )
+
+
+def _figure_sections(root: Path) -> str:
+    images: dict[str, Path] = {}
+    for path in sorted(root.rglob("*.png")):
+        images.setdefault(path.name, path)
+    comparisons = sorted(
+        name.removesuffix(".volcano.png") for name in images if name.endswith(".volcano.png")
+    )
+    panels = []
+    for comparison in comparisons:
+        title = comparison.replace("_", " ")
+        figures = [
+            _figure_html(images[f"{comparison}.{kind}.png"], f"{label} for {title}", caption)
+            for kind, label, caption in COMPARISON_FIGURES
+            if f"{comparison}.{kind}.png" in images
+        ]
+        panels.append(_figure_panel(title, figures))
+    summary = [
+        _figure_html(images[f"{kind}.png"], label, caption)
+        for kind, label, caption in SUMMARY_FIGURES
+        if f"{kind}.png" in images
+    ]
+    if summary:
+        panels.append(_figure_panel("All comparisons", summary))
+    if not panels:
+        return ""
+    return (
+        "<section><h2>Treatment-control figures</h2>"
+        "<p class='chart-note'>Drawn from each comparison's .pacs and .genes tables. "
+        "The same figures are in figures/ as vector PDFs.</p>" + "".join(panels) + "</section>"
+    )
+
+
+def _figure_panel(title: str, figures: list[str]) -> str:
+    return (
+        f"<div class='chart-panel'><h3>{html.escape(title)}</h3>"
+        f"<div class='figure-grid'>{''.join(figures)}</div></div>"
+    )
+
+
+def _figure_html(path: Path, alt: str, caption: str) -> str:
+    # The report sits in report/, beside the figures/ folder that holds the PDFs.
+    pdf = urllib.parse.quote(path.name.removesuffix(".png") + ".pdf")
+    image = base64.b64encode(path.read_bytes()).decode("ascii")
+    return (
+        f"<figure><img src='data:image/png;base64,{image}' alt='{html.escape(alt)}'>"
+        f"<figcaption>{html.escape(caption)} <a href='../figures/{pdf}'>PDF</a>"
+        "</figcaption></figure>"
     )
 
 

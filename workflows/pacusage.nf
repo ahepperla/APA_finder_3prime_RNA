@@ -1,6 +1,7 @@
 include { VALIDATE_INPUTS } from '../modules/local/validate_inputs'
 include { RECORD_INPUT_CHECKSUMS } from '../modules/local/record_input_checksums'
 include { RECORD_SOFTWARE_VERSIONS } from '../modules/local/record_software_versions'
+include { PLOT_FIGURES } from '../modules/local/plot_figures'
 include { BUILD_REPORT } from '../modules/local/build_report'
 include { PREPARATION } from '../subworkflows/local/preparation'
 include { DISCOVERY } from '../subworkflows/local/discovery'
@@ -26,16 +27,21 @@ workflow PACUSAGE {
         .bytes
         .encodeBase64()
         .toString()
-    // Staged as an input so that -resume reruns the statistics whenever the
-    // script changes.
+    // Staged as inputs so that -resume reruns the statistics, or redraws the
+    // figures, whenever a script changes.
     def statistics_script = file("${projectDir}/scripts/fit_usage_model.R", checkIfExists: true)
+    def figure_script = file("${projectDir}/scripts/plot_usage_figures.R", checkIfExists: true)
 
     VALIDATE_INPUTS(
         file(params.input, checkIfExists: true),
         encodedParams,
         file("${projectDir}/nextflow_schema.json", checkIfExists: true)
     )
-    RECORD_SOFTWARE_VERSIONS(VALIDATE_INPUTS.out.software_versions, statistics_script)
+    RECORD_SOFTWARE_VERSIONS(
+        VALIDATE_INPUTS.out.software_versions,
+        statistics_script,
+        figure_script
+    )
     normalized = VALIDATE_INPUTS.out.normalized_samples
     resolved = VALIDATE_INPUTS.out.resolved_params
     annotation = Channel.value(file(params.gtf, checkIfExists: true))
@@ -68,6 +74,17 @@ workflow PACUSAGE {
         resolved,
         statistics_script
     )
+    PLOT_FIGURES(
+        normalized,
+        STATISTICS.out.results,
+        DISCOVERY.out.atlas,
+        resolved,
+        figure_script
+    )
+    // The report embeds the PNGs; the PDFs stay in figures/.
+    figure_images = PLOT_FIGURES.out.figures
+        .flatten()
+        .filter { figure -> figure.name.endsWith('.png') }
 
     report_artifacts = Channel.empty()
         .mix(normalized)
@@ -87,6 +104,7 @@ workflow PACUSAGE {
         .mix(STATISTICS.out.motif_sensitivity)
         .mix(STATISTICS.out.results)
         .mix(STATISTICS.out.kmer_results)
+        .mix(figure_images)
         .collect()
     BUILD_REPORT(report_artifacts, resolved)
 }

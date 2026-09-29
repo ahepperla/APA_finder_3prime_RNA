@@ -842,4 +842,107 @@ test_case("M-23", "versions mode writes a table, then appends to it", {
   check(identical(table$version[2:3], c("1.38.0", "1.2.3")), "package versions were not written.")
 })
 
+test_case("M-24", "the genes table records every gene-level event, even on called PACs", {
+  params <- list(
+    event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
+    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
+    min_gene_total = 20
+  )
+  gene <- function(gene_id, gene_fdr, pac_fdr, control, treatment) {
+    data.frame(
+      feature_id = paste0(gene_id, "_p", seq_along(control)),
+      gene_id = gene_id,
+      fitted_control_pau = control,
+      fitted_treatment_pau = treatment,
+      delta_pau = treatment - control,
+      gene_fdr = gene_fdr,
+      pac_fdr = pac_fdr,
+      control_supporting_samples = 2,
+      treatment_supporting_samples = 2,
+      control_gene_total = 100,
+      treatment_gene_total = 100,
+      zero_boundary_unstable = FALSE,
+      confidence = "moderate",
+      internal_priming_flag = FALSE,
+      exploratory_insufficient_replicates = FALSE,
+      stringsAsFactors = FALSE
+    )
+  }
+  # In switch_called and gain_called both PACs have their own calls, so no PAC
+  # can carry the gene's label; in loss no PAC has a call.
+  pacs <- rbind(
+    gene("switch_called", 0.01, 0.001, c(0.7, 0.3), c(0.3, 0.7)),
+    gene("switch_unscreened", 0.5, 0.001, c(0.7, 0.3), c(0.3, 0.7)),
+    gene("gain_called", 0.01, 0.001, c(1.0, 0.0), c(0.8, 0.2)),
+    gene("loss", 0.01, 0.5, c(0.5, 0.3, 0.2), c(0.6, 0.38, 0.02))
+  )
+  labelled <- model$assign_events(pacs, params)
+  events <- stats::setNames(labelled$event_type, labelled$feature_id)
+  expected_events <- c(
+    switch_called_p1 = "decreased_usage", switch_called_p2 = "increased_usage",
+    switch_unscreened_p1 = "none", switch_unscreened_p2 = "none",
+    gain_called_p1 = "decreased_usage", gain_called_p2 = "increased_usage",
+    loss_p1 = "complexity_loss", loss_p2 = "complexity_loss", loss_p3 = "complexity_loss"
+  )
+  check(
+    identical(events, expected_events),
+    "events were ", paste(names(events), events, sep = "=", collapse = ", ")
+  )
+  genes <- model$gene_level_events(labelled, params)
+  expected <- list(
+    gene_id = c("switch_called", "switch_unscreened", "gain_called", "loss"),
+    dominant_switch = c(TRUE, FALSE, FALSE, FALSE),
+    complexity_change = c("none", "none", "gain", "loss")
+  )
+  check(
+    identical(as.list(genes), expected),
+    "gene events were ", paste(genes$gene_id, genes$dominant_switch, genes$complexity_change, collapse = "; ")
+  )
+
+  # The fitted tables agree: each gene's flags follow from its PAC rows, and
+  # every PAC label sits in a gene the genes table flags.
+  run <- require_run(run_a)
+  for (comparison in c("T1_vs_C", "T2_vs_C")) {
+    genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))
+    check(
+      identical(names(genes), model$GENE_COLUMNS),
+      comparison, ": genes columns were ", paste(names(genes), collapse = ", ")
+    )
+    pacs <- read_result(run$final_directory, paste0(comparison, ".pacs.tsv.gz"))
+    first <- pacs[!duplicated(pacs$gene_id), , drop = FALSE]
+    screened <- !is.na(as_number(first$gene_fdr)) & as_number(first$gene_fdr) <= 0.05
+    fitted <- tapply(
+      is.finite(as_number(pacs$fitted_control_pau)) & is.finite(as_number(pacs$fitted_treatment_pau)),
+      pacs$gene_id,
+      all
+    )[first$gene_id]
+    switched <- screened & !is.na(first$dominant_pac_control) &
+      !is.na(first$dominant_pac_treatment) &
+      first$dominant_pac_control != first$dominant_pac_treatment
+    change <- as_number(first$treatment_detected_complexity) -
+      as_number(first$control_detected_complexity)
+    change[!screened | !fitted] <- 0
+    index <- match(first$gene_id, genes$gene_id)
+    check(!anyNA(index) && nrow(genes) == nrow(first), comparison, ": genes and PACs differ.")
+    check(
+      identical(as_flag(genes$dominant_switch[index]), unname(switched)),
+      comparison, ": dominant_switch disagrees with the PAC rows."
+    )
+    check(
+      identical(genes$complexity_change[index], ifelse(change > 0, "gain", ifelse(change < 0, "loss", "none"))),
+      comparison, ": complexity_change disagrees with the PAC rows."
+    )
+    for (label in c("dominant_switch", "complexity_gain", "complexity_loss")) {
+      labelled_genes <- unique(pacs$gene_id[pacs$event_type == label])
+      flags <- genes[match(labelled_genes, genes$gene_id), , drop = FALSE]
+      flagged <- if (label == "dominant_switch") {
+        as_flag(flags$dominant_switch)
+      } else {
+        flags$complexity_change == sub("complexity_", "", label)
+      }
+      check(all(flagged), comparison, ": a ", label, " label sits in an unflagged gene.")
+    }
+  }
+})
+
 finish_tests()

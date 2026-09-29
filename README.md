@@ -247,7 +247,10 @@ results/
                fitted_pau.tsv.gz, gene_precision.tsv.gz
   motifs/      pac_motifs.tsv.gz, motif_scores.tsv, per-comparison motif
                preference and exploratory k-mer enrichment tables
-  report/      index.html, a self-contained report
+  figures/     per comparison: volcano, distal-usage, and site-class figures
+               (PDF and PNG) and CONDITION_vs_CONTROL.distal_usage.tsv.gz;
+               across comparisons: event counts, and effect against coverage
+  report/      index.html, a self-contained report with the figures embedded
   pipeline_info/
                Nextflow's execution report, timeline, trace, and DAG; each
                run, resumed or not, replaces them
@@ -295,21 +298,72 @@ evidence. In `.pacs` and `.events` the groups are:
 6. **model diagnostics:** precision, stabilization, and the bootstrap.
 
 The `.pacs` tables are the main results: one row per tested PAC. The
-`.events` tables keep only the PACs with an event.
+`.events` tables keep only the PACs with an event. The `.genes` tables have
+one row per tested gene, with the gene-level events (`dominant_switch` and
+`complexity_change`) before the gene FDR.
 
 | Event | When |
 |---|---|
 | `gained`, `lost` | A PAC is detected (reads in at least two samples) in only one group, and that group's usage passes the fitted-PAU thresholds. The group without it has at least `min_gene_total` reads at the gene. The gene and the PAC pass their FDRs. The PAC is neither ambiguous nor flagged for internal priming. |
 | `gained_candidate`, `lost_candidate` | The detection rules hold, but significance, stability, coverage, or confidence does not, or the comparison is exploratory. These are not confirmed calls. |
 | `increased_usage`, `decreased_usage` | The PAC is detected in both groups, passes both FDRs, and its usage changes by at least `min_abs_delta_pau`. |
-| `dominant_switch` | The most-used PAC differs between the groups, in a gene that passes `gene_fdr`. |
-| `complexity_gain`, `complexity_loss` | The number of PACs with fitted PAU of at least `event_min_treatment_pau` differs, in a gene that passes `gene_fdr`. |
+| `dominant_switch` | The most-used PAC differs between the groups, in a gene that passes `gene_fdr`. The label goes on the treatment's most-used PAC only when that PAC has no call of its own. |
+| `complexity_gain`, `complexity_loss` | The number of PACs with fitted PAU of at least `event_min_treatment_pau` differs, in a gene that passes `gene_fdr`. The label goes only on the gene's PACs without a call of their own. |
+
+A PAC has one `event_type`, so the gene-level labels undercount genes: a gene
+whose PACs all have their own calls carries no label. Every gene with a
+dominant switch or a complexity change is flagged in the `.genes` table's
+`dominant_switch` (`TRUE` or `FALSE`) and `complexity_change` (`gain`,
+`loss`, or `none`).
+
+### Figures
+
+`figures/` holds, for each comparison, three figures as PDF and PNG, and two
+figures across comparisons. The report embeds the PNGs. The figures show the
+calls in the statistics tables; they never make calls of their own.
+
+- **`CONDITION_vs_CONTROL.volcano`**: every tested PAC's change in fitted PAU
+  against its PAC-level p-value. Confirmed gains (`gained`,
+  `increased_usage`) and losses (`lost`, `decreased_usage`) are colored,
+  candidates are open circles, and PACs without a PAC call are grey (a grey
+  density above 5,000 PACs). Up to 20 genes in each direction are labeled
+  with their gene names, each at its most significant PAC. The y-axis uses the raw p-value because
+  `pac_fdr` is missing outside screened genes. PACs without a p-value, such
+  as unstable zero-boundary fits, are counted in the subtitle, and p-values
+  of 0 are drawn as triangles at the top.
+- **`CONDITION_vs_CONTROL.distal_usage`**: for each tested gene, the fitted
+  usage of its distal PAC in the control against the treatment. The distal
+  PAC is the gene's most 3′ tested PAC in the terminal exon or downstream of
+  the annotated end; its share is the 3′-end counterpart of DaPars' PDUI.
+  A gene is **lengthened** or **shortened** only when that PAC itself has a
+  confirmed increase or gain, or decrease or loss. A shift toward any
+  upstream PAC, a tandem 3′ UTR site or an intronic one, lowers the distal
+  share. With three or more PACs, losing a middle PAC raises the distal
+  share, so such a gene can be called lengthened. Up to 20 lengthened and 20
+  shortened genes, those with the largest changes, are labeled with their
+  gene names. The genes and their calls are in
+  `CONDITION_vs_CONTROL.distal_usage.tsv.gz`.
+- **`CONDITION_vs_CONTROL.site_classes`**: confirmed PAC calls by where the
+  PAC lies (terminal exon, other exon, intron, downstream of the gene), with
+  losses to the left of zero and gains to the right. A shift to intronic
+  polyadenylation shows as intron gains.
+- **`event_counts`**: PAC events, candidates in lighter shades, and gene
+  events from the `.genes` tables, for every comparison.
+- **`effect_vs_coverage`**: each PAC's change in fitted PAU against the reads
+  at its gene in the less-covered group, one panel per comparison, with
+  `min_gene_total` marked. Calls driven by low coverage would cluster on the
+  left.
+
+The PDFs use the standard Helvetica font, which is not embedded, and carry no
+dates, so reruns reproduce them byte for byte. PNG rendering depends on the
+fonts on the machine, so PNGs match between reruns on the same machine with
+the same image or environment.
 
 ## How it works
 
 1. **Validate.** The parameters, sample sheet, references, and alignment
-   contigs are checked. The R statistics packages are loaded alongside, so a
-   missing one stops the run within minutes.
+   contigs are checked. The R packages for the statistics and the figures are
+   loaded alongside, so a missing one stops the run within minutes.
 2. **Prepare.** The FASTA and each alignment are linked and indexed, or
    sorted if needed. Each alignment is hashed once, for
    `manifest/input_checksums.tsv`.
@@ -337,7 +391,8 @@ The `.pacs` tables are the main results: one row per tested PAC. The
 8. **Test.** Each comparison family (a control and the treatments that name
    it) is fitted and tested. Motif-class preference and an exploratory k-mer
    enrichment follow.
-9. **Report.** Everything is summarized in `report/index.html`.
+9. **Figures and report.** ggplot2 draws the figures in `figures/` from the
+   statistics tables, and everything is summarized in `report/index.html`.
 
 ### Library profiles
 
@@ -414,8 +469,8 @@ Every run records:
 - the software versions, including the R packages;
 - a checksum of the frozen atlas.
 
-Gzip files carry no timestamps and every random step is seeded, so a fresh
-rerun with the same inputs, parameters, and software reproduces every
+Gzip files and PDFs carry no timestamps and every random step is seeded, so a
+fresh rerun with the same inputs, parameters, and software reproduces every
 published file byte for byte. The exception is Nextflow's own reports in
 `pipeline_info/`, which record the run's times.
 
@@ -429,7 +484,8 @@ finished steps from it.
   own inputs change. Set those parameters before the first run.
 - **After updating PACusage.** Nextflow does not track the Python package, so
   start a fresh run: use a new work directory, or leave out `-resume`. The R
-  statistics script is tracked, and changes to it rerun the statistics.
+  scripts are tracked: changes to the statistics script rerun the
+  statistics, and changes to the figure script redraw the figures.
 
 ## Troubleshooting
 
@@ -474,12 +530,13 @@ python -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-The R tests need DRIMSeq, stageR, limma, BiocParallel, and yaml. Set
-`R_LIBS` to a library that has them:
+The R tests need R 4.5 or newer, with DRIMSeq, stageR, limma, BiocParallel,
+ggplot2, and yaml. Set `R_LIBS` to a library that has them:
 
 ```bash
 Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R
 Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R
+Rscript tests/r/test_usage_figures.R scripts/plot_usage_figures.R scripts/fit_usage_model.R
 ```
 
 `tests/pipeline/run_nextflow.sh` runs everything end to end, with `.venv/bin`
@@ -497,10 +554,11 @@ and runs the R tests, then runs the `test` profile and checks:
 | `nextflow.config`, `conf/`, `nextflow_schema.json` | Parameters, profiles, resources, and the parameter schema |
 | `src/pacusage/` | The Python package behind every `pacusage` step |
 | `scripts/fit_usage_model.R` | The statistics: DRIMSeq, stageR, bootstrap, events, motif preference |
+| `scripts/plot_usage_figures.R` | The figures, drawn with ggplot2 from the statistics tables |
 | `bin/pacusage` | The command Nextflow tasks run |
 | `containers/`, `envs/` | The Apptainer recipe and the Conda environment |
 | `tests/unit/`, `tests/integration/` | pytest tests |
-| `tests/r/` | R tests for the statistics |
+| `tests/r/` | R tests for the statistics and the figures |
 | `tests/pipeline/` | The end-to-end script and its result checks |
 | `tests/fixtures/` | Synthetic references and alignments, and their builders |
 | `docs/` | The design, the decisions log, and the methods document for peer review (`docs/methods.html`) |
