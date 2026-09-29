@@ -134,10 +134,25 @@ def main(root: Path) -> None:
     assert set(shifted_genes) <= set(switched), sorted(switched)
     figures = {path.name for path in (root / "figures").iterdir()}
     stems = [f"TreatmentA_vs_DMSO.{kind}" for kind in ("volcano", "distal_usage", "site_classes")]
-    stems += ["event_counts", "effect_vs_coverage"]
+    stems += [
+        "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",
+        "effect_vs_coverage", "pau_pca",
+    ]
     expected_figures = {f"{stem}.{suffix}" for stem in stems for suffix in ("pdf", "png")}
-    expected_figures.add("TreatmentA_vs_DMSO.distal_usage.tsv.gz")
+    expected_figures |= {
+        "TreatmentA_vs_DMSO.distal_usage.tsv.gz", "apa_patterns_by_comparison.tsv.gz",
+        "concordance.tsv.gz", "pau_pca.tsv",
+    }
     assert figures == expected_figures, sorted(figures ^ expected_figures)
+    # One comparison: no pairs, and no gene shared between comparisons.
+    assert pd.read_csv(root / "figures" / "concordance.tsv.gz", sep="\t").empty
+    grid = pd.read_csv(root / "figures" / "apa_patterns_by_comparison.tsv.gz", sep="\t")
+    assert list(grid.columns) == [
+        "gene_id", "gene_name", "patterned_comparisons", "TreatmentA_vs_DMSO"
+    ]
+    assert set(grid.loc[grid["gene_id"].isin(shifted_genes), "patterned_comparisons"]) == {1}
+    pca = pd.read_csv(root / "figures" / "pau_pca.tsv", sep="\t")
+    assert len(pca) == len(pd.read_csv(root / "manifest" / "normalized_samples.tsv", sep="\t"))
 
     report = root / "report" / "index.html"
     assert report.stat().st_size > 10000

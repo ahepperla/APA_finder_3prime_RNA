@@ -50,12 +50,44 @@ SUMMARY_FIGURES = (
         "per APA pattern (apa_pattern); a gene with two patterns counts in both.",
     ),
     (
+        "apa_pattern_grid",
+        "APA patterns shared between comparisons",
+        "Genes with an APA pattern in two or more comparisons, up to 50: those shared by "
+        "the most comparisons first, then by best gene FDR. Each cell shows the gene's "
+        "first pattern in that comparison, and a + marks two or more; grey marks a gene "
+        "not tested there. figures/apa_patterns_by_comparison.tsv.gz lists every tested "
+        "gene.",
+    ),
+    (
+        "concordance_matrix",
+        "Correlation between comparisons",
+        "Pearson correlation of the change in PAU at the PACs that two comparisons both "
+        "tested. Comparisons against the same control share its estimate, so they "
+        "correlate positively without any shared biology. Chained comparisons, where one's "
+        "treatment is the other's control, estimate that condition from the same samples "
+        "with opposite signs, so they correlate negatively.",
+    ),
+    (
+        "concordance",
+        "Concordance between comparisons",
+        "One panel per pair of comparisons: each PAC tested in both, its change in PAU in "
+        "one against the other. Colored PACs have a confirmed call in both comparisons or "
+        "in one. The solid line is y = x and the dashed line y = -x. With more than six "
+        "comparisons, only pairs that share a control or a condition are drawn.",
+    ),
+    (
         "effect_vs_coverage",
         "Change in usage against gene coverage",
         "Change in fitted PAU against the reads at the gene in the less-covered group, "
         "one panel per comparison. The dashed line is min_gene_total, the coverage a "
         "gained or lost call requires.",
     ),
+)
+PCA_CAPTION = (
+    "Each point is a sample, placed by its observed PAU at the PACs of genes with at "
+    "least min_gene_total reads in every sample, each PAC centered across samples. "
+    "Replicates should sit together; samples that separate by condition differ in PAC "
+    "usage. figures/pau_pca.tsv has the coordinates."
 )
 
 
@@ -147,6 +179,7 @@ input[type=search] {{ width:min(420px,100%); border:1px solid #aeb9bd; padding:8
 .figure-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
   gap:14px; align-items:start; }}
 figure {{ margin:0; }}
+.single-figure figure {{ max-width:640px; }}
 figure img {{ display:block; width:100%; height:auto; border:1px solid var(--line);
   background:white; }}
 figcaption {{ color:var(--muted); font-size:12px; margin-top:6px; }}
@@ -302,56 +335,44 @@ def _statistical_filtering_section(paths: list[Path], limit: int = 200) -> str:
 
 
 def _pau_qc_sections(root: Path, minimum_gene_total: int) -> str:
-    """Sample PAU correlation and PCA on genes covered in every sample.
+    """Sample PAU correlation on genes covered in every sample, and the PCA.
 
     A gene without reads in a sample has no PAU there, so only genes with at
-    least ``minimum_gene_total`` reads in every sample take part.
+    least ``minimum_gene_total`` reads in every sample take part. The PCA is
+    plot_usage_figures.R's pau_pca figure, drawn by the same rule.
     """
+    figure = _locate(root, "pau_pca.png")
+    pca = (
+        "<section><h2>PAU principal components</h2><div class='chart-panel single-figure'>"
+        + _figure_html(figure, "PAU principal components", PCA_CAPTION)
+        + "</div></section>"
+        if figure.is_file()
+        else ""
+    )
     columns = {"gene_id", "pac_id", "sample_id", "pau", "gene_total"}
     frame = _read_table(
         _locate(root, "observed_pau.tsv.gz"),
         usecols=lambda name: name in columns,
     )
     if frame is None or frame.empty:
-        return ""
+        return pca
     covered = frame.groupby("gene_id")["gene_total"].min() >= minimum_gene_total
     frame = frame[frame["gene_id"].isin(covered.index[covered])]
     matrix = frame.pivot_table(
         index=["gene_id", "pac_id"], columns="sample_id", values="pau"
     ).dropna()
     if matrix.empty or matrix.shape[1] < 2:
-        return ""
+        return pca
     correlation = matrix.corr().round(3)
     correlation.insert(0, "sample_id", correlation.index)
     correlation.index = range(len(correlation))
-
-    centered = matrix.T.to_numpy(dtype=float, copy=True)
-    centered -= centered.mean(axis=0, keepdims=True)
-    if centered.shape[0] >= 2 and centered.shape[1] >= 1:
-        u, singular, _ = np.linalg.svd(centered, full_matrices=False)
-        scores = u[:, :2] * singular[:2]
-        if scores.shape[1] == 1:
-            scores = np.column_stack([scores[:, 0], np.zeros(scores.shape[0])])
-        pca = pd.DataFrame(
-            {
-                "sample_id": matrix.columns,
-                "PC1": scores[:, 0].round(4),
-                "PC2": scores[:, 1].round(4),
-            }
-        )
-    else:
-        pca = pd.DataFrame(columns=["sample_id", "PC1", "PC2"])
 
     genes = matrix.index.get_level_values("gene_id").nunique()
     note = (
         f"Genes with at least {minimum_gene_total} reads in every sample "
         f"({genes:,} genes, {len(matrix):,} PACs)."
     )
-
-    return (
-        _frame_section("PAU sample correlation", correlation, note=note)
-        + _frame_section("PAU principal components", pca)
-    )
+    return _frame_section("PAU sample correlation", correlation, note=note) + pca
 
 
 def _model_diagnostic_sections(root: Path) -> str:

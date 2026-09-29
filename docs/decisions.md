@@ -8,6 +8,43 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-29: Figures across comparisons and the PAU PCA figure
+
+Status: accepted (project lead)
+
+**Shared APA patterns**
+- `figures/apa_pattern_grid` draws the genes with a pattern other than `none`
+  in at least two comparisons, at most 50. They are ordered by the number of
+  comparisons with a pattern, then by best gene FDR.
+- `apa_patterns_by_comparison.tsv.gz` has every tested gene, with an empty
+  cell where a comparison didn't test it.
+
+**Concordance**
+- `figures/concordance` has one panel per pair of comparisons, up to 15. Each
+  panel plots the change in PAU of every PAC tested in both comparisons.
+- Beyond 15 pairs, only pairs that share a control or chain through a
+  condition are drawn. `concordance_matrix` shows Pearson r for every pair.
+- `concordance.tsv.gz` records each pair's relation (`shared_control`,
+  `chained`, or `unrelated`). A shared control's estimate correlates its
+  comparisons positively. A chain estimates its middle condition from the
+  same samples in both comparisons, with opposite signs, which correlates
+  them negatively. r is therefore read with the relation.
+
+**PAU PCA**
+- `figures/pau_pca` draws the report's former PCA rule as a figure. The rule:
+  - genes with at least `min_gene_total` reads in every sample;
+  - their PACs observed in every sample, with no zero-filling;
+  - each PAC centered across samples.
+- The report shows the figure beside the PAU correlation table, and no longer
+  tabulates the components. `pau_pca.tsv` has the coordinates.
+- Each component's sign makes its largest loading positive. A two-PAC gene's
+  loadings tie exactly, because its PAU sum to 1, so among loadings within a
+  relative 1e-6 of the largest, the first PAC by ID decides.
+
+These figures set each comparison's own results side by side. They add no
+treatment-versus-treatment test, so every call remains a comparison with the
+direct control.
+
 ## 2026-09-29: Gene-level APA patterns and refined terminal exons
 
 Status: accepted (project lead)

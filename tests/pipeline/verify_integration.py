@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import itertools
 import math
 import re
 from pathlib import Path
@@ -22,16 +23,25 @@ FIXTURES = REPOSITORY / "tests" / "fixtures"
 COMPARISONS = ("TreatmentA_vs_DMSO", "TreatmentB_vs_Vehicle", "Rescue_vs_TreatmentA")
 FAMILIES = ("DMSO", "Vehicle", "TreatmentA")
 COMPARISON_FIGURES = ("volcano", "distal_usage", "site_classes")
-SUMMARY_FIGURES = ("event_counts", "effect_vs_coverage")
+SUMMARY_FIGURES = (
+    "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",
+    "effect_vs_coverage", "pau_pca",
+)
+FIGURE_TABLES = ("apa_patterns_by_comparison.tsv.gz", "concordance.tsv.gz", "pau_pca.tsv")
 # Figure sizes in pixels at 200 dpi, from scripts/plot_usage_figures.R; the
-# summaries grow with the three comparisons.
+# summaries grow with the three comparisons. The grid's height also grows
+# with its genes, so grid_pixels() computes it.
 FIGURE_PIXELS = {
     "volcano": (1300, 1000),
     "distal_usage": (1100, 1100),
     "site_classes": (1300, 700),
     "event_counts": (1500, 1150),
     "effect_vs_coverage": (1500, 650),
+    "concordance": (1500, 700),
+    "concordance_matrix": (1075, 1075),
+    "pau_pca": (1100, 1000),
 }
+CONFIRMED_EVENTS = {"gained", "increased_usage", "lost", "decreased_usage"}
 DISTAL_COLUMNS = [
     "gene_id", "gene_name", "condition", "control_condition", "direction", "apa_pattern",
     "distal_pac_id", "distal_locus", "distal_assignment_class", "fitted_control_distal_pau",
@@ -381,6 +391,15 @@ def check_apa_patterns(tables: dict[str, pd.DataFrame], params: dict) -> None:
             assert set(pattern.split(";")) <= valid, f"{name}: invalid pattern {pattern}"
 
 
+def grid_pixels(figures: Path) -> tuple[int, int]:
+    """The shared-genes grid: 3 + 0.75 inches per comparison wide, and 2.25
+    inches, 0.875 for the longest label line ("vs TreatmentA"), and 0.125 per
+    drawn gene high."""
+    grid = pd.read_csv(figures / "apa_patterns_by_comparison.tsv.gz", sep="\t")
+    rows = min(50, int((grid["patterned_comparisons"] >= 2).sum()))
+    return 200 * 3 + 150 * len(COMPARISONS), round(200 * (2.25 + 0.875 + 0.125 * rows))
+
+
 def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text: str) -> None:
     """Figures exist for every comparison, carry no dates, and the distal-usage
     table agrees with the PAC tables and the fixture's designed genes."""
@@ -389,16 +408,18 @@ def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text:
     stems += list(SUMMARY_FIGURES)
     expected = {f"{stem}.{suffix}" for stem in stems for suffix in ("pdf", "png")}
     expected |= {f"{name}.distal_usage.tsv.gz" for name in COMPARISONS}
+    expected |= set(FIGURE_TABLES)
     observed = {path.name for path in figures.iterdir()}
     assert observed == expected, sorted(observed ^ expected)
     assert trace_text.count("PACUSAGE:PLOT_FIGURES") == 1
+    pixels = {**FIGURE_PIXELS, "apa_pattern_grid": grid_pixels(figures)}
     for stem in stems:
         pdf = (figures / f"{stem}.pdf").read_bytes()
         assert pdf.startswith(b"%PDF-"), stem
         for field in (b"/CreationDate", b"/ModDate", b"/Producer"):
             assert field not in pdf, f"{stem}.pdf records {field.decode()}"
         kind = stem.rsplit(".", 1)[-1]
-        assert png_size(figures / f"{stem}.png") == FIGURE_PIXELS[kind], stem
+        assert png_size(figures / f"{stem}.png") == pixels[kind], stem
         image = base64.b64encode((figures / f"{stem}.png").read_bytes()).decode("ascii")
         assert f"src='data:image/png;base64,{image}'" in report_text, f"{stem} is not in the report"
     assert report_text.count("<img src='data:image/png;base64,") == len(stems)
@@ -435,6 +456,124 @@ def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text:
         assert calls == EXPECTED_DISTAL_CALLS[name], f"{name}: distal calls {calls}"
         genes = statistics_table(f"{name}.genes.tsv.gz").set_index("gene_id")
         assert list(rows["apa_pattern"]) == list(genes.loc[rows.index, "apa_pattern"]), name
+
+
+def check_pattern_grid() -> None:
+    """The grid table lists every tested gene's pattern in each comparison,
+    recomputed from the genes tables, most shared first, then by best FDR."""
+    stems = sorted(COMPARISONS)
+    grid = pd.read_csv(
+        ROOT / "figures" / "apa_patterns_by_comparison.tsv.gz", sep="\t", dtype=str,
+        keep_default_na=False,
+    )
+    assert list(grid.columns) == ["gene_id", "gene_name", "patterned_comparisons", *stems]
+    patterns: dict[str, dict[str, str]] = {}
+    names: dict[str, str] = {}
+    fdrs: dict[str, list[float]] = {}
+    for stem in stems:
+        genes = pd.read_csv(
+            ROOT / "statistics" / f"{stem}.genes.tsv.gz", sep="\t", keep_default_na=False
+        )
+        patterns[stem] = dict(zip(genes["gene_id"], genes["apa_pattern"], strict=True))
+        fdr = pd.to_numeric(genes["gene_fdr"].replace("", np.nan))
+        columns = (genes["gene_id"], genes["gene_name"], fdr)
+        for gene_id, gene_name, value in zip(*columns, strict=True):
+            names.setdefault(gene_id, gene_name)
+            fdrs.setdefault(gene_id, [])
+            if not math.isnan(value):
+                fdrs[gene_id].append(float(value))
+    rows = []
+    for gene_id, values in fdrs.items():
+        cells = [patterns[stem].get(gene_id, "") for stem in stems]
+        patterned = sum(cell not in ("", "none") for cell in cells)
+        best = min(values) if values else math.inf
+        key = (-patterned, not values, best, gene_id)
+        rows.append((key, [gene_id, names[gene_id], str(patterned), *cells]))
+    expected = [row for _, row in sorted(rows)]
+    assert grid.values.tolist() == expected
+    # The fixture's reversal genes change in TreatmentA and back in Rescue.
+    shared = set(grid.loc[grid["patterned_comparisons"].astype(int) >= 2, "gene_id"])
+    assert {"gene_plus", "bg01", "ipa01", "ale01"} <= shared, sorted(shared)
+
+
+def check_concordance(tables: dict[str, pd.DataFrame]) -> None:
+    """Each pair of comparisons' shared PACs, calls in both, and correlation,
+    recomputed from the PAC tables. Rescue_vs_TreatmentA reverses
+    TreatmentA_vs_DMSO and shares TreatmentA's estimate with the opposite
+    sign, so that chained pair correlates strongly negatively."""
+    summary = pd.read_csv(ROOT / "figures" / "concordance.tsv.gz", sep="\t")
+    assert list(summary.columns) == [
+        "comparison_a", "comparison_b", "relation", "shared_pacs", "called_in_both", "pearson_r"
+    ]
+    expected = []
+    for first, second in itertools.combinations(sorted(COMPARISONS), 2):
+        treatment_a, control_a = first.split("_vs_")
+        treatment_b, control_b = second.split("_vs_")
+        if control_a == control_b:
+            relation = "shared_control"
+        elif treatment_a == control_b or treatment_b == control_a:
+            relation = "chained"
+        else:
+            relation = "unrelated"
+        left = tables[first].set_index("pac_id")
+        right = tables[second].set_index("pac_id")
+        shared = left.index.intersection(right.index)
+        x = left.loc[shared, "delta_pau"].to_numpy(dtype=float)
+        y = right.loc[shared, "delta_pau"].to_numpy(dtype=float)
+        kept = np.isfinite(x) & np.isfinite(y)
+        both = (
+            left.loc[shared, "event_type"].isin(CONFIRMED_EVENTS).to_numpy()
+            & right.loc[shared, "event_type"].isin(CONFIRMED_EVENTS).to_numpy()
+            & kept
+        )
+        r = float(np.corrcoef(x[kept], y[kept])[0, 1]) if kept.sum() >= 3 else math.nan
+        expected.append((first, second, relation, int(kept.sum()), int(both.sum()), r))
+    observed = list(summary.itertuples(index=False, name=None))
+    assert [row[:5] for row in observed] == [row[:5] for row in expected], observed
+    assert np.allclose([row[5] for row in observed], [row[5] for row in expected], rtol=1e-9)
+    relations = {(row[0], row[1]): (row[2], row[5]) for row in observed}
+    relation, r = relations[("Rescue_vs_TreatmentA", "TreatmentA_vs_DMSO")]
+    assert relation == "chained" and r < -0.5, (relation, r)
+
+
+def check_pau_pca(params: dict, report_text: str) -> None:
+    """The PAU PCA, recomputed by the rule the report used to tabulate it,
+    matches up to each component's sign, and the sign follows the figure
+    script's rule. The report shows the figure where the table was."""
+    pau = pd.read_csv(ROOT / "counts" / "observed_pau.tsv.gz", sep="\t")
+    covered = pau.groupby("gene_id")["gene_total"].min() >= params["min_gene_total"]
+    frame = pau[pau["gene_id"].isin(covered.index[covered])]
+    matrix = frame.pivot_table(index="pac_id", columns="sample_id", values="pau").dropna()
+    centered = matrix.T.to_numpy(dtype=float)
+    centered = centered - centered.mean(axis=0, keepdims=True)
+    u, singular, _ = np.linalg.svd(centered, full_matrices=False)
+    pca = pd.read_csv(ROOT / "figures" / "pau_pca.tsv", sep="\t")
+    samples = pd.read_csv(ROOT / "manifest" / "normalized_samples.tsv", sep="\t")
+    assert list(pca["sample_id"]) == sorted(samples["sample_id"]) == list(matrix.columns)
+    conditions = dict(zip(samples["sample_id"], samples["condition"], strict=True))
+    assert list(pca["condition"]) == [conditions[sample] for sample in pca["sample_id"]]
+    variance = singular**2 / np.sum(singular**2)
+    for index, column in enumerate(("PC1", "PC2")):
+        scores = pca[column].to_numpy(dtype=float)
+        direct = u[:, index] * singular[index]
+        sign = 1.0 if np.dot(scores, direct) >= 0 else -1.0
+        assert np.allclose(scores, sign * direct, atol=1e-9), column
+        # The first PAC by ID within a relative 1e-6 of the largest loading
+        # has a positive loading.
+        loading = centered.T @ scores
+        largest = np.flatnonzero(np.abs(loading) >= np.abs(loading).max() * (1 - 1e-6))[0]
+        assert loading[largest] > 0, column
+        assert np.allclose(pca[f"pc{index + 1}_variance_fraction"], variance[index]), column
+    # TreatmentA's designed changes dominate the first component.
+    treated = pca["condition"] == "TreatmentA"
+    assert (np.sign(pca.loc[treated, "PC1"]) != np.sign(pca.loc[~treated, "PC1"].mean())).all()
+    start = report_text.index("<h2>PAU principal components</h2>")
+    section = report_text[start : report_text.index("</section>", start)]
+    assert report_text.index("<h2>PAU sample correlation</h2>") < start
+    assert start < report_text.index("<h2>Treatment-control figures</h2>")
+    image = base64.b64encode((ROOT / "figures" / "pau_pca.png").read_bytes()).decode("ascii")
+    assert f"src='data:image/png;base64,{image}'" in section
+    assert "<table" not in section
 
 
 def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
@@ -675,6 +814,9 @@ def main() -> None:
     check_gene_events(tables, params)
     check_apa_patterns(tables, params)
     check_figures(tables, trace_text, report_text)
+    check_pattern_grid()
+    check_concordance(tables)
+    check_pau_pca(params, report_text)
     assert trace_text.count("PACUSAGE:STATISTICS:FIT_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:FINALIZE_USAGE_MODEL") == 3
     assert trace_text.count("PACUSAGE:STATISTICS:MERGE_USAGE_MODELS") == 1

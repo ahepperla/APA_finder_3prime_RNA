@@ -78,6 +78,7 @@ workflow PACUSAGE {
         normalized,
         STATISTICS.out.results,
         DISCOVERY.out.atlas,
+        QUANTIFICATION.out.pau,
         resolved,
         figure_script
     )

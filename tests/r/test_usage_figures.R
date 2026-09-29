@@ -394,6 +394,242 @@ test_case("F-17", "comparisons are each condition against its control, sorted as
   check(grepl("no treatment-control comparison", roots, fixed = TRUE), roots)
 })
 
+# ---- Across comparisons -------------------------------------------------------
+
+comparisons_of <- function(stems) {
+  parts <- strsplit(stems, "_vs_", fixed = TRUE)
+  data.frame(
+    stem = stems, condition = vapply(parts, `[[`, character(1), 1L),
+    control_condition = vapply(parts, `[[`, character(1), 2L),
+    title = sub("_vs_", " vs ", stems, fixed = TRUE), stringsAsFactors = FALSE
+  )
+}
+
+# A genes table from gene IDs, patterns, and gene FDRs.
+pattern_genes <- function(ids, patterns, fdrs) {
+  do.call(rbind, Map(function(id, pattern, fdr) {
+    gene_row(id, apa_pattern = pattern, gene_fdr = fdr)
+  }, ids, patterns, fdrs))
+}
+
+placeholder_message <- function(plot) {
+  if (length(plot$layers) != 1L) return(NA_character_)
+  label <- plot$layers[[1]]$aes_params$label
+  if (is.null(label)) NA_character_ else label
+}
+
+test_case("F-23", "the pattern grid table orders genes by shared patterns, then best FDR", {
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C", "D_vs_A"))
+  genes_tables <- list(
+    A_vs_C = pattern_genes(
+      c("g1", "g2", "g3", "g4", "g6"),
+      c("utr_shortening", "none", "intronic_gain;utr_lengthening", "other", "utr_lengthening"),
+      c(0.01, 0.5, 0.2, 0.03, 0.01)
+    ),
+    B_vs_C = pattern_genes(
+      c("g1", "g3", "g4", "g5", "g6"),
+      c("utr_lengthening", "none", "other", "alternative_last_exon", "utr_lengthening"),
+      c(0.02, 0.001, 0.04, 0.3, 0.05)
+    ),
+    # g7's empty pattern counts as none, as the grid draws it.
+    D_vs_A = pattern_genes(
+      c("g1", "g4", "g5", "g7"), c("utr_shortening", "none", "intronic_loss", ""),
+      c(0.5, 0.01, NA, NA)
+    )
+  )
+  table <- figures$pattern_grid_table(comparisons, genes_tables)
+  expected_columns <- c("gene_id", "gene_name", "patterned_comparisons", comparisons$stem)
+  check(identical(names(table), expected_columns), "columns: ", paste(names(table), collapse = ", "))
+  # g4 and g6 tie on two comparisons and a best FDR of 0.01, so the ID
+  # decides; g2 and g7 have none, and g7's missing FDR puts it last.
+  check(identical(table$gene_id, c("g1", "g4", "g6", "g5", "g3", "g2", "g7")), "order: ", paste(table$gene_id, collapse = ", "))
+  check(identical(table$patterned_comparisons, c(3L, 2L, 2L, 2L, 1L, 0L, 0L)), "counts: ", paste(table$patterned_comparisons, collapse = ", "))
+  check(identical(table$gene_name[[1]], "G1"), "names come from the genes tables.")
+  row <- function(id) table[table$gene_id == id, , drop = FALSE]
+  check(identical(unname(unlist(row("g5")[comparisons$stem])), c(NA, "alternative_last_exon", "intronic_loss")), "g5's cells.")
+  check(identical(unname(unlist(row("g3")[comparisons$stem])), c("intronic_gain;utr_lengthening", "none", NA)), "g3's cells.")
+  shown <- figures$grid_genes(table)
+  check(identical(shown$gene_id, c("g1", "g4", "g6", "g5")), "grid genes: ", paste(shown$gene_id, collapse = ", "))
+})
+
+test_case("F-24", "the grid draws at most 50 genes, with untested and multi-pattern cells marked", {
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C"))
+  ids <- sprintf("g%02d", 1:60)
+  both <- pattern_genes(ids, rep("utr_shortening", 60), seq(0.001, 0.06, by = 0.001))
+  first <- both
+  first$apa_pattern[[1]] <- "intronic_gain;utr_shortening"
+  second <- both[-2, , drop = FALSE]
+  second <- rbind(second, pattern_genes("g61", "other", 0.9))
+  table <- figures$pattern_grid_table(comparisons, list(A_vs_C = first, B_vs_C = second))
+  shown <- figures$grid_genes(table)
+  check(nrow(shown) == 50L, "grid genes: ", nrow(shown))
+  check(identical(shown$gene_id, ids[-2][1:50]), "the grid genes are not the table's first 50.")
+  plot <- figures$plot_pattern_grid(table, comparisons)
+  check(grepl("59 genes with a pattern in 2 or more comparisons\nThe first 50 are shown", plot$labels$subtitle, fixed = TRUE), "subtitle: ", plot$labels$subtitle)
+  check(identical(levels(plot$data$gene_id), rev(shown$gene_id)), "rows are not the grid genes, top first.")
+  check(nrow(plot$data) == 100L, "cells: ", nrow(plot$data))
+  marks <- plot$layers[[2]]$data
+  check(identical(as.character(marks$gene_id), "g01") && identical(as.character(marks$fill), "intronic_gain"), "the + marks: ", paste(marks$gene_id, collapse = ", "))
+  # A cell shows the first pattern, white for none, and grey where the gene
+  # was not tested.
+  three <- comparisons_of(c("A_vs_C", "B_vs_C", "D_vs_C"))
+  small <- figures$pattern_grid_table(three, list(
+    A_vs_C = first[1:3, ], B_vs_C = first[c(1, 3), ], D_vs_C = pattern_genes("g03", "none", 0.5)
+  ))
+  cells <- figures$plot_pattern_grid(small, three)$data
+  fills <- stats::setNames(as.character(cells$fill), paste(cells$gene_id, cells$comparison))
+  check(identical(unname(fills[c("g01 A_vs_C", "g03 B_vs_C", "g03 D_vs_C", "g01 D_vs_C")]),
+    c("intronic_gain", "utr_shortening", "none", "not_tested")), "fills: ", paste(names(fills), fills, collapse = ", "))
+  single <- figures$plot_pattern_grid(table, comparisons[1, , drop = FALSE])
+  check(identical(placeholder_message(single), "Only one comparison"), "one comparison.")
+  none <- figures$pattern_grid_table(comparisons, list(A_vs_C = first[1:2, ], B_vs_C = pattern_genes("g01", "none", 0.5)))
+  check(identical(placeholder_message(figures$plot_pattern_grid(none, comparisons)), "No gene has a pattern in two or more comparisons"), "no shared genes.")
+})
+
+test_case("F-25", "pairs are related by a shared control or a chain, and capped at 15 panels", {
+  pairs <- figures$concordance_pairs(comparisons_of(c("X_vs_Y", "Y_vs_Z", "W_vs_Z")))
+  check(identical(pairs$pair, c("X_vs_Y|Y_vs_Z", "X_vs_Y|W_vs_Z", "Y_vs_Z|W_vs_Z")), "pairs: ", paste(pairs$pair, collapse = ", "))
+  check(identical(pairs$relation, c("chained", "unrelated", "shared_control")), "relations: ", paste(pairs$relation, collapse = ", "))
+  check(identical(pairs$title_a, c("X vs Y", "X vs Y", "Y vs Z")), "titles.")
+  seven <- figures$concordance_pairs(comparisons_of(c("A_vs_C", "B_vs_C", "D_vs_A", "E_vs_F", "G_vs_H", "I_vs_J", "K_vs_L")))
+  check(nrow(seven) == 21L, "pairs of seven: ", nrow(seven))
+  shown <- figures$shown_pairs(seven)
+  check(identical(shown$pair, c("A_vs_C|B_vs_C", "A_vs_C|D_vs_A")), "related pairs: ", paste(shown$pair, collapse = ", "))
+  check(identical(shown$relation, c("shared_control", "chained")), "related relations.")
+  six <- figures$concordance_pairs(comparisons_of(c("A_vs_C", "B_vs_C", "E_vs_F", "G_vs_H", "I_vs_J", "K_vs_L")))
+  check(nrow(figures$shown_pairs(six)) == 15L, "15 pairs are all shown.")
+  shared <- figures$concordance_pairs(comparisons_of(paste0(LETTERS[1:7], "_vs_Z")))
+  capped <- figures$shown_pairs(shared)
+  check(identical(capped$pair, shared$pair[1:15]), "the first 15 related pairs.")
+  none <- figures$concordance_pairs(comparisons_of("A_vs_C"))
+  check(nrow(none) == 0L && "relation" %in% names(none), "one comparison has no pairs.")
+})
+
+test_case("F-26", "concordance joins PACs tested in both, with calls and Pearson r", {
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C"))
+  pairs <- figures$concordance_pairs(comparisons)
+  a <- pac_table(
+    pac_row("p1", "g1", event_type = "increased_usage", control = 0.4, treatment = 0.5),
+    pac_row("p2", "g1", event_type = "lost_candidate", control = 0.6, treatment = 0.4),
+    pac_row("p3", "g2", event_type = "lost", control = 0.3, treatment = 0.6),
+    pac_row("p4", "g2", control = NA, treatment = 0.5),
+    pac_row("p5", "g3")
+  )
+  b <- pac_table(
+    pac_row("p3", "g2", control = 0.25, treatment = 0.5),
+    pac_row("p1", "g1", event_type = "decreased_usage", control = 0.3, treatment = 0.5),
+    pac_row("p2", "g1", event_type = "gained_candidate", control = 0.5, treatment = 0.4),
+    pac_row("p4", "g2", control = 0.4, treatment = 0.5),
+    pac_row("p6", "g4")
+  )
+  data <- figures$concordance_data(pairs, list(A_vs_C = a, B_vs_C = b))
+  # Candidate calls are not confirmed calls; p4 has no change in A.
+  check(identical(data$pac_id, c("p2", "p3", "p1")), "rows: ", paste(data$pac_id, collapse = ", "))
+  check(identical(as.character(data$call), c("none", "one", "both")), "calls: ", paste(data$call, collapse = ", "))
+  check(isTRUE(all.equal(data$delta_a, c(-0.2, 0.3, 0.1))) && isTRUE(all.equal(data$delta_b, c(-0.1, 0.25, 0.2))), "changes.")
+  check(identical(levels(data$pair), pairs$pair), "pair levels.")
+  summary <- figures$concordance_summary(pairs, data)
+  check(identical(names(summary), c("comparison_a", "comparison_b", "relation", "shared_pacs", "called_in_both", "pearson_r")), "summary columns.")
+  check(identical(summary$shared_pacs, 3L) && identical(summary$called_in_both, 1L), "summary counts.")
+  expected <- stats::cor(c(-0.2, 0.3, 0.1), c(-0.1, 0.25, 0.2))
+  check(isTRUE(all.equal(summary$pearson_r, expected)), "r: ", summary$pearson_r, " not ", expected)
+  two <- figures$concordance_summary(pairs, data[data$pac_id != "p1", , drop = FALSE])
+  check(is.na(two$pearson_r) && two$shared_pacs == 2L, "two PACs have no r.")
+  flat <- data
+  flat$delta_b <- 0.1
+  check(is.na(figures$concordance_summary(pairs, flat)$pearson_r), "no spread has no r.")
+  check(nrow(figures$concordance_summary(pairs[0, ], data[0, ])) == 0L, "no pairs.")
+})
+
+test_case("F-27", "the correlation matrix is symmetric with 1 on the diagonal", {
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C", "D_vs_A"))
+  summary <- data.frame(
+    comparison_a = c("A_vs_C", "A_vs_C", "B_vs_C"), comparison_b = c("B_vs_C", "D_vs_A", "D_vs_A"),
+    relation = c("shared_control", "chained", "unrelated"), shared_pacs = c(10L, 10L, 2L),
+    called_in_both = c(1L, 2L, 0L), pearson_r = c(0.4, -0.7, NA), stringsAsFactors = FALSE
+  )
+  grid <- figures$concordance_matrix(summary, comparisons)
+  check(nrow(grid) == 9L, "cells: ", nrow(grid))
+  value <- function(a, b) grid$r[grid$a == a & grid$b == b]
+  check(all(vapply(comparisons$stem, function(stem) value(stem, stem), numeric(1)) == 1), "diagonal.")
+  check(value("A_vs_C", "B_vs_C") == 0.4 && value("B_vs_C", "A_vs_C") == 0.4, "A and B.")
+  check(value("D_vs_A", "A_vs_C") == -0.7 && value("A_vs_C", "D_vs_A") == -0.7, "A and D.")
+  check(is.na(value("B_vs_C", "D_vs_A")) && is.na(value("D_vs_A", "B_vs_C")), "missing r.")
+  check(identical(placeholder_message(figures$plot_concordance_matrix(summary[0, ], comparisons[1, , drop = FALSE])), "Only one comparison"), "one comparison.")
+})
+
+test_case("F-28", "the PAU PCA uses genes covered in every sample and fixes each sign", {
+  samples <- data.frame(
+    sample_id = c("S3", "S1", "S4", "S2"), condition = c("T", "C", "T", "C"),
+    control_condition = c("C", "C", "C", "C"), stringsAsFactors = FALSE
+  )
+  sample_ids <- c("S1", "S2", "S3", "S4")
+  rows <- function(gene, pac, values, totals) {
+    data.frame(gene_id = gene, pac_id = pac, sample_id = sample_ids, gene_total = totals,
+      pau = values, stringsAsFactors = FALSE)
+  }
+  pau <- rbind(
+    rows("g1", "g1.a", c(0.2, 0.3, 0.7, 0.8), c(40, 30, 50, 20)),
+    rows("g1", "g1.b", c(0.5, 0.4, 0.1, 0.2), c(40, 30, 50, 20)),
+    rows("g1", "g1.c", c(0.3, 0.3, 0.2, 0.0), c(40, 30, 50, 20)),
+    # g2 has 19 reads in S4, and g3 none in S2.
+    rows("g2", "g2.a", c(0.9, 0.1, 0.5, 0.5), c(40, 30, 50, 19)),
+    rows("g3", "g3.a", c(0.5, NA, 0.4, 0.6), c(40, 0, 50, 60)),
+    # g4 lacks a row for one PAC in S3, which drops that PAC alone.
+    rows("g4", "g4.a", c(0.6, 0.65, 0.2, 0.3), c(25, 25, 25, 25)),
+    rows("g4", "g4.b", c(0.4, 0.35, 0.8, 0.7), c(25, 25, 25, 25))[-3, ]
+  )
+  pca <- figures$pau_pca(pau, samples, 20)
+  check(identical(pca$sample_id, sample_ids) && identical(pca$condition, c("C", "C", "T", "T")), "samples.")
+  check(identical(attr(pca, "genes"), 2L) && identical(attr(pca, "pacs"), 4L), "genes ", attr(pca, "genes"), ", PACs ", attr(pca, "pacs"))
+  values <- rbind(
+    c(0.2, 0.3, 0.7, 0.8), c(0.5, 0.4, 0.1, 0.2), c(0.3, 0.3, 0.2, 0.0), c(0.6, 0.65, 0.2, 0.3)
+  )
+  centered <- t(values - rowMeans(values))
+  direct <- stats::prcomp(centered, center = FALSE)
+  scores <- as.matrix(pca[, c("PC1", "PC2")])
+  check(isTRUE(all.equal(abs(unname(scores)), abs(unname(direct$x[, 1:2])))), "scores differ from prcomp.")
+  variance <- direct$sdev^2 / sum(direct$sdev^2)
+  check(isTRUE(all.equal(pca$pc1_variance_fraction[[1]], variance[[1]])) && isTRUE(all.equal(pca$pc2_variance_fraction[[1]], variance[[2]])), "variance fractions.")
+  # Each component's loadings, recovered from its scores, have their largest
+  # entry positive.
+  for (k in 1:2) {
+    loading <- crossprod(centered, scores[, k])
+    check(loading[[which.max(abs(loading))]] > 0, "PC", k, "'s largest loading is negative.")
+  }
+  # A two-PAC gene's loadings tie, and the first PAC's is made positive, so
+  # the samples where g5.a is highest score positive, in either arrangement.
+  tied <- rbind(
+    rows("g5", "g5.a", c(0.9, 0.8, 0.3, 0.2), c(40, 30, 50, 20)),
+    rows("g5", "g5.b", c(0.1, 0.2, 0.7, 0.8), c(40, 30, 50, 20))
+  )
+  for (reversed in c(FALSE, TRUE)) {
+    arranged <- tied
+    if (reversed) arranged$pau <- 1 - tied$pau
+    tie <- figures$pau_pca(arranged, samples, 20)
+    high <- if (reversed) c("S3", "S4") else c("S1", "S2")
+    check(identical(tie$PC1 > 0, tie$sample_id %in% high), "tied loadings, reversed ", reversed, ": ", paste(tie$PC1, collapse = ", "))
+  }
+  check(is.null(figures$pau_pca(pau, samples[1, , drop = FALSE], 20)), "one sample.")
+  check(is.null(figures$pau_pca(pau, samples, 1000)), "no covered gene.")
+  check(identical(placeholder_message(figures$plot_pau_pca(NULL, params)), "No PAC has observed PAU in every sample"), "PCA placeholder.")
+  plot <- figures$plot_pau_pca(pca, params)
+  check(identical(plot$labels$subtitle, "Observed PAU at 4 PACs in 2 genes with at least 20 reads in every sample"), "subtitle: ", plot$labels$subtitle)
+})
+
+test_case("F-29", "the concordance figure says which pairs it leaves out", {
+  seven <- comparisons_of(c("A_vs_C", "B_vs_C", "D_vs_A", "E_vs_F", "G_vs_H", "I_vs_J", "K_vs_L"))
+  pairs <- figures$concordance_pairs(seven)
+  data <- figures$concordance_data(pairs, stats::setNames(rep(list(pac_table(pac_row("p1", "g1"))), 7), seven$stem))
+  summary <- figures$concordance_summary(pairs, data)
+  plot <- figures$plot_concordance(data, figures$shown_pairs(pairs), summary, nrow(pairs))
+  check(grepl("\n2 of 21 pairs shown", plot$labels$subtitle, fixed = TRUE), "subtitle: ", plot$labels$subtitle)
+  check(identical(levels(plot$data$pair), c("A_vs_C|B_vs_C", "A_vs_C|D_vs_A")), "panels.")
+  unrelated <- figures$concordance_pairs(comparisons_of(c("A_vs_B", "C_vs_D", "E_vs_F", "G_vs_H", "I_vs_J", "K_vs_L", "M_vs_N")))
+  check(identical(placeholder_message(figures$plot_concordance(data[0, ], figures$shown_pairs(unrelated), summary, 21L)), "No pair shares a control or a condition"), "no related pairs.")
+  check(identical(placeholder_message(figures$plot_concordance(data[0, ], pairs[0, ], summary[0, ], 0L)), "Only one comparison"), "one comparison.")
+})
+
 # ---- Saving -------------------------------------------------------------------
 
 test_case("F-09", "PDFs carry no dates or producer, and PNGs have the requested size", {
@@ -481,10 +717,25 @@ write_inputs <- function(directory, filled) {
       upstream_sequence = "ACGT"),
     file.path(directory, "atlas.tsv.gz")
   )
+  # Observed PAU as MERGE_COUNTS writes it: g1's usage moves in T1 and T2.
+  shift <- c(0, 0, 0.3, 0.35, 0.1, 0.15)
+  pau <- rbind(
+    data.frame(pac_id = "g1_p1", sample_id = samples$sample_id, pau = 0.6 - shift),
+    data.frame(pac_id = "g1_p2", sample_id = samples$sample_id, pau = 0.4 + shift),
+    data.frame(pac_id = "g2_p1", sample_id = samples$sample_id, pau = c(0.5, 0.52, 0.49, 0.5, 0.51, 0.48)),
+    data.frame(pac_id = "g2_p2", sample_id = samples$sample_id, pau = c(0.5, 0.48, 0.51, 0.5, 0.49, 0.52))
+  )
+  pau$gene_id <- sub("_p[0-9]$", "", pau$pac_id)
+  pau$gene_name <- toupper(pau$gene_id)
+  pau$gene_total <- 50
+  pau$count <- pau$pau * pau$gene_total
+  pau <- pau[, c("pac_id", "gene_id", "gene_name", "sample_id", "count", "gene_total", "pau")]
+  write_table(if (filled) pau else pau[0, , drop = FALSE], file.path(directory, "observed_pau.tsv.gz"))
   yaml::write_yaml(c(params, list(outdir = "results")), file.path(directory, "params.yaml"))
   c(
     "--mode", "figures", "--samples", file.path(directory, "samples.tsv"),
     "--statistics-dir", statistics, "--atlas", file.path(directory, "atlas.tsv.gz"),
+    "--pau", file.path(directory, "observed_pau.tsv.gz"),
     "--params", file.path(directory, "params.yaml"), "--output-dir", file.path(directory, "figures")
   )
 }
@@ -494,7 +745,10 @@ expected_files <- sort(c(
     ".volcano.pdf", ".volcano.png", ".distal_usage.pdf", ".distal_usage.png",
     ".distal_usage.tsv.gz", ".site_classes.pdf", ".site_classes.png"
   ), paste0)),
-  "event_counts.pdf", "event_counts.png", "effect_vs_coverage.pdf", "effect_vs_coverage.png"
+  "event_counts.pdf", "event_counts.png", "effect_vs_coverage.pdf", "effect_vs_coverage.png",
+  "apa_pattern_grid.pdf", "apa_pattern_grid.png", "apa_patterns_by_comparison.tsv.gz",
+  "concordance.pdf", "concordance.png", "concordance.tsv.gz", "concordance_matrix.pdf",
+  "concordance_matrix.png", "pau_pca.pdf", "pau_pca.png", "pau_pca.tsv"
 ), method = "radix")
 
 test_case("F-12", "the command line writes every figure and the distal-usage tables", {
@@ -522,6 +776,28 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   }
   check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1000)), "event_counts size.")
   check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 650)), "coverage size.")
+  sizes <- list(apa_pattern_grid = c(900, 500), concordance = c(1500, 700),
+    concordance_matrix = c(950, 950), pau_pca = c(1100, 1000))
+  for (name in names(sizes)) {
+    size <- png_size(file.path(directory, "figures", paste0(name, ".png")))
+    check(identical(size, sizes[[name]]), name, " size: ", paste(size, collapse = "x"))
+  }
+  read_output <- function(name) {
+    utils::read.delim(file.path(directory, "figures", name), colClasses = "character",
+      na.strings = character(), check.names = FALSE)
+  }
+  grid <- read_output("apa_patterns_by_comparison.tsv.gz")
+  check(identical(names(grid), c("gene_id", "gene_name", "patterned_comparisons", "T1_vs_C", "T2_vs_C")), "grid columns.")
+  check(identical(unname(as.matrix(grid)), rbind(c("g1", "G1", "1", "utr_lengthening", ""), c("g2", "G2", "0", "none", ""))), "grid rows.")
+  concordance <- read_output("concordance.tsv.gz")
+  check(identical(unname(unlist(concordance)), c("T1_vs_C", "T2_vs_C", "shared_control", "0", "0", "")), "concordance: ", paste(unlist(concordance), collapse = ", "))
+  pca <- read_output("pau_pca.tsv")
+  check(identical(names(pca), c("sample_id", "condition", "PC1", "PC2", "pc1_variance_fraction", "pc2_variance_fraction")), "PCA columns.")
+  check(identical(pca$sample_id, paste0("s", 1:6)) && identical(pca$condition, c("C", "C", "T1", "T1", "T2", "T2")), "PCA samples.")
+  # PC1 follows g1's shift. g1's two PACs tie for the largest loading, so
+  # g1_p1's is positive, and the controls, where g1_p1 is highest, score
+  # highest.
+  check(identical(order(as.numeric(pca$PC1)), c(4L, 3L, 6L, 5L, 1L, 2L)), "PC1 order: ", paste(pca$PC1, collapse = ", "))
 })
 
 test_case("F-13", "every comparison empty still writes the same files", {
@@ -530,6 +806,8 @@ test_case("F-13", "every comparison empty still writes the same files", {
   figures$run_figures_mode(figures$parse_args(command))
   files <- sort(list.files(file.path(directory, "figures")), method = "radix")
   check(identical(files, expected_files), "files: ", paste(files, collapse = ", "))
+  pca <- readLines(file.path(directory, "figures", "pau_pca.tsv"))
+  check(identical(pca, "sample_id\tcondition\tPC1\tPC2\tpc1_variance_fraction\tpc2_variance_fraction"), "empty PCA table: ", paste(pca, collapse = " | "))
 })
 
 test_case("F-14", "versions mode appends ggplot2, or starts the table", {

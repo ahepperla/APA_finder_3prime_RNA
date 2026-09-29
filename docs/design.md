@@ -1184,7 +1184,7 @@ Produce a static HTML report with:
 - enriched upstream k-mers for gained or increased PACs;
 - known-PAC overlap;
 - testable-gene counts;
-- PAU correlation and PCA for adequately covered genes;
+- PAU correlation for adequately covered genes, with the PAU PCA figure;
 - model convergence and p-value distributions;
 - zero-boundary stabilization and bootstrap success summaries;
 - searchable gained, lost, switched, and redistributed PAC events;
@@ -1215,9 +1215,38 @@ make no calls of their own. For each comparison:
 - **site classes:** confirmed gains and losses by assignment class, so
   intronic polyadenylation shows as intron gains.
 
-Across comparisons, `event_counts` shows the PAC and gene events above the
-genes per APA pattern, and `effect_vs_coverage` shows each PAC's change in PAU
-against the reads at its gene in the less-covered group.
+Across comparisons:
+
+- **event counts:** `event_counts` shows the PAC and gene events above the
+  genes per APA pattern.
+- **effect against coverage:** `effect_vs_coverage` shows each PAC's change in
+  PAU against the reads at its gene in the less-covered group.
+- **shared APA patterns:** `apa_pattern_grid` draws genes with an APA pattern
+  in at least two comparisons against the comparisons.
+  - At most 50 genes are drawn, most shared first, then by best gene FDR.
+  - `apa_patterns_by_comparison.tsv.gz` has every tested gene.
+- **concordance:** `concordance` plots, for each pair of comparisons, each
+  shared PAC's change in PAU in one against the other.
+  - It has at most 15 panels; beyond that, only pairs that share a control or
+    a condition are drawn.
+  - `concordance_matrix` shows Pearson r for every pair.
+  - `concordance.tsv.gz` gives each pair's relation (`shared_control`,
+    `chained`, or `unrelated`), shared PACs, PACs called in both, and r.
+  - Comparisons that share a control correlate positively through its
+    estimate. Chained ones estimate the middle condition from the same
+    samples with opposite signs, so they correlate negatively. r is therefore
+    read with the relation.
+- **PAU PCA:** `pau_pca` places the samples on the first two principal
+  components of observed PAU.
+  - It uses the genes with at least `min_gene_total` reads in every sample,
+    and their PACs observed in every sample, with no zero-filling.
+  - Each PAC is centered across samples. Each component's sign makes its
+    largest loading positive, the first PAC by ID breaking ties.
+  - `pau_pca.tsv` has the coordinates.
+
+These figures set each comparison's own results side by side. They make no
+treatment-versus-treatment test, so every call remains a comparison with the
+direct control.
 
 PDFs are written without dates or a producer, so reruns reproduce them byte
 for byte. Uncalled PACs are drawn as a density above 5,000 per panel, which
@@ -1288,6 +1317,13 @@ results/
     CONDITION_vs_CONTROL.site_classes.pdf/.png
     event_counts.pdf/.png
     effect_vs_coverage.pdf/.png
+    apa_pattern_grid.pdf/.png
+    apa_patterns_by_comparison.tsv.gz
+    concordance.pdf/.png
+    concordance_matrix.pdf/.png
+    concordance.tsv.gz
+    pau_pca.pdf/.png
+    pau_pca.tsv
   report/
     index.html
   pipeline_info/               # Nextflow's reports for the latest run
@@ -1428,6 +1464,10 @@ Cover:
   low-confidence PACs that cannot gate and ties between last exons;
 - figure data: the distal PAC on both strands, site-class and event counts,
   and dropped p-values and coverage rows;
+- figures across comparisons: the shared-pattern grid's order and 50-gene
+  cap, related pairs and the 15-panel cap, concordance calls and Pearson r,
+  and the PAU PCA against a direct SVD, with its coverage rule and tied
+  loadings;
 - figures without dates, byte-identical across processes, for empty
   comparisons too.
 

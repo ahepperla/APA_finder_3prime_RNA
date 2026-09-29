@@ -249,7 +249,10 @@ results/
                preference and exploratory k-mer enrichment tables
   figures/     per comparison: volcano, distal-usage, and site-class figures
                (PDF and PNG) and CONDITION_vs_CONTROL.distal_usage.tsv.gz;
-               across comparisons: event counts, and effect against coverage
+               across comparisons: event counts, shared APA patterns,
+               concordance, effect against coverage, and the PAU PCA, with
+               apa_patterns_by_comparison.tsv.gz, concordance.tsv.gz, and
+               pau_pca.tsv
   report/      index.html, a self-contained report with the figures embedded
   pipeline_info/
                Nextflow's execution report, timeline, trace, and DAG; each
@@ -394,9 +397,12 @@ sites never make a pattern. The threshold is `min_abs_delta_pau`.
 
 ### Figures
 
-`figures/` holds, for each comparison, three figures as PDF and PNG, and two
+`figures/` holds, for each comparison, three figures as PDF and PNG, and six
 figures across comparisons. The report embeds the PNGs. The figures show the
-calls in the statistics tables; they never make calls of their own.
+calls in the statistics tables; they never make calls of their own. The
+figures that set comparisons side by side describe each comparison's own
+results, each treatment against its direct control, and add no test between
+treatments.
 
 - **`CONDITION_vs_CONTROL.volcano`**: every tested PAC's change in fitted PAU
   against its PAC-level p-value. Confirmed gains (`gained`,
@@ -426,10 +432,48 @@ calls in the statistics tables; they never make calls of their own.
 - **`event_counts`**: PAC events, candidates in lighter shades, and gene
   events from the `.genes` tables, for every comparison. A lower panel counts
   genes per APA pattern; a gene with two patterns counts in both.
+- **`apa_pattern_grid`**: genes with an APA pattern in two or more
+  comparisons, as rows, against the comparisons.
+  - Each cell shows the gene's first pattern there, and a + marks two or more.
+    White is no pattern, and grey is a gene the comparison didn't test.
+  - At most 50 genes are drawn: those shared by the most comparisons first,
+    then by best gene FDR.
+  - `apa_patterns_by_comparison.tsv.gz` lists every tested gene in that
+    order, with its pattern in each comparison and a count of the comparisons
+    where it has one. A cell is empty where the gene wasn't tested.
+- **`concordance`** and **`concordance_matrix`**: how far comparisons agree.
+  - Each panel of `concordance` takes two comparisons and plots every PAC
+    tested in both: its change in PAU in one against the other. The panel
+    gives Pearson r and the number of PACs.
+  - PACs with a confirmed call in both comparisons, or in one, are colored.
+  - Beyond 15 pairs (more than six comparisons), only pairs that share a
+    control or a condition get a panel.
+  - `concordance_matrix` shows r for every pair.
+  - `concordance.tsv.gz` has one row per pair: its relation (`shared_control`,
+    `chained`, or `unrelated`), the shared PACs, the PACs called in both, and
+    `pearson_r`, which is empty with fewer than three shared PACs.
+  - Read r with its relation in mind:
+    - Two comparisons against one control share that control's estimate, so
+      their changes correlate positively without any shared biology.
+    - Chained comparisons, where one's treatment is the other's control,
+      estimate the middle condition from the same samples, with opposite
+      signs, so they correlate negatively. A rescue that reverses a treatment
+      gives a strongly negative r partly for that reason.
 - **`effect_vs_coverage`**: each PAC's change in fitted PAU against the reads
   at its gene in the less-covered group, one panel per comparison, with
   `min_gene_total` marked. Calls driven by low coverage would cluster on the
   left.
+- **`pau_pca`**: samples on the first two principal components of observed
+  PAU, colored by condition.
+  - It uses the genes with at least `min_gene_total` reads in every sample,
+    and those genes' PACs observed in every sample. There is no zero-filling
+    and no pseudocount.
+  - Each PAC is centered across samples. Each component's sign makes its
+    largest loading positive; when loadings tie, as a two-PAC gene's do, the
+    first PAC by ID decides.
+  - Replicates should sit together. The report shows this figure beside the
+    PAU sample correlation table, and `pau_pca.tsv` has the coordinates and
+    the variance each component explains.
 
 The PDFs use the standard Helvetica font, which is not embedded, and carry no
 dates, so reruns reproduce them byte for byte. PNG rendering depends on the

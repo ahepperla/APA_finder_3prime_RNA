@@ -6,7 +6,7 @@
 #
 # Usage:
 #   Rscript plot_usage_figures.R --mode figures --samples normalized_samples.tsv \
-#     --statistics-dir DIR --atlas pacs.v1.metadata.tsv.gz \
+#     --statistics-dir DIR --atlas pacs.v1.metadata.tsv.gz --pau observed_pau.tsv.gz \
 #     --params resolved_params.yaml --output-dir figures
 #   Rscript plot_usage_figures.R --mode versions --output software_versions.tsv
 #
@@ -85,6 +85,17 @@ FIGURE_DPI <- 200
 UNCALLED_POINT_LIMIT <- 5000
 # Gene labels per direction on the volcano and distal-usage plots.
 LABEL_LIMIT <- 20
+# Genes on the shared-genes grid, and panels on the concordance figure.
+GRID_GENE_LIMIT <- 50
+CONCORDANCE_PANEL_LIMIT <- 15
+# Okabe-Ito colors for conditions on the PCA, with the pale yellow last;
+# shapes change every eight conditions.
+CONDITION_COLORS <- c(
+  "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7", "#000000", "#F0E442"
+)
+CONDITION_SHAPES <- c(16, 17, 15, 18)
+# Concordance points called in both comparisons of a pair, or in one.
+CONCORDANCE_COLORS <- c(both = "#CC79A7", one = "#56B4E9")
 COLOR_UP <- "#D55E00"
 COLOR_DOWN <- "#0072B2"
 COLOR_NONE <- "grey70"
@@ -170,6 +181,15 @@ read_pacs <- function(path) {
   read_table(path, PACS_REQUIRED, PACS_NUMERIC, "exploratory_insufficient_replicates")
 }
 
+# Observed PAU without the count and name columns. An empty PAU, at a gene
+# without reads in the sample, is NA.
+read_pau <- function(path) {
+  read_columns(path, c(
+    gene_id = "character", pac_id = "character", sample_id = "character",
+    gene_total = "numeric", pau = "numeric"
+  ))
+}
+
 read_genes <- function(path) {
   read_table(
     path, GENES_REQUIRED, "gene_fdr",
@@ -177,19 +197,24 @@ read_genes <- function(path) {
   )
 }
 
-# Only the PAC IDs and coordinates, skipping the atlas's sequence columns.
-read_atlas_coordinates <- function(path) {
+# Only the named columns, read with the given classes; the others are skipped.
+read_columns <- function(path, classes) {
+  if (!file.exists(path)) stop("Missing table: ", path)
   header <- names(utils::read.delim(path, nrows = 0, quote = "", check.names = FALSE))
-  missing <- setdiff(c("pac_id", "coordinate"), header)
+  missing <- setdiff(names(classes), header)
   if (length(missing)) {
     stop(basename(path), " lacks columns: ", paste(missing, collapse = ", "), ".")
   }
-  classes <- rep("NULL", length(header))
-  classes[header == "pac_id"] <- "character"
-  classes[header == "coordinate"] <- "numeric"
+  selected <- rep("NULL", length(header))
+  selected[match(names(classes), header)] <- unname(classes)
   utils::read.delim(
-    path, colClasses = classes, na.strings = character(), quote = "", check.names = FALSE
+    path, colClasses = selected, na.strings = character(), quote = "", check.names = FALSE
   )
+}
+
+# Only the PAC IDs and coordinates, skipping the atlas's sequence columns.
+read_atlas_coordinates <- function(path) {
+  read_columns(path, c(pac_id = "character", coordinate = "numeric"))
 }
 
 write_gzip_tsv <- function(value, path) {
@@ -418,6 +443,162 @@ coverage_data <- function(comparisons, pacs_tables) {
     drop = FALSE]
   rownames(data) <- NULL
   data
+}
+
+# ---- Across comparisons -----------------------------------------------------
+
+# Every tested gene's pattern in each comparison, empty where the gene was not
+# tested, ordered by the number of comparisons with a pattern, then by the
+# gene's best FDR.
+pattern_grid_table <- function(comparisons, genes_tables) {
+  long <- do.call(rbind, c(
+    list(data.frame(gene_id = character(), gene_name = character(), comparison = character(),
+      apa_pattern = character(), gene_fdr = numeric(), stringsAsFactors = FALSE)),
+    lapply(comparisons$stem, function(stem) {
+      genes <- genes_tables[[stem]]
+      genes <- genes[!duplicated(genes$gene_id), , drop = FALSE]
+      data.frame(gene_id = genes$gene_id, gene_name = genes$gene_name,
+        comparison = rep(stem, nrow(genes)), apa_pattern = genes$apa_pattern,
+        gene_fdr = genes$gene_fdr, stringsAsFactors = FALSE)
+    })
+  ))
+  ids <- unique(long$gene_id)
+  table <- data.frame(
+    gene_id = ids, gene_name = long$gene_name[match(ids, long$gene_id)],
+    patterned_comparisons = integer(length(ids)), stringsAsFactors = FALSE, check.names = FALSE
+  )
+  for (stem in comparisons$stem) {
+    rows <- long[long$comparison == stem, , drop = FALSE]
+    table[[stem]] <- rows$apa_pattern[match(ids, rows$gene_id)]
+    table$patterned_comparisons <- table$patterned_comparisons +
+      as.integer(!is.na(table[[stem]]) & !table[[stem]] %in% c("", "none"))
+  }
+  finite <- long[is.finite(long$gene_fdr), , drop = FALSE]
+  best <- unname(tapply(finite$gene_fdr, finite$gene_id, min)[ids])
+  table <- table[order(-table$patterned_comparisons, is.na(best), best, table$gene_id,
+    method = "radix"), , drop = FALSE]
+  rownames(table) <- NULL
+  table
+}
+
+# Pairs of comparisons with how they are related: sharing a control, or
+# chained through a condition that is one's treatment and the other's control.
+concordance_pairs <- function(comparisons) {
+  pairs <- if (nrow(comparisons) < 2) {
+    matrix(integer(), nrow = 2)
+  } else {
+    utils::combn(nrow(comparisons), 2)
+  }
+  a <- comparisons[pairs[1, ], , drop = FALSE]
+  b <- comparisons[pairs[2, ], , drop = FALSE]
+  relation <- as.character(ifelse(
+    a$control_condition == b$control_condition, "shared_control",
+    ifelse(a$condition == b$control_condition | b$condition == a$control_condition,
+      "chained", "unrelated")
+  ))
+  data.frame(
+    pair = paste(a$stem, b$stem, sep = "|"), comparison_a = a$stem, comparison_b = b$stem,
+    title_a = a$title, title_b = b$title, relation = relation, stringsAsFactors = FALSE
+  )
+}
+
+# The pairs drawn as panels: every pair up to the limit; beyond it, only the
+# related ones, and at most the limit of those.
+shown_pairs <- function(pairs) {
+  if (nrow(pairs) <= CONCORDANCE_PANEL_LIMIT) return(pairs)
+  related <- pairs[pairs$relation != "unrelated", , drop = FALSE]
+  utils::head(related, CONCORDANCE_PANEL_LIMIT)
+}
+
+# Each PAC tested in both comparisons of a pair, with its change in each and
+# whether it has a confirmed call in both, one, or neither.
+concordance_data <- function(pairs, pacs_tables) {
+  rows <- lapply(seq_len(nrow(pairs)), function(index) {
+    a <- pacs_tables[[pairs$comparison_a[[index]]]]
+    b <- pacs_tables[[pairs$comparison_b[[index]]]]
+    shared <- intersect(a$pac_id, b$pac_id)
+    x <- a$delta_pau[match(shared, a$pac_id)]
+    y <- b$delta_pau[match(shared, b$pac_id)]
+    called_a <- pac_calls(a$event_type[match(shared, a$pac_id)]) %in% c("up", "down")
+    called_b <- pac_calls(b$event_type[match(shared, b$pac_id)]) %in% c("up", "down")
+    kept <- is.finite(x) & is.finite(y)
+    call <- ifelse(called_a & called_b, "both", ifelse(called_a | called_b, "one", "none"))
+    data.frame(
+      pair = rep(pairs$pair[[index]], sum(kept)), pac_id = shared[kept], delta_a = x[kept],
+      delta_b = y[kept], call = call[kept], stringsAsFactors = FALSE
+    )
+  })
+  data <- do.call(rbind, c(list(data.frame(pair = character(), pac_id = character(),
+    delta_a = numeric(), delta_b = numeric(), call = character(), stringsAsFactors = FALSE)),
+    rows))
+  data$pair <- factor(data$pair, levels = pairs$pair)
+  data$call <- factor(data$call, levels = c("both", "one", "none"))
+  # Drawing order: uncalled PACs first, and PACs called in both on top.
+  data <- data[order(-as.integer(data$call), data$pair, data$pac_id, method = "radix"), ,
+    drop = FALSE]
+  rownames(data) <- NULL
+  data
+}
+
+# One row per pair: shared PACs, PACs called in both, and the Pearson
+# correlation of their changes (empty with fewer than 3 PACs or no spread).
+concordance_summary <- function(pairs, data) {
+  summary <- lapply(seq_len(nrow(pairs)), function(index) {
+    rows <- data[data$pair == pairs$pair[[index]], , drop = FALSE]
+    spread <- nrow(rows) >= 3L && stats::sd(rows$delta_a) > 0 && stats::sd(rows$delta_b) > 0
+    data.frame(
+      comparison_a = pairs$comparison_a[[index]], comparison_b = pairs$comparison_b[[index]],
+      relation = pairs$relation[[index]], shared_pacs = nrow(rows),
+      called_in_both = sum(rows$call == "both"),
+      pearson_r = if (spread) stats::cor(rows$delta_a, rows$delta_b) else NA_real_,
+      stringsAsFactors = FALSE
+    )
+  })
+  do.call(rbind, c(list(data.frame(comparison_a = character(), comparison_b = character(),
+    relation = character(), shared_pacs = integer(), called_in_both = integer(),
+    pearson_r = numeric(), stringsAsFactors = FALSE)), summary))
+}
+
+# A PCA of observed PAU across samples, by the report's former rule: genes
+# with at least minimum reads in every sample, all their PACs, and no
+# zero-filling. Each component's sign makes its largest loading positive. A
+# two-PAC gene's loadings tie in size, since its PAU sum to 1, so the first
+# PAC by ID within a relative 1e-6 of the largest decides.
+pau_pca <- function(pau, samples, minimum) {
+  sample_ids <- sort(unique(samples$sample_id), method = "radix")
+  totals <- tapply(pau$gene_total, pau$gene_id, min)
+  covered <- names(totals)[!is.na(totals) & totals >= minimum]
+  pau <- pau[pau$gene_id %in% covered & pau$sample_id %in% sample_ids, , drop = FALSE]
+  pac_ids <- sort(unique(pau$pac_id), method = "radix")
+  values <- matrix(NA_real_, nrow = length(pac_ids), ncol = length(sample_ids))
+  values[cbind(match(pau$pac_id, pac_ids), match(pau$sample_id, sample_ids))] <- pau$pau
+  complete <- stats::complete.cases(values)
+  values <- values[complete, , drop = FALSE]
+  genes <- length(unique(pau$gene_id[pau$pac_id %in% pac_ids[complete]]))
+  if (length(sample_ids) < 2L || !nrow(values)) return(NULL)
+  centered <- t(values) - matrix(rowMeans(values), nrow = length(sample_ids),
+    ncol = nrow(values), byrow = TRUE)
+  decomposition <- svd(centered)
+  components <- min(2L, length(decomposition$d))
+  scores <- matrix(0, nrow = length(sample_ids), ncol = 2)
+  for (k in seq_len(components)) {
+    loading <- decomposition$v[, k]
+    largest <- which(abs(loading) >= max(abs(loading)) * (1 - 1e-6))[[1]]
+    flip <- if (loading[[largest]] < 0) -1 else 1
+    scores[, k] <- flip * decomposition$u[, k] * decomposition$d[[k]]
+  }
+  total <- sum(decomposition$d^2)
+  variance <- if (total > 0) decomposition$d^2 / total else rep(0, length(decomposition$d))
+  variance <- c(variance, 0, 0)[1:2]
+  condition <- samples$condition[match(sample_ids, samples$sample_id)]
+  result <- data.frame(
+    sample_id = sample_ids, condition = condition, PC1 = scores[, 1], PC2 = scores[, 2],
+    pc1_variance_fraction = variance[[1]], pc2_variance_fraction = variance[[2]],
+    stringsAsFactors = FALSE
+  )
+  attr(result, "genes") <- genes
+  attr(result, "pacs") <- nrow(values)
+  result
 }
 
 # ---- Figures ----------------------------------------------------------------
@@ -733,6 +914,205 @@ plot_effect_vs_coverage <- function(data, comparisons, params, dropped) {
     figure_theme()
 }
 
+# Inches rounded up to a whole eighth.
+eighths <- function(inches) ceiling(inches * 8 - 1e-9) / 8
+
+# Comparison titles on two lines, for the grid's vertical column labels.
+grid_titles <- function(comparisons) {
+  stats::setNames(
+    ascii_text(paste0(comparisons$condition, "\nvs ", comparisons$control_condition)),
+    comparisons$stem
+  )
+}
+
+# Room for the grid's vertical column labels, from their longest line.
+grid_label_height <- function(comparisons) {
+  lines <- unlist(strsplit(grid_titles(comparisons), "\n", fixed = TRUE))
+  eighths(0.06 * max(nchar(lines)))
+}
+
+# The genes drawn on the grid: those with a pattern in at least two
+# comparisons, up to GRID_GENE_LIMIT of them in the table's order.
+grid_genes <- function(table) {
+  utils::head(table[table$patterned_comparisons >= 2, , drop = FALSE], GRID_GENE_LIMIT)
+}
+
+plot_pattern_grid <- function(table, comparisons) {
+  title <- "APA patterns shared between comparisons"
+  if (nrow(comparisons) < 2) return(placeholder_plot(title, "Only one comparison"))
+  shared <- sum(table$patterned_comparisons >= 2)
+  if (!shared) {
+    return(placeholder_plot(title, "No gene has a pattern in two or more comparisons"))
+  }
+  shown <- grid_genes(table)
+  cells <- do.call(rbind, lapply(comparisons$stem, function(stem) {
+    data.frame(gene_id = shown$gene_id, comparison = stem, value = shown[[stem]],
+      stringsAsFactors = FALSE)
+  }))
+  fill <- as.character(first_pattern(cells$value))
+  fill[is.na(cells$value)] <- "not_tested"
+  cells$fill <- factor(fill, levels = c(names(APA_CLASSES), "not_tested"))
+  cells$gene_id <- factor(cells$gene_id, levels = rev(shown$gene_id))
+  cells$comparison <- factor(cells$comparison, levels = comparisons$stem)
+  colors <- c(APA_COLORS[names(APA_COLORS) != "none"], none = "white", not_tested = "grey88")
+  # The mark is white on a dark fill and black on a light one.
+  dark <- colSums(grDevices::col2rgb(colors) * c(0.299, 0.587, 0.114)) < 128
+  several <- cells[!is.na(cells$value) & grepl(";", cells$value, fixed = TRUE), , drop = FALSE]
+  several$mark <- ifelse(dark[as.character(several$fill)], "white", "black")
+  subtitle <- sprintf("%s with a pattern in 2 or more comparisons", plural(shared, "gene"))
+  if (shared > GRID_GENE_LIMIT) {
+    subtitle <- paste0(subtitle, sprintf("\nThe first %d are shown; the table lists all",
+      GRID_GENE_LIMIT))
+  }
+  subtitle <- paste0(subtitle, "\n+ marks two or more patterns in one comparison")
+  ggplot(cells, aes(x = comparison, y = gene_id)) +
+    # show.legend = TRUE draws keys for patterns absent from the drawn genes.
+    geom_tile(aes(fill = fill), colour = "grey60", linewidth = 0.2, show.legend = TRUE) +
+    geom_text(data = several, aes(colour = mark), label = "+", size = 3) +
+    scale_fill_manual(values = colors, labels = c(APA_CLASSES, not_tested = "Not tested"),
+      name = NULL, drop = FALSE) +
+    scale_colour_identity() +
+    scale_x_discrete(labels = grid_titles(comparisons), expand = c(0, 0)) +
+    scale_y_discrete(labels = stats::setNames(ascii_text(shown$gene_name), shown$gene_id),
+      expand = c(0, 0)) +
+    guides(fill = guide_legend(nrow = 3)) +
+    labs(title = title, subtitle = subtitle, x = NULL, y = NULL) +
+    figure_theme() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      axis.text.y = element_text(size = 6.5)
+    )
+}
+
+plot_concordance <- function(data, pairs, summary, all_pairs) {
+  title <- "Concordance between comparisons"
+  if (!all_pairs) return(placeholder_plot(title, "Only one comparison"))
+  if (!nrow(pairs)) {
+    return(placeholder_plot(title, "No pair shares a control or a condition"))
+  }
+  labels <- stats::setNames(paste0("x: ", pairs$title_a, "\ny: ", pairs$title_b), pairs$pair)
+  shown <- data[data$pair %in% pairs$pair, , drop = FALSE]
+  shown$pair <- factor(as.character(shown$pair), levels = pairs$pair)
+  notes <- summary[match(pairs$pair, paste(summary$comparison_a, summary$comparison_b,
+    sep = "|")), , drop = FALSE]
+  notes$pair <- factor(pairs$pair, levels = pairs$pair)
+  notes$label <- sprintf("r = %s\nn = %d",
+    ifelse(is.na(notes$pearson_r), "NA", sprintf("%.2f", notes$pearson_r)), notes$shared_pacs)
+  subtitle <- paste0(
+    "Change in PAU at PACs tested in both comparisons. Comparisons that share a\n",
+    "control correlate positively through its estimate alone, and chained ones negatively"
+  )
+  if (nrow(pairs) < all_pairs) {
+    subtitle <- paste0(subtitle, sprintf(
+      "\n%d of %d pairs shown, those sharing a control or a condition; the matrix has all",
+      nrow(pairs), all_pairs
+    ))
+  }
+  called <- shown[shown$call != "none", , drop = FALSE]
+  called_layers <- if (nrow(called)) {
+    list(
+      geom_point(data = called, aes(colour = call), size = 1.2),
+      scale_colour_manual(
+        values = CONCORDANCE_COLORS,
+        labels = c(both = "Confirmed call in both", one = "Confirmed call in one"),
+        name = NULL, guide = guide_legend(order = 1)
+      )
+    )
+  }
+  ggplot(shown, aes(x = delta_a, y = delta_b)) +
+    uncalled_layers(shown, panel = "pair") +
+    geom_abline(slope = 1, intercept = 0, colour = "grey40", linewidth = 0.3) +
+    geom_abline(slope = -1, intercept = 0, colour = "grey60", linetype = "dashed",
+      linewidth = 0.3) +
+    called_layers +
+    geom_text(data = notes, aes(x = -0.95, y = 0.95, label = label), inherit.aes = FALSE,
+      hjust = 0, vjust = 1, size = 2.5) +
+    facet_wrap(~pair, ncol = 3, drop = FALSE, labeller = as_labeller(labels)) +
+    coord_equal(xlim = c(-1, 1), ylim = c(-1, 1)) +
+    labs(title = title, subtitle = subtitle, x = "Change in PAU, x comparison",
+      y = "Change in PAU, y comparison") +
+    figure_theme()
+}
+
+# Pearson r for every ordered pair of comparisons, with 1 on the diagonal.
+concordance_matrix <- function(summary, comparisons) {
+  stems <- comparisons$stem
+  grid <- expand.grid(a = stems, b = stems, stringsAsFactors = FALSE)
+  key <- paste(grid$a, grid$b, sep = "|")
+  forward <- match(key, paste(summary$comparison_a, summary$comparison_b, sep = "|"))
+  backward <- match(key, paste(summary$comparison_b, summary$comparison_a, sep = "|"))
+  grid$r <- ifelse(grid$a == grid$b, 1,
+    ifelse(!is.na(forward), summary$pearson_r[forward], summary$pearson_r[backward]))
+  grid
+}
+
+plot_concordance_matrix <- function(summary, comparisons) {
+  title <- "Correlation between comparisons"
+  if (nrow(comparisons) < 2) return(placeholder_plot(title, "Only one comparison"))
+  grid <- concordance_matrix(summary, comparisons)
+  grid$label <- ifelse(is.na(grid$r), "NA", sprintf("%.2f", grid$r))
+  grid$a <- factor(grid$a, levels = comparisons$stem)
+  grid$b <- factor(grid$b, levels = rev(comparisons$stem))
+  titles <- grid_titles(comparisons)
+  ggplot(grid, aes(x = a, y = b, fill = r)) +
+    geom_tile(colour = "white") +
+    geom_text(aes(label = label), size = 2.8) +
+    scale_fill_gradient2(low = COLOR_DOWN, mid = "white", high = COLOR_UP, midpoint = 0,
+      limits = c(-1, 1), name = "Pearson r", na.value = "grey88") +
+    scale_x_discrete(labels = titles, expand = c(0, 0)) +
+    scale_y_discrete(labels = titles, expand = c(0, 0)) +
+    coord_equal() +
+    labs(
+      title = title,
+      subtitle = paste0(
+        "Pearson r of the change in PAU at shared PACs.\n",
+        "Shared controls and chains correlate by design"
+      ),
+      x = NULL, y = NULL
+    ) +
+    figure_theme() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+    )
+}
+
+plot_pau_pca <- function(pca, params) {
+  title <- "PAU principal components"
+  if (is.null(pca)) {
+    return(placeholder_plot(title, "No PAC has observed PAU in every sample"))
+  }
+  conditions <- sort(unique(pca$condition), method = "radix")
+  index <- seq_along(conditions) - 1L
+  colors <- stats::setNames(CONDITION_COLORS[index %% length(CONDITION_COLORS) + 1L],
+    conditions)
+  shapes <- stats::setNames(
+    CONDITION_SHAPES[(index %/% length(CONDITION_COLORS)) %% length(CONDITION_SHAPES) + 1L],
+    conditions
+  )
+  pca$condition <- factor(pca$condition, levels = conditions)
+  pca$label <- ascii_text(pca$sample_id)
+  subtitle <- sprintf(
+    "Observed PAU at %s in %s with at least %s reads in every sample",
+    plural(attr(pca, "pacs"), "PAC"), plural(attr(pca, "genes"), "gene"),
+    format(params$min_gene_total)
+  )
+  ggplot(pca, aes(x = PC1, y = PC2, colour = condition, shape = condition)) +
+    geom_point(size = 2.2) +
+    geom_text(aes(label = label), size = 2.3, vjust = -0.9, show.legend = FALSE) +
+    scale_colour_manual(values = colors, labels = ascii_text(conditions), name = NULL) +
+    scale_shape_manual(values = shapes, labels = ascii_text(conditions), name = NULL) +
+    scale_x_continuous(expand = expansion(mult = 0.15)) +
+    scale_y_continuous(expand = expansion(mult = 0.15)) +
+    labs(
+      title = title, subtitle = subtitle,
+      x = sprintf("PC1 (%.1f%% of variance)", 100 * pca$pc1_variance_fraction[[1]]),
+      y = sprintf("PC2 (%.1f%% of variance)", 100 * pca$pc2_variance_fraction[[1]])
+    ) +
+    figure_theme()
+}
+
 # Draws a ggplot, or a figure stack with each plot in its own row.
 draw_figure <- function(plot) {
   if (!inherits(plot, "figure_stack")) return(print(plot))
@@ -772,7 +1152,7 @@ save_figure <- function(plot, stem, width, height) {
 # ---- Modes ------------------------------------------------------------------
 
 run_figures_mode <- function(arguments) {
-  require_args(arguments, c("samples", "statistics_dir", "atlas", "params", "output_dir"))
+  require_args(arguments, c("samples", "statistics_dir", "atlas", "pau", "params", "output_dir"))
   params <- yaml::read_yaml(arguments$params)
   samples <- read_table(arguments$samples, c("sample_id", "condition", "control_condition"))
   comparisons <- comparisons_from_samples(samples)
@@ -811,6 +1191,39 @@ run_figures_mode <- function(arguments) {
     plot_effect_vs_coverage(coverage, comparisons, params, dropped),
     file.path(arguments$output_dir, "effect_vs_coverage"), 7.5, 0.75 + 2.5 * rows
   )
+  run_across_comparisons(arguments, params, samples, comparisons, pacs_tables, genes_tables)
+}
+
+# The figures and tables that relate comparisons to each other, and the PCA
+# of samples.
+run_across_comparisons <- function(arguments, params, samples, comparisons, pacs_tables,
+                                   genes_tables) {
+  output <- function(name) file.path(arguments$output_dir, name)
+  labels <- grid_label_height(comparisons)
+  grid <- pattern_grid_table(comparisons, genes_tables)
+  write_gzip_tsv(grid, output("apa_patterns_by_comparison.tsv.gz"))
+  save_figure(plot_pattern_grid(grid, comparisons), output("apa_pattern_grid"),
+    3 + 0.75 * nrow(comparisons), 2.25 + labels + 0.125 * nrow(grid_genes(grid)))
+  pairs <- concordance_pairs(comparisons)
+  pair_data <- concordance_data(pairs, pacs_tables)
+  pair_summary <- concordance_summary(pairs, pair_data)
+  write_gzip_tsv(pair_summary, output("concordance.tsv.gz"))
+  shown <- shown_pairs(pairs)
+  save_figure(plot_concordance(pair_data, shown, pair_summary, nrow(pairs)),
+    output("concordance"), 7.5, 1 + 2.5 * max(1, ceiling(nrow(shown) / 3)))
+  side <- max(4.5, 2.5 + 0.5 * nrow(comparisons)) + labels
+  save_figure(plot_concordance_matrix(pair_summary, comparisons), output("concordance_matrix"),
+    side, side)
+  pca <- pau_pca(read_pau(arguments$pau), samples, params$min_gene_total)
+  pca_table <- if (is.null(pca)) {
+    data.frame(sample_id = character(), condition = character(), PC1 = numeric(),
+      PC2 = numeric(), pc1_variance_fraction = numeric(), pc2_variance_fraction = numeric())
+  } else {
+    as.data.frame(pca)
+  }
+  utils::write.table(pca_table, output("pau_pca.tsv"), sep = "\t", quote = FALSE,
+    row.names = FALSE, na = "")
+  save_figure(plot_pau_pca(pca, params), output("pau_pca"), 5.5, 5)
 }
 
 # Appends the ggplot2 version to a software-versions table, creating it with a

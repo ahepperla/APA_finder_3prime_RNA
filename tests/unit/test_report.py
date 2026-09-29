@@ -190,6 +190,44 @@ def test_pau_qc_uses_only_genes_covered_in_every_sample(tmp_path: Path) -> None:
     expected = round(float(np.corrcoef(gene_a["S1"], gene_a["S3"])[0, 1]), 3)
     assert expected == -0.929
     assert f"<td>{expected}</td>" in report
+    # The PCA is a figure from the figures step, no longer a table.
+    assert "PAU principal components" not in report
+    assert report.count("<table") == 1
+
+
+def test_pau_pca_figure_follows_the_correlation_table(tmp_path: Path) -> None:
+    rows = [
+        {"gene_id": "g", "pac_id": f"g.{index}", "sample_id": sample, "gene_total": 50,
+         "pau": pau}
+        for sample, usage in (("S1", [0.2, 0.8]), ("S2", [0.4, 0.6]), ("S3", [0.9, 0.1]))
+        for index, pau in enumerate(usage)
+    ]
+    path = tmp_path / "observed_pau.tsv.gz"
+    pd.DataFrame(rows).to_csv(path, sep="\t", index=False, compression=gzip_compression(path))
+    write_figures(tmp_path, ["pau_pca", "event_counts"])
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 10)
+    report = output.read_text()
+    start = report.index("<h2>PAU principal components</h2>")
+    end = report.index("</section>", start)
+    assert report.index("<h2>PAU sample correlation</h2>") < start
+    assert start < report.index("<h2>Treatment-control figures</h2>")
+    pca = report[start:end]
+    assert figure_sources(pca) == [encoded("pau_pca")]
+    assert figure_links(pca) == ["../figures/pau_pca.pdf"]
+    assert "<table" not in pca
+    # The treatment-control figures leave the PCA out.
+    assert report.count(encoded("pau_pca")) == 1
+
+
+def test_pau_pca_figure_is_shown_without_observed_pau(tmp_path: Path) -> None:
+    write_figures(tmp_path, ["pau_pca"])
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 10)
+    report = output.read_text()
+    assert "<h2>PAU sample correlation</h2>" not in report
+    assert figure_sources(report) == [encoded("pau_pca")]
+    assert "Treatment-control figures" not in report
 
 
 def test_statistical_filtering_summarizes_each_family(tmp_path: Path) -> None:
@@ -396,14 +434,16 @@ def test_figure_section_orders_comparisons_then_summaries(tmp_path: Path) -> Non
         [
             "B_vs_A.site_classes", "B_vs_A.volcano", "B_vs_A.distal_usage",
             "A_vs_B.distal_usage", "A_vs_B.site_classes", "A_vs_B.volcano",
-            "effect_vs_coverage", "event_counts",
+            "effect_vs_coverage", "concordance", "pau_pca", "concordance_matrix",
+            "event_counts", "apa_pattern_grid",
         ],
     )
     section = _figure_sections(tmp_path)
     expected = [
         "A_vs_B.volcano", "A_vs_B.distal_usage", "A_vs_B.site_classes",
         "B_vs_A.volcano", "B_vs_A.distal_usage", "B_vs_A.site_classes",
-        "event_counts", "effect_vs_coverage",
+        "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",
+        "effect_vs_coverage",
     ]
     assert section.startswith("<section><h2>Treatment-control figures</h2>")
     assert re.findall(r"<h3>(.*?)</h3>", section) == ["A vs B", "B vs A", "All comparisons"]
