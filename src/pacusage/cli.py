@@ -25,7 +25,13 @@ from .alignments import (
     prepare_alignment,
     validate_contigs,
 )
-from .annotation import ATLAS_COLUMNS, annotate_candidates, load_known_pacs, load_motif_catalog
+from .annotation import (
+    ATLAS_COLUMNS,
+    annotate_candidates,
+    internal_exon_donors,
+    load_known_pacs,
+    load_motif_catalog,
+)
 from .calibration import (
     CalibrationMetrics,
     calculate_metrics,
@@ -42,6 +48,8 @@ from .clustering import (
     cluster_exact_boundaries,
     discover_proximal_pacs,
     filter_constitutive_readthrough,
+    filter_internal_exon_ends,
+    proximal_pile_shift,
 )
 from .errors import PacusageError
 from .evidence import (
@@ -214,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     cluster.add_argument("--kernel", required=True)
     cluster.add_argument("--params", required=True)
     cluster.add_argument("--splice-continuations", nargs="+")
+    cluster.add_argument("--annotation")
     cluster.add_argument("--accepted", required=True)
     cluster.add_argument("--rejected", required=True)
     cluster.add_argument("--qc", required=True)
@@ -829,6 +838,8 @@ def command_cluster(args: argparse.Namespace) -> None:
     }
     observations = _iter_observations(args.evidence, merge_sorted=True)
     known = load_known_pacs(params.get("known_pacs"))
+    # The proximal grid; the exon-end and readthrough filters use it.
+    bin_size, shift_bins = 1, 0
     if resolution["endpoint_model"] == "exact_boundary":
         accepted, rejected = cluster_exact_boundaries(
             observations,
@@ -846,6 +857,12 @@ def command_cluster(args: argparse.Namespace) -> None:
         minimum_resolution = int(params["pac_cluster_radius"])
     else:
         kernel, minimum = _read_kernel(args.kernel)
+        bin_size, shift_bins = proximal_pile_shift(
+            kernel,
+            minimum,
+            float(params["proximal_kernel_overlap_threshold"]),
+            int(params["proximal_bin_size"]),
+        )
         accepted, rejected, minimum_resolution = discover_proximal_pacs(
             observations,
             kernel,
@@ -859,10 +876,29 @@ def command_cluster(args: argparse.Namespace) -> None:
             observations_sorted=True,
             sample_conditions=sample_conditions,
         )
+    proximal = resolution["endpoint_model"] == "proximal_tag"
+    internal_exon_end_rejected = 0
+    internal_exon_end_filter = proximal and bool(params["internal_exon_end_filter"])
+    accepted_before_internal_exon_end_filter = len(accepted)
+    if internal_exon_end_filter:
+        if not args.annotation:
+            raise PacusageError(
+                "--annotation is required for proximal-tag discovery when "
+                "internal_exon_end_filter is enabled."
+            )
+        # The filter rejects up to one and a half bins from a donor's bin, so a
+        # donor within two bins of a transcript end is left out.
+        donors = internal_exon_donors(
+            parse_annotation(args.annotation, {"exon"}), 2 * bin_size
+        )
+        accepted, exon_end_rejected = filter_internal_exon_ends(
+            accepted, donors, shift_bins, bin_size
+        )
+        internal_exon_end_rejected = len(exon_end_rejected)
+        rejected.extend(exon_end_rejected)
     constitutive_readthrough_rejected = 0
-    constitutive_readthrough_filter = (
-        resolution["endpoint_model"] == "proximal_tag"
-        and bool(params["constitutive_readthrough_filter"])
+    constitutive_readthrough_filter = proximal and bool(
+        params["constitutive_readthrough_filter"]
     )
     accepted_before_readthrough_filter = len(accepted)
     if constitutive_readthrough_filter:
@@ -876,12 +912,13 @@ def command_cluster(args: argparse.Namespace) -> None:
             _iter_splice_continuations(args.splice_continuations),
             sample_conditions,
             int(params["constitutive_readthrough_min_junction_count"]),
-            params["constitutive_readthrough_min_replicate_support"],
+            shift_bins,
+            bin_size,
         )
         constitutive_readthrough_rejected = len(readthrough_rejected)
         rejected.extend(readthrough_rejected)
-        accepted.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
-        rejected.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
+    accepted.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
+    rejected.sort(key=lambda item: (item.contig, item.coordinate, item.strand))
     write_tsv(candidates_as_rows(accepted), args.accepted, compresslevel=1)
     # The published rejected table names the contig like every other table,
     # and keeps its header when no candidate was rejected.
@@ -899,17 +936,17 @@ def command_cluster(args: argparse.Namespace) -> None:
                 "endpoint_model": resolution["endpoint_model"],
                 "accepted_pacs": len(accepted),
                 "rejected_candidates": len(rejected),
+                "accepted_before_internal_exon_end_filter": (
+                    accepted_before_internal_exon_end_filter
+                ),
+                "internal_exon_end_filter_enabled": internal_exon_end_filter,
+                "internal_exon_end_rejected": internal_exon_end_rejected,
                 "accepted_before_constitutive_readthrough_filter": (
                     accepted_before_readthrough_filter
                 ),
                 "constitutive_readthrough_filter_enabled": constitutive_readthrough_filter,
                 "constitutive_readthrough_min_junction_count": (
                     int(params["constitutive_readthrough_min_junction_count"])
-                    if constitutive_readthrough_filter
-                    else ""
-                ),
-                "constitutive_readthrough_min_replicate_support": (
-                    params["constitutive_readthrough_min_replicate_support"]
                     if constitutive_readthrough_filter
                     else ""
                 ),
@@ -957,6 +994,9 @@ def command_annotate(args: argparse.Namespace) -> None:
             resolution_nt=int(row.get("resolution_nt", 0)),
             total_supporting_samples=int(row.get("total_supporting_samples", 0)),
             supporting_condition=row.get("supporting_condition", ""),
+            supporting_conditions=tuple(
+                value for value in row.get("supporting_conditions", "").split(";") if value
+            ),
         )
         for row in read_tsv(args.candidates)
     ]

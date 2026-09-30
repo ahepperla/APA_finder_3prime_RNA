@@ -34,7 +34,8 @@ def test_supplied_values_override_schema_defaults(resolved_params) -> None:
     assert params["min_mapq"] == 30
     assert params["pac_cluster_radius"] == 12
     assert params["proximal_bin_size"] == 25
-    assert params["constitutive_readthrough_min_replicate_support"] == "all"
+    assert params["internal_exon_end_filter"] is True
+    assert params["potential_internal_priming_withheld_calls"] is True
     assert params["dm_bootstrap_include_candidates"] is True
     assert params["statistics_bootstrap_batch_size"] == 500
     assert params["bind_paths"] == []
@@ -54,20 +55,6 @@ def test_fractional_pac_support_is_accepted(resolved_params) -> None:
 def test_invalid_pac_support_threshold_is_rejected(resolved_params, value: object) -> None:
     with pytest.raises(PacusageError, match="pac_min_supporting_samples"):
         resolved_params(pac_min_supporting_samples=value)
-
-
-@pytest.mark.parametrize("value", [0, 1.5, float("nan"), True, "invalid"])
-def test_invalid_constitutive_readthrough_replicate_support_is_rejected(
-    resolved_params, value: object
-) -> None:
-    with pytest.raises(PacusageError, match="constitutive_readthrough_min_replicate_support"):
-        resolved_params(constitutive_readthrough_min_replicate_support=value)
-
-
-def test_constitutive_readthrough_replicate_support_is_all_or_a_count(resolved_params) -> None:
-    support = "constitutive_readthrough_min_replicate_support"
-    assert resolved_params(**{support: "all"})[support] == "all"
-    assert resolved_params(**{support: 1})[support] == 1
 
 
 @pytest.mark.parametrize("value", [0, 1.5, float("nan"), True, "invalid"])
@@ -149,19 +136,14 @@ def test_command_line_booleans_reject_other_words(tmp_path: Path, schema, value:
         resolve_encoded(tmp_path, schema, require_unique=value)
 
 
-def test_command_line_support_thresholds_accept_counts_and_fractions(
+def test_command_line_support_threshold_accepts_counts_and_fractions(
     tmp_path: Path, schema
 ) -> None:
-    # Both accept a whole-number sample count or a fraction; the replicate
-    # support also accepts "all".
+    # The support threshold accepts a whole-number sample count or a fraction.
     resolved = resolve_encoded(tmp_path, schema, pac_min_supporting_samples="2")
     assert resolved["pac_min_supporting_samples"] == 2
     fraction = resolve_encoded(tmp_path, schema, pac_min_supporting_samples="0.5")
     assert fraction["pac_min_supporting_samples"] == 0.5
-    support = "constitutive_readthrough_min_replicate_support"
-    assert resolve_encoded(tmp_path, schema, **{support: "all"})[support] == "all"
-    assert resolve_encoded(tmp_path, schema, **{support: "0.5"})[support] == 0.5
-    assert resolve_encoded(tmp_path, schema, **{support: "3"})[support] == 3
 
 
 def test_command_line_strings_are_not_split_into_lists(tmp_path: Path, schema) -> None:
@@ -185,6 +167,16 @@ def test_typed_and_string_parameters_are_unchanged(tmp_path: Path, schema) -> No
     ]
     unknown = {"not_a_parameter": "30"}
     assert coerce_command_line_types(unknown, schema) == unknown
+
+
+@pytest.mark.parametrize(
+    "key", ["potential_internal_priming_withheld_calls", "internal_exon_end_filter"]
+)
+def test_switches_are_booleans_from_the_command_line(tmp_path: Path, schema, key: str) -> None:
+    assert resolve_encoded(tmp_path, schema, **{key: "false"})[key] is False
+    assert resolve_encoded(tmp_path, schema, **{key: "true"})[key] is True
+    with pytest.raises(PacusageError, match=key):
+        resolve_encoded(tmp_path, schema, **{key: "sometimes"})
 
 
 def test_excluded_contigs_default_includes_mitochondrial_contigs(resolved_params) -> None:

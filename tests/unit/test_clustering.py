@@ -4,9 +4,12 @@ import pytest
 from pacusage.calibration import minimum_resolvable_separation
 from pacusage.clustering import (
     _regional_peaks,
+    candidates_as_rows,
     cluster_exact_boundaries,
     discover_proximal_pacs,
     filter_constitutive_readthrough,
+    filter_internal_exon_ends,
+    proximal_pile_shift,
 )
 from pacusage.errors import PacusageError
 from pacusage.models import EvidenceObservation, PacCandidate, SpliceContinuation
@@ -21,16 +24,42 @@ def observation(
     return EvidenceObservation(sample, "chr1", strand, coordinate, count)
 
 
-def candidate(coordinate: int) -> PacCandidate:
-    return PacCandidate("chr1", "+", coordinate, 10, 2, 6, (coordinate,))
+def candidate(
+    coordinate: int, strand: str = "+", conditions: tuple[str, ...] = ()
+) -> PacCandidate:
+    return PacCandidate(
+        "chr1", strand, coordinate, 10, 2, 6, (coordinate,), supporting_conditions=conditions
+    )
 
 
 # Samples "a" and "b" as replicates of one condition.
 ONE_CONDITION = {"a": "C", "b": "C"}
+# Two replicates each of a control and a treatment.
+TWO_CONDITIONS = {
+    "control_1": "control",
+    "control_2": "control",
+    "treatment_1": "treatment",
+    "treatment_2": "treatment",
+}
+BOTH = ("control", "treatment")
 
 
 def continuation(sample: str, count: int = 2) -> SpliceContinuation:
+    """Reads splicing from the plus-strand exon block [100, 200) to [250, 350)."""
     return SpliceContinuation(sample, "chr1", "+", 100, 200, 250, 350, count)
+
+
+def readthrough(
+    candidates: list[PacCandidate],
+    continuations: list[SpliceContinuation],
+    minimum: int = 2,
+    shift_bins: int = 0,
+) -> tuple[list[int], list[int]]:
+    accepted, rejected = filter_constitutive_readthrough(
+        candidates, continuations, TWO_CONDITIONS, minimum, shift_bins, bin_size=25
+    )
+    assert all(item.rejection_reason == "constitutive_readthrough" for item in rejected)
+    return [item.coordinate for item in accepted], [item.coordinate for item in rejected]
 
 
 def test_exact_seed_ranking_is_deterministic() -> None:
@@ -245,60 +274,112 @@ def test_proximal_fractional_support_rounds_up() -> None:
     assert accepted[0].supporting_samples == 3
 
 
-def test_constitutive_readthrough_rejects_only_upstream_blocks_with_universal_support() -> None:
-    conditions = {
-        "control_1": "control",
-        "control_2": "control",
-        "treatment_1": "treatment",
-        "treatment_2": "treatment",
-    }
-    accepted, rejected = filter_constitutive_readthrough(
-        [candidate(150), candidate(350)],
-        [continuation(sample) for sample in conditions],
-        conditions,
-        minimum_junction_count=2,
-        minimum_replicate_support="all",
-    )
-    assert [item.coordinate for item in accepted] == [350]
-    assert [item.coordinate for item in rejected] == [150]
-    assert rejected[0].rejection_reason == "constitutive_readthrough"
+def test_constitutive_readthrough_pools_each_supporting_condition() -> None:
+    # One continuation read per sample: two per condition, pooled.
+    pooled = [continuation(sample, 1) for sample in TWO_CONDITIONS]
+    assert readthrough([candidate(150, conditions=BOTH)], pooled) == ([], [150])
+    assert readthrough([candidate(150, conditions=BOTH)], pooled, minimum=3) == ([150], [])
+    # The next block starts at 250, and 350 is more than a bin past this one.
+    assert readthrough([candidate(350, conditions=BOTH)], pooled) == ([350], [])
 
 
-def test_constitutive_readthrough_keeps_a_condition_specific_terminal_candidate() -> None:
-    conditions = {
-        "control_1": "control",
-        "control_2": "control",
-        "treatment_1": "treatment",
-        "treatment_2": "treatment",
-    }
-    accepted, rejected = filter_constitutive_readthrough(
-        [candidate(150)],
-        [continuation("control_1"), continuation("control_2")],
-        conditions,
-        minimum_junction_count=2,
-        minimum_replicate_support="all",
-    )
-    assert [item.coordinate for item in accepted] == [150]
-    assert not rejected
+def test_constitutive_readthrough_asks_only_the_conditions_that_support_a_candidate() -> None:
+    treated = [continuation("treatment_1"), continuation("treatment_2")]
+    # The control has no continuation reads, but it does not support the
+    # candidate, so its low coverage cannot protect it.
+    assert readthrough([candidate(150, conditions=("treatment",))], treated) == ([], [150])
+    # A supporting condition without continuation keeps the candidate: the
+    # exon may end there in that condition.
+    assert readthrough([candidate(150, conditions=BOTH)], treated) == ([150], [])
+    # A candidate with no supporting condition is never rejected.
+    assert readthrough([candidate(150)], treated) == ([150], [])
 
 
-def test_constitutive_readthrough_support_can_use_a_per_condition_fraction() -> None:
-    conditions = {
-        **{f"control_{index}": "control" for index in range(1, 4)},
-        **{f"treatment_{index}": "treatment" for index in range(1, 4)},
-    }
-    continuations = [
-        continuation("control_1"),
-        continuation("control_2"),
-        continuation("treatment_1"),
-        continuation("treatment_2"),
+def test_constitutive_readthrough_looks_at_the_read_pile_behind_a_candidate() -> None:
+    reads = [continuation(sample) for sample in TWO_CONDITIONS]
+    # 250 is two bins past the block's end, but its reads pile up two bins
+    # upstream of it, inside the block.
+    assert readthrough([candidate(250, conditions=BOTH)], reads, shift_bins=2) == ([], [250])
+    assert readthrough([candidate(250, conditions=BOTH)], reads, shift_bins=0) == ([250], [])
+
+
+def test_constitutive_readthrough_treats_the_donor_alike_on_both_strands() -> None:
+    plus = [continuation(sample) for sample in TWO_CONDITIONS]
+    # The block's 3' end is 200 on the plus strand; up to a bin past it counts.
+    assert readthrough(
+        [candidate(value, conditions=BOTH) for value in (200, 225, 250)], plus
+    ) == ([250], [200, 225])
+    minus = [
+        SpliceContinuation(sample, "chr1", "-", 300, 400, 100, 200, 2)
+        for sample in TWO_CONDITIONS
     ]
-    accepted, rejected = filter_constitutive_readthrough(
-        [candidate(150)],
-        continuations,
-        conditions,
-        minimum_junction_count=2,
-        minimum_replicate_support=0.5,
+    # On the minus strand the block's 3' end is its start, 300.
+    assert readthrough(
+        [candidate(value, "-", BOTH) for value in (250, 275, 300)], minus
+    ) == ([250], [275, 300])
+
+
+def test_constitutive_readthrough_rejects_unknown_samples() -> None:
+    with pytest.raises(PacusageError, match="absent from the normalized sample sheet: other"):
+        readthrough([candidate(150, conditions=BOTH)], [continuation("other")])
+
+
+def test_internal_exon_end_filter_expects_the_pile_downstream_of_the_donor() -> None:
+    donors = {("chr1", "+"): [1000]}
+    candidates = [candidate(value) for value in (950, 975, 1000, 1025, 1050, 1150)]
+    accepted, rejected = filter_internal_exon_ends(candidates, donors, 0, 25)
+    assert [item.coordinate for item in rejected] == [975, 1000, 1025]
+    assert [item.coordinate for item in accepted] == [950, 1050, 1150]
+    assert {item.rejection_reason for item in rejected} == {"internal_exon_end"}
+    assert {item.status for item in rejected} == {"rejected"}
+    # A kernel that peaks six bins downstream moves the expected candidate.
+    accepted, rejected = filter_internal_exon_ends(candidates, donors, 6, 25)
+    assert [item.coordinate for item in rejected] == [1150]
+
+
+def test_internal_exon_end_filter_on_the_minus_strand() -> None:
+    # A minus-strand donor is an exon start; its pile's peak lies at smaller
+    # coordinates.
+    donors = {("chr1", "-"): [1000]}
+    candidates = [candidate(value, "-") for value in (800, 825, 850, 875, 900, 1000)]
+    accepted, rejected = filter_internal_exon_ends(candidates, donors, 6, 25)
+    assert [item.coordinate for item in rejected] == [825, 850, 875]
+    assert [item.coordinate for item in accepted] == [800, 900, 1000]
+    # Donors on the other strand never match.
+    plus_only = {("chr1", "+"): [850]}
+    assert filter_internal_exon_ends(candidates, plus_only, 0, 25)[1] == []
+
+
+def test_a_read_pile_peaks_where_the_pile_shift_says() -> None:
+    # A kernel peaking 150 nt downstream of the read ends, as in the
+    # Plasmidsaurus fixture.
+    offsets = np.arange(20, 281)
+    weights = np.minimum(offsets - 19, 281 - offsets).astype(float)
+    kernel = weights / weights.sum()
+    bin_size, shift_bins = proximal_pile_shift(kernel, 20, 0.5, 25)
+    assert (bin_size, shift_bins) == (25, 6)
+    reads = [observation(sample, 1000, 5) for sample in ("a", "b")]
+    reads += [observation(sample, 1000, 5, "-") for sample in ("a", "b")]
+    accepted, _, _ = discover_proximal_pacs(
+        reads, kernel, 20, 0.5, 1, 1, 1, bin_size=25, sample_conditions=ONE_CONDITION
     )
-    assert not accepted
-    assert [item.coordinate for item in rejected] == [150]
+    assert [(item.strand, item.coordinate) for item in accepted] == [
+        ("-", 1000 - shift_bins * bin_size),
+        ("+", 1000 + shift_bins * bin_size),
+    ]
+
+
+def test_discovery_records_every_supporting_condition() -> None:
+    conditions = {**ONE_CONDITION, "c": "D", "d": "D", "e": "E", "f": "E"}
+    reads = [observation(sample, 100, 3) for sample in ("a", "b", "c", "d", "e")]
+    accepted, _, _ = discover_proximal_pacs(
+        reads, np.asarray([1.0]), 0, 0.5, 1, 2, 2, bin_size=1, sample_conditions=conditions
+    )
+    # Condition E has one qualifying replicate of two, short of the two needed.
+    assert accepted[0].supporting_conditions == ("C", "D")
+    exact, _ = cluster_exact_boundaries(
+        reads, 2, 2, 1, 2, 2, sample_conditions=conditions
+    )
+    assert exact[0].supporting_conditions == ("C", "D")
+    row = next(candidates_as_rows(accepted))
+    assert row["supporting_conditions"] == "C;D"

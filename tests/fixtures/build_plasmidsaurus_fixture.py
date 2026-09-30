@@ -13,6 +13,12 @@ their alternative ends out of calibration. Their PACs are 400 nt apart, farther
 than the kernel reaches, and sit on multiples of the 25-nt discovery bin, so
 each read belongs to exactly one PAC.
 
+Two more genes carry reads that discovery must reject, listed in
+expected_rejected.tsv. In one, reads whose short overhang into exon 2 was
+soft-clipped end at exon 1's donor. In the other, reads end inside its exon at
+a point that spliced reads continue from. Each has a second annotated end
+without reads, so it stays out of calibration too.
+
 The fixture has its own FASTA, annotation, and sample sheet. The exact-boundary
 fixture next to it is unchanged.
 """
@@ -62,6 +68,17 @@ EXACT_NULL_GENES = (7, 12)
 EXACT_NULL_DEPTHS = (250, 300, 200, 350)
 NULL_TWO_PAC_BASES = [(0.6, 0.4), (0.7, 0.3)]
 NULL_THREE_PAC_BASE = (0.5, 0.3, 0.2)
+# The artifact genes, on the plus strand after the others. Offsets are from
+# the gene's origin: exon 1's donor, the read pile inside the readthrough
+# gene's exon, and the second, unused end of each gene.
+ARTIFACT_KINDS = ("exon_end", "readthrough")
+EXON_END_DONOR = 300
+EXON_TWO_START = 1000
+READTHROUGH_PILE = 800
+SECOND_END = 1200
+ARTIFACT_READS = 30
+CONTINUATION_READS = 3
+SOFT_CLIP = 6
 
 
 def gene_layout() -> list[dict[str, object]]:
@@ -70,12 +87,13 @@ def gene_layout() -> list[dict[str, object]]:
         [("single", index) for index in range(SINGLE_PAC_GENES)]
         + [("two", index) for index in range(TWO_PAC_GENES)]
         + [("three", index) for index in range(THREE_PAC_GENES)]
+        + [(kind, 0) for kind in ARTIFACT_KINDS]
     )
     genes = []
     for position, (kind, index) in enumerate(kinds):
         origin = FIRST_ORIGIN + GENE_SPACING * position
-        strand = "+" if position % 2 == 0 else "-"
-        pac_count = {"single": 1, "two": 2, "three": 3}[kind]
+        strand = "+" if position % 2 == 0 or kind in ARTIFACT_KINDS else "-"
+        pac_count = {"single": 1, "two": 2, "three": 3}.get(kind, 1)
         # Plus-strand genes end at origin + GENE_LENGTH and minus-strand genes
         # at origin; each further PAC lies PAC_SPACING upstream.
         distal = origin + GENE_LENGTH if strand == "+" else origin
@@ -94,7 +112,10 @@ def gene_layout() -> list[dict[str, object]]:
 
 
 def design(gene: dict[str, object]) -> str:
-    """The gene's role: calibration, shifted, exact_null, or null."""
+    """The gene's role: calibration, shifted, exact_null, null, or
+    artifact_host."""
+    if gene["kind"] in ARTIFACT_KINDS:
+        return "artifact_host"
     if gene["kind"] == "single":
         return "calibration"
     if gene["kind"] == "two" and gene["index"] in SHIFTED_GENES:
@@ -111,6 +132,9 @@ def site_counts(random: np.random.RandomState) -> dict[tuple[str, int], dict[str
         pacs = gene["pacs"]
         per_sample: dict[str, tuple[int, ...]] = {}
         for sample_number, sample_id in enumerate(SAMPLES):
+            if gene["kind"] in ARTIFACT_KINDS:
+                per_sample[sample_id] = (150 + 5 * sample_number,)
+                continue
             if gene["kind"] == "single":
                 per_sample[sample_id] = (int(120 + 20 * (gene["index"] % 4) + 5 * sample_number),)
                 continue
@@ -187,6 +211,9 @@ def write_reference() -> None:
             f"{CONTIG}\tfixture\tgene\t{start}\t{end}\t.\t{strand}\t.\t"
             f'gene_id "{gene_id}"; gene_name "{gene_id.upper()}";'
         )
+        if gene["kind"] in ARTIFACT_KINDS:
+            gtf.extend(artifact_exons(gene))
+            continue
         # One transcript per PAC: each ends at its PAC, so a multi-PAC gene has
         # several annotated ends and stays out of calibration.
         for rank, coordinate in enumerate(gene["pacs"]):
@@ -200,6 +227,93 @@ def write_reference() -> None:
             )
     (ROOT / "genome.fa").write_text(f">{CONTIG}\n" + "".join(sequence) + "\n")
     (ROOT / "genes.gtf").write_text("\n".join(gtf) + "\n")
+
+
+def artifact_exons(gene: dict[str, object]) -> list[str]:
+    """GTF exons of an artifact gene: a transcript to its PAC, and one to a
+    second end without reads, which keeps the gene out of calibration."""
+    origin, gene_id = gene["origin"], gene["gene_id"]
+    if gene["kind"] == "exon_end":
+        exon_one = (origin + 1, origin + EXON_END_DONOR)
+        transcripts = [
+            [exon_one, (origin + EXON_TWO_START + 1, origin + GENE_LENGTH)],
+            [exon_one, (origin + EXON_TWO_START + 1, origin + SECOND_END)],
+        ]
+    else:
+        transcripts = [[(origin + 1, origin + GENE_LENGTH)], [(origin + 1, origin + SECOND_END)]]
+    return [
+        f"{CONTIG}\tfixture\texon\t{start}\t{end}\t.\t+\t.\t"
+        f'gene_id "{gene_id}"; transcript_id "{gene_id}_tx{rank + 1}";'
+        for rank, exons in enumerate(transcripts)
+        for start, end in exons
+    ]
+
+
+def plus_read(
+    name: str, reference_start: int, cigar: list[tuple[int, int]]
+) -> pysam.AlignedSegment:
+    """A plus-strand read with the given CIGAR."""
+    length = sum(size for operation, size in cigar if operation in (0, 1, 4))
+    read = pysam.AlignedSegment()
+    read.query_name = name
+    read.flag = 0
+    read.reference_id = 0
+    read.reference_start = reference_start
+    read.mapping_quality = 60
+    read.cigar = cigar
+    read.query_sequence = ("CGT" * (length // 3 + 1))[:length]
+    read.query_qualities = pysam.qualitystring_to_array("I" * length)
+    read.set_tag("NH", 1)
+    return read
+
+
+def artifact_reads(sample_id: str) -> list[pysam.AlignedSegment]:
+    """Reads discovery must reject, and the spliced reads that show the
+    readthrough gene's exon continues. Those end at their gene's PAC, at the
+    kernel's mode, and count toward it."""
+    reads = []
+    for gene in gene_layout():
+        origin, pac = gene["origin"], gene["pacs"][0]
+        if gene["kind"] == "exon_end":
+            donor = origin + EXON_END_DONOR
+            aligned = READ_LENGTH - SOFT_CLIP
+            for serial in range(ARTIFACT_READS):
+                name = f"{sample_id}_donor{donor}_{serial:04d}"
+                reads.append(plus_read(name, donor - aligned, [(0, aligned), (4, SOFT_CLIP)]))
+        if gene["kind"] == "readthrough":
+            pile = origin + READTHROUGH_PILE
+            for serial in range(ARTIFACT_READS):
+                name = f"{sample_id}_pile{pile}_{serial:04d}"
+                reads.append(plus_read(name, pile - READ_LENGTH, [(0, READ_LENGTH)]))
+            upstream, downstream = 40, 10
+            start = pile - 30
+            gap = (pac - OFFSET_MODE - downstream) - (start + upstream)
+            for serial in range(CONTINUATION_READS):
+                name = f"{sample_id}_splice{pile}_{serial:04d}"
+                cigar = [(0, upstream), (3, gap), (0, downstream)]
+                reads.append(plus_read(name, start, cigar))
+    return reads
+
+
+def spliced_sites() -> set[tuple[str, int]]:
+    """PACs whose reads include the readthrough gene's spliced reads."""
+    return {
+        (gene["strand"], gene["pacs"][0]) for gene in gene_layout() if gene["kind"] == "readthrough"
+    }
+
+
+def expected_rejections() -> list[tuple[str, int, str]]:
+    """Each artifact's rejected candidate: its read pile's peak lies at the
+    kernel's mode downstream of the pile."""
+    rejected = []
+    for gene in gene_layout():
+        if gene["kind"] == "exon_end":
+            donor = gene["origin"] + EXON_END_DONOR
+            rejected.append(("+", donor + OFFSET_MODE, "internal_exon_end"))
+        if gene["kind"] == "readthrough":
+            pile = gene["origin"] + READTHROUGH_PILE
+            rejected.append(("+", pile + OFFSET_MODE, "constitutive_readthrough"))
+    return rejected
 
 
 def aligned_read(name: str, strand: str, end_coordinate: int) -> pysam.AlignedSegment:
@@ -224,9 +338,12 @@ def write_alignment(sample_id: str, sites: dict[tuple[str, int], dict[str, int]]
         "HD": {"VN": "1.6", "SO": "coordinate"},
         "SQ": [{"SN": CONTIG, "LN": contig_length()}],
     }
-    reads = []
+    reads = artifact_reads(sample_id)
+    spliced = spliced_sites()
     for (strand, coordinate), counts in sites.items():
-        for serial, offset in enumerate(read_offsets(counts[sample_id])):
+        # The spliced reads already count toward their PAC.
+        count = counts[sample_id] - (CONTINUATION_READS if (strand, coordinate) in spliced else 0)
+        for serial, offset in enumerate(read_offsets(count)):
             end = coordinate - offset if strand == "+" else coordinate + offset
             name = f"{sample_id}_{strand}{coordinate}_{serial:04d}"
             reads.append(aligned_read(name, strand, end))
@@ -253,6 +370,11 @@ def write_expected(sites: dict[tuple[str, int], dict[str, int]]) -> None:
         values = [str(sites[(strand, coordinate)][sample_id]) for sample_id in SAMPLES]
         lines.append("\t".join([gene_id, role, strand, str(coordinate), str(rank), *values]))
     (ROOT / "expected_pacs.tsv").write_text("\n".join(lines) + "\n")
+    rejected = ["strand\tcoordinate\trejection_reason"]
+    rejected += [
+        f"{strand}\t{coordinate}\t{reason}" for strand, coordinate, reason in expected_rejections()
+    ]
+    (ROOT / "expected_rejected.tsv").write_text("\n".join(rejected) + "\n")
 
 
 def main() -> None:

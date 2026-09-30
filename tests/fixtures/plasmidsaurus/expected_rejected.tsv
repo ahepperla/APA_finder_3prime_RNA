@@ -1,0 +1,3 @@
+strand	coordinate	rejection_reason
++	128450	internal_exon_end
++	131950	constitutive_readthrough

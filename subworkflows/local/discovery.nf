@@ -46,13 +46,20 @@ workflow DISCOVERY {
     splice_continuations = EXTRACT_3PRIME_EVIDENCE.out.evidence
         .map { meta, tsv, parquet, splice, plus, minus, qc -> splice }
         .collect()
+    discovery_code = [
+        file("${projectDir}/src/pacusage/clustering.py", checkIfExists: true),
+        file("${projectDir}/src/pacusage/annotation.py", checkIfExists: true),
+        file("${projectDir}/src/pacusage/reference.py", checkIfExists: true)
+    ]
     CLUSTER_PACS(
         evidence_tables,
         splice_continuations,
+        annotation,
         normalized_samples,
         run_resolution,
         kernel,
-        resolved_params
+        resolved_params,
+        discovery_code
     )
     annotation_code = [
         file("${projectDir}/src/pacusage/annotation.py", checkIfExists: true),

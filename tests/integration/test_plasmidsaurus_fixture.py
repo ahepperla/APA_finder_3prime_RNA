@@ -126,6 +126,7 @@ def discovery(tmp_path_factory: pytest.TempPathFactory, resolved_params) -> dict
         continuations.append(str(work / f"{sample_id}.splice.tsv.gz"))
 
     arguments = ["cluster", "--evidence", *evidence, "--splice-continuations", *continuations]
+    arguments += ["--annotation", str(FIXTURE / "genes.gtf")]
     arguments += ["--samples", str(sheet), "--resolution", str(work / "run.json")]
     arguments += ["--kernel", str(work / "kernel.tsv"), "--params", str(params)]
     arguments += ["--accepted", str(work / "accepted.tsv.gz")]
@@ -160,8 +161,19 @@ def test_fixture_yields_exactly_its_designed_pacs(discovery) -> None:
         (row["strand"], int(row["coordinate"]), int(row["region_start"]), int(row["region_end"]))
         for row in discovery["accepted"]
     ]
-    assert discovery["rejected"] == []
-    assert int(discovery["summary"]["accepted_pacs"]) == len(designed) == 64
+    assert int(discovery["summary"]["accepted_pacs"]) == len(designed) == 66
+    # Only the designed artifacts are rejected, each for its own reason.
+    rejected = [
+        (row["strand"], int(row["coordinate"]), row["rejection_reason"])
+        for row in discovery["rejected"]
+    ]
+    wanted = [
+        (row["strand"], int(row["coordinate"]), row["rejection_reason"])
+        for row in read_tsv(FIXTURE / "expected_rejected.tsv")
+    ]
+    assert rejected == wanted
+    assert int(discovery["summary"]["internal_exon_end_rejected"]) == 1
+    assert int(discovery["summary"]["constitutive_readthrough_rejected"]) == 1
     # A resolution group spans several nucleotides; it is not a cleavage site.
     assert int(discovery["summary"]["minimum_resolvable_separation"]) > 1
     # Sites sit on the discovery bins, so each representative is its site, and

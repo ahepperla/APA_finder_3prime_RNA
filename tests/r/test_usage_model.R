@@ -344,7 +344,7 @@ test_case("H-05", "event classification", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
-    min_gene_total = 20
+    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
   )
   gained <- list(
     control_supporting_samples = 0, treatment_supporting_samples = 2, delta_pau = 0.20,
@@ -393,7 +393,7 @@ test_case("H-07", "descriptive events need a gene that passes the screen", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
-    min_gene_total = 20
+    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
   )
   # Every PAC is detected in both groups with a PAC FDR of 0.5, so no tested
   # label applies and only the descriptive labels can.
@@ -553,7 +553,7 @@ test_case("M-14", "event classification reads typed flags in a mixed table", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
-    min_gene_total = 20
+    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
   )
   table <- data.frame(
     control_supporting_samples = c(0, 0, 0, 0),
@@ -846,7 +846,7 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
-    min_gene_total = 20
+    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
   )
   gene <- function(gene_id, gene_fdr, pac_fdr, control, treatment) {
     data.frame(
@@ -946,16 +946,25 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
 })
 
 test_case("M-25", "APA patterns follow region shares and direction-matched calls", {
-  params <- list(min_abs_delta_pau = 0.10, event_min_treatment_pau = 0.05, gene_fdr = 0.05)
+  params <- list(
+    min_abs_delta_pau = 0.10, event_min_treatment_pau = 0.05, gene_fdr = 0.05,
+    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_supporting_samples = 2,
+    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
+  )
   # One row per PAC: coordinate, class, last exon, fitted PAU in each group,
-  # event, and confidence.
+  # event, and confidence. A low-confidence PAC is flagged for possible
+  # internal priming; the other columns let a withheld call be classified.
   gene <- function(gene_id, strand, coordinate, class, last_exon, control, treatment, event,
-                   confidence = "high", gene_fdr = 0.01) {
+                   confidence = "high", gene_fdr = 0.01, control_samples = 2, pac_fdr = 0.001,
+                   exploratory = FALSE) {
     data.frame(
       gene_id = gene_id, strand = strand, coordinate = coordinate, assignment_class = class,
       last_exon = last_exon, fitted_control_pau = control, fitted_treatment_pau = treatment,
       event_type = event, confidence = confidence, gene_fdr = gene_fdr,
-      stringsAsFactors = FALSE
+      internal_priming_flag = confidence == "low", control_supporting_samples = control_samples,
+      treatment_supporting_samples = 2, delta_pau = treatment - control, pac_fdr = pac_fdr,
+      zero_boundary_unstable = FALSE, exploratory_insufficient_replicates = exploratory,
+      control_gene_total = 100, treatment_gene_total = 100, stringsAsFactors = FALSE
     )
   }
   intron <- "intronic"
@@ -980,7 +989,8 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
         "moderate", "low", "moderate", "moderate"),
       gene_fdr = 0
     ),
-    # The intronic rise is on an internal-priming site, which cannot gate.
+    # The intronic rise is on an internal-priming site, which cannot gate a
+    # pattern, only a potential one.
     primed = gene(
       "primed", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
       c(0.1, 0.9), c(0.4, 0.6), c("increased_usage", "decreased_usage"), c("low", "high")
@@ -1039,22 +1049,98 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
     faint_exon = gene(
       "faint_exon", "+", c(100, 400, 500), c(intron, last, last), c(NA, rep("chr1:301-500", 2)),
       c(0.97, 0.02, 0.01), c(0.97, 0.01, 0.02), c("none", "none", "none")
+    ),
+    # Each pattern carried only by a flagged PAC's call.
+    flagged_loss = gene(
+      "flagged_loss", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.5, 0.5), c(0.1, 0.9), c("decreased_usage", "increased_usage"), c("low", "high")
+    ),
+    flagged_ale = gene(
+      "flagged_ale", "+", c(1100, 2100), c(last, last), c("chr1:1001-1100", "chr1:2001-2100"),
+      c(0.8, 0.2), c(0.2, 0.8), c("decreased_usage", "increased_usage"), c("high", "low")
+    ),
+    flagged_shortening = gene(
+      "flagged_shortening", "+", c(400, 500), c(last, last), rep("chr1:301-500", 2),
+      c(0.3, 0.7), c(0.6, 0.4), c("increased_usage", "none"), c("low", "high")
+    ),
+    flagged_lengthening = gene(
+      "flagged_lengthening", "+", c(400, 500), c(last, last), rep("chr1:301-500", 2),
+      c(0.6, 0.4), c(0.3, 0.7), c("none", "increased_usage"), c("high", "low")
+    ),
+    # A confirmed call at an unflagged site makes the pattern whatever the
+    # flagged sites do.
+    both_sites = gene(
+      "both_sites", "+", c(100, 200, 500), c(intron, intron, last), c(NA, NA, "chr1:401-500"),
+      c(0.05, 0.05, 0.9), c(0.25, 0.25, 0.5),
+      c("increased_usage", "increased_usage", "decreased_usage"), c("low", "high", "high")
+    ),
+    # A confirmed intronic gain, and a UTR shift carried only by a flagged PAC.
+    mixed = gene(
+      "mixed", "+", c(100, 400, 500), c(intron, last, last), c(NA, rep("chr1:301-500", 2)),
+      c(0.1, 0.2, 0.7), c(0.4, 0.4, 0.2), c("increased_usage", "increased_usage", "decreased_usage"),
+      c("high", "low", "high")
+    ),
+    # A new flagged intronic site: the flag alone withheld its gain.
+    withheld = gene(
+      "withheld", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.0, 1.0), c(0.3, 0.7), c("gained_candidate", "decreased_usage"), c("low", "high"),
+      control_samples = c(0, 2)
+    ),
+    only_withheld = gene(
+      "only_withheld", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.0, 1.0), c(0.3, 0.7), c("gained_candidate", "none"), c("low", "high"),
+      control_samples = c(0, 2)
+    ),
+    # Withheld also for lack of significance, or in an exploratory comparison.
+    weak_withheld = gene(
+      "weak_withheld", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.0, 1.0), c(0.3, 0.7), c("gained_candidate", "decreased_usage"), c("low", "high"),
+      control_samples = c(0, 2), pac_fdr = c(0.5, 0.001)
+    ),
+    exploratory_withheld = gene(
+      "exploratory_withheld", "+", c(100, 500), c(intron, last), c(NA, "chr1:401-500"),
+      c(0.0, 1.0), c(0.3, 0.7), c("gained_candidate", "decreased_usage"), c("low", "high"),
+      control_samples = c(0, 2), exploratory = TRUE
     )
   )
   pacs <- do.call(rbind, unname(cases))
   patterns <- model$apa_patterns(pacs, pacs$coordinate, params)
   observed <- stats::setNames(patterns$apa_pattern, patterns$gene_id)
+  potential <- function(pattern) paste0(pattern, "_potential_internal_priming")
   expected <- c(
-    tanc2 = "intronic_gain", primed = "other", intronic_loss = "intronic_loss",
-    ale = "alternative_last_exon", shortening = "utr_shortening",
-    lengthening = "utr_lengthening", two_classes = "intronic_gain;utr_shortening",
-    candidate_only = "none", unscreened = "none", unfitted = "none", tie = "utr_lengthening",
-    all_lose = "intronic_gain", faint_exon = "none"
+    tanc2 = "intronic_gain", primed = potential("intronic_gain"),
+    intronic_loss = "intronic_loss", ale = "alternative_last_exon",
+    shortening = "utr_shortening", lengthening = "utr_lengthening",
+    two_classes = "intronic_gain;utr_shortening", candidate_only = "none",
+    unscreened = "none", unfitted = "none", tie = "utr_lengthening",
+    all_lose = "intronic_gain", faint_exon = "none",
+    flagged_loss = potential("intronic_loss"), flagged_ale = potential("alternative_last_exon"),
+    flagged_shortening = potential("utr_shortening"),
+    flagged_lengthening = potential("utr_lengthening"), both_sites = "intronic_gain",
+    mixed = paste0("intronic_gain;", potential("utr_shortening")),
+    withheld = potential("intronic_gain"), only_withheld = potential("intronic_gain"),
+    weak_withheld = "other", exploratory_withheld = "other"
   )
   check(
     identical(observed, expected),
     "patterns were ", paste(names(observed), observed, sep = "=", collapse = ", ")
   )
+  # Without withheld calls, a flagged gain that the flag alone withheld
+  # supports nothing, but a flagged PAC's confirmed call still does.
+  off <- model$apa_patterns(
+    pacs, pacs$coordinate, utils::modifyList(params, list(potential_internal_priming_withheld_calls = FALSE))
+  )
+  off <- stats::setNames(off$apa_pattern, off$gene_id)
+  check(
+    identical(off[c("withheld", "only_withheld", "primed")],
+      c(withheld = "other", only_withheld = "none", primed = potential("intronic_gain"))),
+    "without withheld calls: ", paste(names(off), off, sep = "=", collapse = ", ")
+  )
+  unset <- tryCatch(
+    model$apa_patterns(pacs, pacs$coordinate, params[names(params) != "potential_internal_priming_withheld_calls"]),
+    error = function(error) conditionMessage(error)
+  )
+  check(identical(unset, "potential_internal_priming_withheld_calls must be true or false."), unset)
   metric <- function(gene_id, column) patterns[[column]][patterns$gene_id == gene_id]
   near <- function(value, target) isTRUE(abs(value - target) < 1e-9)
   tanc2 <- cases$tanc2
@@ -1085,7 +1171,10 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
 
   # The fitted run's genes tables carry one valid pattern per gene.
   run <- require_run(run_a)
-  classes <- c(model$APA_PATTERN_CLASSES, "other", "none")
+  classes <- c(
+    model$APA_PATTERN_CLASSES, paste0(model$APA_PATTERN_CLASSES, model$POTENTIAL_INTERNAL_PRIMING),
+    "other", "none"
+  )
   for (comparison in c("T1_vs_C", "T2_vs_C")) {
     genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))
     parts <- strsplit(genes$apa_pattern, ";", fixed = TRUE)

@@ -33,7 +33,16 @@ def main(root: Path) -> None:
     discovery = pd.read_csv(root / "qc" / "pac_discovery.tsv", sep="\t").iloc[0]
     assert discovery["endpoint_model"] == "proximal_tag"
     assert int(discovery["accepted_pacs"]) == len(expected), discovery["accepted_pacs"]
-    assert int(discovery["rejected_candidates"]) == 0, discovery["rejected_candidates"]
+    # Only the designed artifacts are rejected: reads at an internal exon's
+    # donor, and reads inside an exon that spliced reads continue from.
+    wanted = pd.read_csv(FIXTURE / "expected_rejected.tsv", sep="\t")
+    rejected = pd.read_csv(root / "atlas" / "rejected_candidates.tsv.gz", sep="\t")
+    observed = list(rejected[["strand", "coordinate", "rejection_reason"]].itertuples(index=False))
+    assert observed == list(wanted.itertuples(index=False)), observed
+    assert int(discovery["rejected_candidates"]) == len(wanted), discovery["rejected_candidates"]
+    assert int(discovery["internal_exon_end_rejected"]) == 1
+    assert int(discovery["constitutive_readthrough_rejected"]) == 1
+    assert set(rejected["supporting_conditions"]) == {"DMSO;TreatmentA"}
     resolution_nt = int(discovery["minimum_resolvable_separation"])
     assert resolution_nt > 1, "a proximal-tag atlas cannot resolve single nucleotides"
     # Read ends scatter around one site each, so the kernel has one mode and
@@ -87,8 +96,9 @@ def main(root: Path) -> None:
         assert (table[sample_id] == table[f"{sample_id}_written"]).all(), sample_id
 
     tests = pd.read_csv(root / "statistics" / "TreatmentA_vs_DMSO.pacs.tsv.gz", sep="\t")
-    # Every multi-PAC gene is tested, and single-PAC genes cannot be.
-    tested = set(pacs.loc[pacs["design"] != "calibration", "pac_id"])
+    # Every multi-PAC gene is tested. Single-PAC genes, the calibration genes
+    # and the artifact hosts, cannot be.
+    tested = set(pacs.loc[~pacs["design"].isin(["calibration", "artifact_host"]), "pac_id"])
     assert set(tests["pac_id"]) == tested, sorted(set(tests["pac_id"]) ^ tested)
     tests = tests.merge(
         pacs[["pac_id", "design", "rank_from_distal"]], on="pac_id", validate="one_to_one"

@@ -326,8 +326,8 @@ the usual split between 3′ UTR APA, among tandem sites of a last exon, and
 upstream-region APA, at sites in introns or internal exons (Tian and Manley,
 2017). A gene gets a pattern only when it passes `gene_fdr`, and each pattern
 needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
-`decreased_usage`) on a PAC that is not low confidence, so internal-priming
-sites never make a pattern. The threshold is `min_abs_delta_pau`.
+`decreased_usage`) on a PAC that is not low confidence. The threshold is
+`min_abs_delta_pau`.
 
 | `apa_pattern` | When |
 |---|---|
@@ -335,11 +335,24 @@ sites never make a pattern. The threshold is `min_abs_delta_pau`.
 | `intronic_loss` | That share falls by at least the threshold, with a confirmed decrease at one of them. |
 | `alternative_last_exon` | One last exon gains and another loses at least the threshold of the gene's usage (`last_exon_switch`), each with a confirmed call in that direction. |
 | `utr_shortening`, `utr_lengthening` | In the gene's main last exon, the distal PAC's share of that exon (`delta_utr_distal_share`, the 3′-end counterpart of DaPars' PDUI) falls or rises by at least the threshold. A confirmed call must point the same way: for shortening, an increase at a more proximal PAC or a decrease at the distal one. |
-| `other` | The gene passes `gene_fdr` and has confirmed calls, but no pattern applies. |
+| `..._potential_internal_priming` | A pattern above that holds only once calls on PACs flagged for possible internal priming count, such as `intronic_gain_potential_internal_priming`. |
+| `other` | The gene passes `gene_fdr` and has calls, but no pattern applies. |
 | `none` | Anything else. |
 
 - **Several patterns:** a gene can have more than one, joined by `;`, such as
   `intronic_gain;utr_shortening`.
+- **Potential internal priming:** oligo-dT can prime on a genomic A-run, so a
+  flagged PAC's change may mark more RNA over the A-run rather than a new
+  cleavage site. 3′ tags can't tell the two apart.
+  - A pattern that only flagged PACs support takes the
+    `_potential_internal_priming` suffix and comes after every pattern
+    without it. A gene has at most one form of each pattern.
+  - With `potential_internal_priming_withheld_calls` (the default), a
+    flagged PAC's gain or loss that the flag alone withheld also counts:
+    classified with the flag lifted, it would be a confirmed `gained` or
+    `lost` call. So a flagged site that appears from nothing, such as a new
+    intronic site, can carry the pattern. Set it to `false` to count only
+    flagged PACs' confirmed calls.
 - **Shifts into or out of the last exon:** when a gene's usage also moves
   into or out of its main last exon, every PAC there moves the same way. So
   only calls in the other direction can show a UTR shift: after an intronic
@@ -418,7 +431,8 @@ treatments.
   - The distal PAC is the gene's most 3′ tested PAC in a last exon or
     downstream of the annotated end.
   - Points are colored by the gene's APA pattern, the first one when it has
-    several. They are filled when the distal PAC has a confirmed call.
+    several. They are filled when the distal PAC has a confirmed call, and
+    drawn as diamonds when only flagged PACs support the pattern.
   - `direction` in `CONDITION_vs_CONTROL.distal_usage.tsv.gz` is that PAC's
     own call: `distal_up`, `distal_down`, their `_candidate` forms, or
     `none`. A distal PAC can fall because usage moved to a tandem site or
@@ -431,11 +445,14 @@ treatments.
   polyadenylation shows as intron gains.
 - **`event_counts`**: PAC events, candidates in lighter shades, and gene
   events from the `.genes` tables, for every comparison. A lower panel counts
-  genes per APA pattern; a gene with two patterns counts in both.
+  genes per APA pattern; a gene with two patterns counts in both. Patterns
+  that only flagged PACs support are counted in a panel of their own.
 - **`apa_pattern_grid`**: genes with an APA pattern in two or more
   comparisons, as rows, against the comparisons.
-  - Each cell shows the gene's first pattern there, and a + marks two or more.
-    White is no pattern, and grey is a gene the comparison didn't test.
+  - Each cell shows the gene's first pattern there. A + marks two or more,
+    and a * a pattern that only flagged PACs support, drawn in its pattern's
+    color. White is no pattern, and grey is a gene the comparison didn't
+    test.
   - At most 50 genes are drawn: those shared by the most comparisons first,
     then by best gene FDR.
   - `apa_patterns_by_comparison.tsv.gz` lists every tested gene in that
@@ -503,8 +520,22 @@ the same image or environment.
      resolution.
    - **Proximal-tag** libraries find peaks of the kernel-matched signal, and
      report each PAC with its resolution interval rather than as a cleavage
-     site. Candidates inside exon blocks that are spliced onward in every
-     condition are rejected as readthrough.
+     site. Two filters then reject reads that end inside a spliced transcript:
+     - **Internal exon ends** (`internal_exon_end_filter`): reads that cross a
+       splice junction, but whose short overhang into the next exon isn't
+       aligned, end at the donor. A candidate where such a pile would peak,
+       within one 25-nt bin of the annotated donor plus the kernel's peak
+       offset, is rejected. Donors within two bins of any transcript's end
+       are left alone. A real site whose reads pile up that close to an
+       internal donor is rejected too.
+     - **Readthrough** (`constitutive_readthrough_filter`): a candidate whose
+       reads end in an exon block that reads splice onward from is rejected
+       when every condition that supports it splices onward, with
+       `constitutive_readthrough_min_junction_count` reads pooled over that
+       condition's replicates. A supporting condition without them keeps the
+       candidate. The cost: a real site used by a minority of transcripts is
+       rejected too when its reads pile up inside such an exon, within about a
+       read length of the donor.
 6. **Annotate.** Genes, last exons, poly(A) signals, internal-priming flags,
    and known-PAC matches are added, and the atlas is frozen and checksummed.
 7. **Count.** Each sample's read ends are assigned to the frozen atlas, giving

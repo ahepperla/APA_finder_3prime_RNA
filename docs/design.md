@@ -230,9 +230,9 @@ known_pac_match_radius: 12
 proximal_kernel_overlap_threshold: 0.50
 proximal_assignment_likelihood_ratio: 3.0
 proximal_bin_size: 25
+internal_exon_end_filter: true
 constitutive_readthrough_filter: true
 constitutive_readthrough_min_junction_count: 2
-constitutive_readthrough_min_replicate_support: all
 
 max_downstream_distance: 5000
 pas_scan_upstream_far: 50
@@ -261,6 +261,7 @@ random_seed: 1729
 event_min_treatment_pau: 0.05
 event_max_control_pau: 0.01
 event_min_supporting_samples: 2
+potential_internal_priming_withheld_calls: true
 motif_preference_min_genes: 50
 motif_kmer_length: 6
 run_kmer_enrichment: true
@@ -566,8 +567,8 @@ that scan.
 Build one atlas from all samples. Find candidates in every sample's read ends
 pooled, without CPM, the treatment–control contrasts, effect sizes, or PAS
 motifs. Condition labels are used only to require replicate support within
-the condition that supports a candidate, and in the per-condition readthrough
-rule below.
+the condition that supports a candidate, and in the readthrough rule below,
+which asks each condition that supports a candidate.
 
 Use separate discovery strategies:
 
@@ -619,6 +620,45 @@ resolution region, of width `resolution_nt` around the representative, as the
 PAC's `start` and `end`. Never report unresolved
 maxima as independently quantified PACs or interpret the representative as a
 nucleotide-resolution cleavage site.
+
+#### Proximal-Tag Filters
+
+Reads that end inside a spliced transcript are not transcript ends. Two
+filters reject the candidates they make, before annotation, and record each
+in `rejected_candidates.tsv.gz` with its reason. Both locate a candidate's
+read pile: a sharp pile of read ends peaks `shift` bins downstream of it,
+where `shift` is the binned kernel's first bin plus the offset of its highest
+bin. So a candidate's pile lies `shift` bins upstream of it.
+
+- **Internal exon ends** (`internal_exon_end_filter`): reads that cross a
+  splice junction, but whose short overhang into the next exon is not
+  aligned, end at the donor.
+  - The donors are the 3' ends, in transcript orientation, of every exon a
+    transcript of the annotation splices onward from. Genes without
+    transcript IDs have none.
+  - A candidate within one bin of a donor's bin plus `shift` is rejected as
+    `internal_exon_end`. That reaches one and a half bins from the donor, so
+    donors within two bins of any refined terminal exon's 3' end on the
+    strand are left out, and a real end there is never rejected.
+  - The cost: a real site whose reads pile up that close to an internal
+    donor is rejected too, whatever its reads show.
+- **Readthrough** (`constitutive_readthrough_filter`): continuation reads are
+  direct CIGAR splices out of an aligned exon block that holds the pile,
+  within one bin of either end of the block, on either strand.
+  - Discovery records each candidate's supporting conditions, those whose
+    replicates pass the support rule, as `supporting_conditions`.
+  - A candidate is rejected as `constitutive_readthrough` when, in every
+    supporting condition, the continuation reads pooled over that
+    condition's samples reach `constitutive_readthrough_min_junction_count`.
+  - A supporting condition without them keeps the candidate, since the exon
+    may end there in that condition. Conditions that do not support the
+    candidate are not consulted, so their coverage cannot protect it.
+  - The cost: a real site is rejected too when its read pile lies inside an
+    exon that every supporting condition splices onward from, within an
+    aligned block's reach of the donor, about one read length. That covers
+    an internal-exon site used by a minority of transcripts, and a site just
+    past the donor when the kernel peaks far downstream of the reads. Sites
+    further into the intron are untouched.
 
 For `proximal_tag`, known transcript ends may be used for calibration and
 annotation, but PAS motif sequence must not be used to select or reposition
@@ -1031,6 +1071,12 @@ at sites in introns or internal exons (Tian and Manley, 2017).
 **Gating calls.**
 - A gating call is a confirmed call (`gained`, `increased_usage`, `lost`,
   `decreased_usage`) on a PAC that is not low confidence.
+- A flagged call is a confirmed call on a PAC flagged for possible internal
+  priming. With `potential_internal_priming_withheld_calls`, a flagged PAC's
+  `gained_candidate` or `lost_candidate` counts too when classifying it with
+  the flag lifted makes it `gained` or `lost`: the flag alone withheld it.
+- Ambiguous PACs are never tested, so tested low-confidence PACs are exactly
+  the flagged ones.
 - The threshold is `min_abs_delta_pau`, with 1e-9 of slack for sums of
   fitted proportions.
 
@@ -1047,7 +1093,7 @@ at sites in introns or internal exons (Tian and Manley, 2017).
     `event_min_treatment_pau` of the gene's usage there in both groups.
 
 **Patterns.** A gene is classified when it passes `gene_fdr`, has fitted
-usage, and has a confirmed call.
+usage, and has a confirmed call or a counted withheld one.
 - `intronic_gain`: `delta_intronic_share` of at least the threshold, and a
   gating increase in the upstream region. `intronic_loss` is the mirror
   image.
@@ -1062,9 +1108,12 @@ usage, and has a confirmed call.
   upstream-region or last-exon shift of at least the threshold, all of the
   main last exon's PACs move one way. Only calls against that movement count
   then: increases if the exon's share falls, decreases if it rises.
-- `apa_pattern` joins the patterns found, in this order, with `;`. It is
-  `other` for a classified gene with no pattern, and `none` for every other
-  gene.
+- **Potential internal priming:** a pattern that holds only once flagged
+  calls also count takes the suffix `_potential_internal_priming`. Every rule
+  only gains patterns from more calls, so a gene has at most one form of each.
+- `apa_pattern` joins the patterns found with `;`: the gated ones in this
+  order, then the potential ones in the same order. It is `other` for a
+  classified gene with no pattern, and `none` for every other gene.
 
 When detection and effect-size requirements for `gained` or `lost` pass but a
 stable PAC-level p-value cannot be obtained, report `gained_candidate` or
@@ -1208,8 +1257,9 @@ make no calls of their own. For each comparison:
   a last exon or downstream, with its fitted usage in the control against
   the treatment. `direction` is that PAC's own confirmed call (`distal_up`,
   `distal_down`, their candidates, or `none`), so it carries stageR's error
-  control. Points are colored by the gene's APA pattern and filled when the
-  distal PAC has a call. Up to 20 genes whose distal PAC rose and 20 whose
+  control. Points are colored by the gene's APA pattern, filled when the
+  distal PAC has a call, and drawn as diamonds when only flagged PACs support
+  the pattern. Up to 20 genes whose distal PAC rose and 20 whose
   distal PAC fell, the largest changes, are labeled by gene name.
   `CONDITION_vs_CONTROL.distal_usage.tsv.gz` lists the genes.
 - **site classes:** confirmed gains and losses by assignment class, so
@@ -1218,11 +1268,14 @@ make no calls of their own. For each comparison:
 Across comparisons:
 
 - **event counts:** `event_counts` shows the PAC and gene events above the
-  genes per APA pattern.
+  genes per APA pattern, with the patterns that only flagged PACs support in
+  a panel of their own. These keep their pattern's color: a lighter tint of
+  intronic gain would match intronic loss.
 - **effect against coverage:** `effect_vs_coverage` shows each PAC's change in
   PAU against the reads at its gene in the less-covered group.
 - **shared APA patterns:** `apa_pattern_grid` draws genes with an APA pattern
-  in at least two comparisons against the comparisons.
+  in at least two comparisons against the comparisons. A `*` marks a cell
+  whose pattern only flagged PACs support.
   - At most 50 genes are drawn, most shared first, then by best gene FDR.
   - `apa_patterns_by_comparison.tsv.gz` has every tested gene.
 - **concordance:** `concordance` plots, for each pair of comparisons, each
@@ -1462,6 +1515,13 @@ Cover:
   single-exon ends, and last exons merged by overlap, on both strands;
 - APA patterns from region shares and direction-matched calls, including
   low-confidence PACs that cannot gate and ties between last exons;
+- each pattern's potential-internal-priming form, confident patterns taking
+  precedence, and withheld gains counted only when significant, not
+  exploratory, and enabled;
+- proximal-tag filters: internal exon donors on both strands, kept clear of
+  transcript ends, and the kernel shift to a candidate's read pile; the
+  readthrough rule pooled over each supporting condition, and inclusive at
+  the donor on both strands;
 - figure data: the distal PAC on both strands, site-class and event counts,
   and dropped p-values and coverage rows;
 - figures across comparisons: the shared-pattern grid's order and 50-gene

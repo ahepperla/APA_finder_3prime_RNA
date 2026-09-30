@@ -294,14 +294,11 @@ class FeatureIndex:
         self.bin_size = bin_size
         genes: dict[tuple[str, str, str], GenomicFeature] = {}
         exons: list[GenomicFeature] = []
-        transcript_exons: dict[tuple[str, str, str], list[GenomicFeature]] = defaultdict(list)
         for feature in features:
             if feature.feature_type == "gene":
                 genes[(feature.contig, feature.strand, feature.gene_id)] = feature
             if feature.feature_type == "exon":
                 exons.append(feature)
-                key = (feature.contig, feature.strand, feature.transcript_id or feature.gene_id)
-                transcript_exons[key].append(feature)
         if not genes:
             # Without gene records, each gene spans its exons.
             gene_parts: dict[tuple[str, str, str], list[GenomicFeature]] = defaultdict(list)
@@ -318,18 +315,12 @@ class FeatureIndex:
                     gene_id=first.gene_id,
                     gene_name=first.gene_name,
                 )
-        transcripts_by_gene: dict[tuple[str, str, str], list[list[GenomicFeature]]] = (
-            defaultdict(list)
-        )
-        for transcript in transcript_exons.values():
-            first = transcript[0]
-            transcripts_by_gene[(first.contig, first.strand, first.gene_id)].append(transcript)
         self.terminal_exons: set[tuple[str, str, int, int, str]] = set()
         # Each terminal exon's last-exon cluster, and each gene's 3'-most
         # cluster, as 1-based loci.
         self.last_exon_of: dict[tuple[str, str, int, int, str], str] = {}
         self.three_prime_last_exon: dict[tuple[str, str, str], str] = {}
-        for gene_key, transcripts in transcripts_by_gene.items():
+        for gene_key, transcripts in transcripts_by_gene(exons).items():
             terminals = gene_terminal_exons(transcripts)
             clusters = last_exon_clusters(terminals)
             for exon in terminals:
@@ -438,6 +429,68 @@ class FeatureIndex:
                 upper = bisect_right(starts, starts[lower])
                 return [("downstream", gene) for gene in self.genes_by_start[key][lower:upper]]
         return []
+
+
+def transcripts_by_gene(
+    exons: Iterable[GenomicFeature],
+) -> dict[tuple[str, str, str], list[list[GenomicFeature]]]:
+    """Each gene's transcripts as lists of exons, keyed by (contig, strand,
+    gene_id), in annotation order. Exons without a transcript ID form one
+    transcript per gene."""
+    transcript_exons: dict[tuple[str, str, str], list[GenomicFeature]] = defaultdict(list)
+    for exon in exons:
+        transcript_exons[(exon.contig, exon.strand, exon.transcript_id or exon.gene_id)].append(
+            exon
+        )
+    grouped: dict[tuple[str, str, str], list[list[GenomicFeature]]] = defaultdict(list)
+    for transcript in transcript_exons.values():
+        first = transcript[0]
+        grouped[(first.contig, first.strand, first.gene_id)].append(transcript)
+    return grouped
+
+
+def three_prime_end(exon: GenomicFeature) -> int:
+    """An exon's 3' end in transcript orientation, as an interbase coordinate:
+    its end on the plus strand, its start on the minus strand."""
+    return exon.end if exon.strand == "+" else exon.start
+
+
+def internal_exon_donors(
+    exons: Iterable[GenomicFeature],
+    tolerance: int,
+) -> dict[tuple[str, str], list[int]]:
+    """Each strand's internal exon 3' ends, sorted: the 3' end of every exon
+    that a transcript splices onward from.
+
+    A donor within ``tolerance`` of a terminal exon's 3' end, in any gene on
+    the strand, is left out, since a transcript can end there. Genes without
+    transcript IDs have no donors: their exons form one pseudo-transcript, so
+    alternative last exons would look spliced onward.
+    """
+    donors: dict[tuple[str, str], set[int]] = defaultdict(set)
+    ends: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for (contig, strand, _), transcripts in transcripts_by_gene(exons).items():
+        ends[(contig, strand)].extend(
+            three_prime_end(exon) for exon in gene_terminal_exons(transcripts)
+        )
+        if any(not exon.transcript_id for transcript in transcripts for exon in transcript):
+            continue
+        for transcript in transcripts:
+            final = final_exon(transcript)
+            donors[(contig, strand)].update(
+                three_prime_end(exon) for exon in transcript if exon is not final
+            )
+    result: dict[tuple[str, str], list[int]] = {}
+    for key, values in donors.items():
+        terminal = sorted(ends[key])
+        kept = [
+            donor
+            for donor in sorted(values)
+            if bisect_right(terminal, donor + tolerance) == bisect_left(terminal, donor - tolerance)
+        ]
+        if kept:
+            result[key] = kept
+    return result
 
 
 def final_exon(transcript: list[GenomicFeature]) -> GenomicFeature:

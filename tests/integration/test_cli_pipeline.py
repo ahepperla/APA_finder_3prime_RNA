@@ -101,6 +101,7 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path, resolved_
     )
     kernel = tmp_path / "kernel.tsv"
     kernel.write_text("offset\tweight\n10\t1.0\n")
+    annotation = single_exon_annotation(tmp_path)
     accepted = tmp_path / "accepted.tsv"
     rejected = tmp_path / "rejected.tsv"
     qc = tmp_path / "qc.tsv"
@@ -113,6 +114,8 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path, resolved_
                 *evidence_paths,
                 "--splice-continuations",
                 *splice_continuation_paths,
+                "--annotation",
+                str(annotation),
                 "--samples",
                 str(samples),
                 "--resolution",
@@ -141,6 +144,9 @@ def test_proximal_cluster_cli_streams_parquet_evidence(tmp_path: Path, resolved_
     assert qc_rows[0]["support_requirement"] == (
         "0.75 of samples within one condition, rounded up"
     )
+    assert qc_rows[0]["internal_exon_end_filter_enabled"] == "True"
+    assert qc_rows[0]["internal_exon_end_rejected"] == "0"
+    assert [row["supporting_conditions"] for row in rows] == ["treatment", "treatment"]
 
 
 def test_proximal_cluster_cli_rejects_constitutive_readthrough(
@@ -181,7 +187,6 @@ def test_proximal_cluster_cli_rejects_constitutive_readthrough(
         pac_min_supporting_samples=1,
         proximal_bin_size=1,
         constitutive_readthrough_min_junction_count=2,
-        constitutive_readthrough_min_replicate_support="all",
     )
     resolution = tmp_path / "resolution.json"
     resolution.write_text('{"endpoint_model":"proximal_tag","evidence_source":"read_3p"}\n')
@@ -195,6 +200,7 @@ def test_proximal_cluster_cli_rejects_constitutive_readthrough(
     )
     kernel = tmp_path / "kernel.tsv"
     kernel.write_text("offset\tweight\n10\t1.0\n")
+    annotation = single_exon_annotation(tmp_path)
     accepted = tmp_path / "accepted.tsv"
     rejected = tmp_path / "rejected.tsv"
     qc = tmp_path / "qc.tsv"
@@ -207,6 +213,8 @@ def test_proximal_cluster_cli_rejects_constitutive_readthrough(
                 *evidence_paths,
                 "--splice-continuations",
                 *continuation_paths,
+                "--annotation",
+                str(annotation),
                 "--samples",
                 str(samples),
                 "--resolution",
@@ -229,7 +237,120 @@ def test_proximal_cluster_cli_rejects_constitutive_readthrough(
     assert [row["rejection_reason"] for row in read_tsv(rejected)] == [
         "constitutive_readthrough"
     ]
+    assert read_tsv(rejected)[0]["supporting_conditions"] == "control;treatment"
     assert read_tsv(qc)[0]["constitutive_readthrough_rejected"] == "1"
+
+
+def single_exon_annotation(directory: Path) -> Path:
+    """An annotation whose only gene has no internal exon."""
+    path = directory / "single_exon.gtf"
+    path.write_text('chr1\ttest\texon\t1\t1000\t.\t+\t.\tgene_id "g"; transcript_id "t1";\n')
+    return path
+
+
+TWO_EXON_GENE = (
+    'chr1\ttest\texon\t1\t100\t.\t+\t.\tgene_id "g"; transcript_id "t1";\n'
+    'chr1\ttest\texon\t201\t300\t.\t+\t.\tgene_id "g"; transcript_id "t1";\n'
+)
+
+
+def exon_end_cluster(
+    tmp_path: Path, resolved_params, annotation: str | None, **params: object
+) -> tuple[list[str], dict[str, str], list[dict[str, str]], list[dict[str, str]]]:
+    """Cluster reads piled at exon 1's donor (interbase 100) and near the end
+    of exon 2 of TWO_EXON_GENE. The kernel peaks 10 nt downstream, so the
+    donor's pile makes a candidate at 110. Returns the arguments, the QC row,
+    and the accepted and rejected rows."""
+    evidence_paths = []
+    continuation_paths = []
+    for sample_id in ("a", "b"):
+        observations = [
+            EvidenceObservation(sample_id, "chr1", "+", 100, 3),
+            EvidenceObservation(sample_id, "chr1", "+", 290, 3),
+        ]
+        parquet = tmp_path / f"{sample_id}.parquet"
+        write_evidence(observations, tmp_path / f"{sample_id}.tsv.gz", parquet)
+        evidence_paths.append(str(parquet))
+        continuation_path = tmp_path / f"{sample_id}.splice_continuations.tsv.gz"
+        write_splice_continuations([], continuation_path)
+        continuation_paths.append(str(continuation_path))
+    parameter_file = tmp_path / "resolved_params.yaml"
+    resolved_params(
+        parameter_file,
+        pac_min_total_count=1,
+        pac_min_sample_count=1,
+        pac_min_supporting_samples=1,
+        proximal_bin_size=1,
+        **params,
+    )
+    resolution = tmp_path / "resolution.json"
+    resolution.write_text('{"endpoint_model":"proximal_tag","evidence_source":"read_3p"}\n')
+    samples = tmp_path / "samples.tsv"
+    samples.write_text("sample_id\tcondition\na\ttreatment\nb\ttreatment\n")
+    kernel = tmp_path / "kernel.tsv"
+    kernel.write_text("offset\tweight\n10\t1.0\n")
+    accepted = tmp_path / "accepted.tsv"
+    rejected = tmp_path / "rejected.tsv"
+    qc = tmp_path / "qc.tsv"
+    arguments = ["cluster", "--evidence", *evidence_paths]
+    arguments += ["--splice-continuations", *continuation_paths]
+    if annotation is not None:
+        path = tmp_path / "genes.gtf"
+        path.write_text(annotation)
+        arguments += ["--annotation", str(path)]
+    arguments += ["--samples", str(samples), "--resolution", str(resolution)]
+    arguments += ["--kernel", str(kernel), "--params", str(parameter_file)]
+    arguments += ["--accepted", str(accepted), "--rejected", str(rejected), "--qc", str(qc)]
+    assert main(arguments) == 0
+    return arguments, read_tsv(qc)[0], read_tsv(accepted), read_tsv(rejected)
+
+
+def test_proximal_cluster_cli_rejects_internal_exon_ends(
+    tmp_path: Path, resolved_params, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments, summary, accepted, rejected = exon_end_cluster(
+        tmp_path, resolved_params, TWO_EXON_GENE
+    )
+    assert [int(row["coordinate"]) for row in accepted] == [300]
+    assert [(int(row["coordinate"]), row["rejection_reason"]) for row in rejected] == [
+        (110, "internal_exon_end")
+    ]
+    assert summary["internal_exon_end_filter_enabled"] == "True"
+    assert summary["accepted_before_internal_exon_end_filter"] == "2"
+    assert summary["internal_exon_end_rejected"] == "1"
+    assert summary["accepted_before_constitutive_readthrough_filter"] == "1"
+    # Without the annotation the filter cannot run.
+    position = arguments.index("--annotation")
+    del arguments[position : position + 2]
+    with pytest.raises(SystemExit):
+        main(arguments)
+    assert "--annotation is required" in capsys.readouterr().err
+
+
+def test_proximal_cluster_cli_keeps_a_donor_two_bins_from_a_transcript_end(
+    tmp_path: Path, resolved_params
+) -> None:
+    # Another gene ends 2 nt past the donor, within two 1-nt bins, so a
+    # transcript may end there and the donor is left out.
+    nearby = TWO_EXON_GENE + (
+        'chr1\ttest\texon\t51\t102\t.\t+\t.\tgene_id "h"; transcript_id "h1";\n'
+    )
+    _, summary, accepted, rejected = exon_end_cluster(tmp_path, resolved_params, nearby)
+    assert [int(row["coordinate"]) for row in accepted] == [110, 300]
+    assert rejected == []
+    assert summary["internal_exon_end_rejected"] == "0"
+
+
+def test_proximal_cluster_cli_runs_without_an_annotation_when_the_filter_is_off(
+    tmp_path: Path, resolved_params
+) -> None:
+    _, summary, accepted, rejected = exon_end_cluster(
+        tmp_path, resolved_params, None, internal_exon_end_filter=False
+    )
+    assert [int(row["coordinate"]) for row in accepted] == [110, 300]
+    assert rejected == []
+    assert summary["internal_exon_end_filter_enabled"] == "False"
+    assert summary["internal_exon_end_rejected"] == "0"
 
 
 def test_merge_comparison_family_statistics(tmp_path: Path) -> None:

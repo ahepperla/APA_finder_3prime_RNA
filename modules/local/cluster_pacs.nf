@@ -8,10 +8,14 @@ process CLUSTER_PACS {
     input:
     path evidence_tables
     path splice_continuations
+    path annotation
     path normalized_samples
     path run_resolution
     path kernel
     path resolved_params
+    // Staged only so that -resume reruns discovery, and every step after it,
+    // when the discovery code changes. Nextflow does not track the package.
+    path discovery_code, stageAs: 'discovery-code/*'
 
     output:
     path 'accepted_candidates.tsv.gz', emit: accepted
@@ -23,6 +27,7 @@ process CLUSTER_PACS {
     pacusage cluster \
         --evidence ${evidence_tables.join(' ')} \
         --splice-continuations ${splice_continuations.join(' ')} \
+        --annotation '${annotation}' \
         --samples '${normalized_samples}' \
         --resolution '${run_resolution}' \
         --kernel '${kernel}' \

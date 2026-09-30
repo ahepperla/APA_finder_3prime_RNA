@@ -2,7 +2,8 @@
 
 Candidates come from every sample's read ends pooled, without contrasts or
 motifs. Condition labels are used only to require replicate support within the
-condition that supports a candidate, and in the per-condition readthrough rule.
+condition that supports a candidate, and in the readthrough rule, which asks
+each condition that supports a candidate.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import struct
 import tempfile
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, replace
 from itertools import groupby
 
@@ -88,7 +89,7 @@ def cluster_exact_boundaries(
                 for sample_id, count in coordinate_counts[member].items():
                     per_sample[sample_id] += count
             total = sum(per_sample.values())
-            total_supporting, supporting, supporting_condition, support_pass = (
+            total_supporting, supporting, supporting_condition, support_pass, passing = (
                 _condition_support(
                     per_sample,
                     minimum_sample_count,
@@ -160,6 +161,7 @@ def cluster_exact_boundaries(
                 resolution_nt=1,
                 total_supporting_samples=total_supporting,
                 supporting_condition=supporting_condition,
+                supporting_conditions=passing,
             )
             (accepted if status != "rejected" else rejected).append(candidate)
     return accepted, rejected
@@ -250,7 +252,7 @@ def _condition_support(
     minimum_sample_count: int,
     sample_conditions: Mapping[str, str],
     minimum_supporting_samples: float,
-) -> tuple[int, int, str, bool]:
+) -> tuple[int, int, str, bool, tuple[str, ...]]:
     qualifying = [
         sample_id
         for sample_id, count in per_sample.items()
@@ -265,13 +267,14 @@ def _condition_support(
         )
     by_condition = Counter(sample_conditions[sample_id] for sample_id in qualifying)
     if not by_condition:
-        return 0, 0, "", False
+        return 0, 0, "", False, ()
     condition_sizes = Counter(sample_conditions.values())
     fractional = minimum_supporting_samples < 1
     supporting_condition = ""
     supporting = 0
     support_pass = False
     best_score = -1.0
+    passing: list[str] = []
     for condition in sorted(condition_sizes):
         condition_support = by_condition[condition]
         required = _required_supporting_samples(
@@ -279,6 +282,8 @@ def _condition_support(
             condition_sizes[condition],
         )
         condition_pass = condition_support >= required
+        if condition_pass and condition_support > 0:
+            passing.append(condition)
         score = (
             condition_support / condition_sizes[condition]
             if fractional
@@ -291,7 +296,7 @@ def _condition_support(
             supporting = condition_support
             support_pass = condition_pass
             best_score = score
-    return total_supporting, supporting, supporting_condition, support_pass
+    return total_supporting, supporting, supporting_condition, support_pass, tuple(passing)
 
 
 def _required_supporting_samples(threshold: float, condition_size: int) -> int:
@@ -323,12 +328,8 @@ def discover_proximal_pacs(
     nonzero = np.flatnonzero(kernel > 0)
     if not len(nonzero):
         raise PacusageError("The calibration kernel contains no positive weights.")
-    resolution = minimum_resolvable_separation(kernel, overlap_threshold)
-    effective_bin_size = min(bin_size, max(1, resolution))
-    binned_kernel, kernel_minimum_bin = _bin_kernel(
-        kernel,
-        kernel_minimum_offset,
-        effective_bin_size,
+    resolution, effective_bin_size, binned_kernel, kernel_minimum_bin = _proximal_grid(
+        kernel, kernel_minimum_offset, overlap_threshold, bin_size
     )
     kernel_minimum_nonzero = kernel_minimum_offset + int(nonzero[0])
     kernel_maximum_nonzero = kernel_minimum_offset + int(nonzero[-1])
@@ -371,18 +372,93 @@ def discover_proximal_pacs(
     return accepted, rejected, resolution
 
 
+def _proximal_grid(
+    kernel: np.ndarray,
+    kernel_minimum_offset: int,
+    overlap_threshold: float,
+    bin_size: int,
+) -> tuple[int, int, np.ndarray, int]:
+    """The resolution, the discovery grid's bin size, and the binned kernel
+    with its first bin."""
+    resolution = minimum_resolvable_separation(kernel, overlap_threshold)
+    effective_bin_size = min(bin_size, max(1, resolution))
+    binned_kernel, kernel_minimum_bin = _bin_kernel(
+        kernel,
+        kernel_minimum_offset,
+        effective_bin_size,
+    )
+    return resolution, effective_bin_size, binned_kernel, kernel_minimum_bin
+
+
+def proximal_pile_shift(
+    kernel: np.ndarray,
+    kernel_minimum_offset: int,
+    overlap_threshold: float,
+    bin_size: int = 25,
+) -> tuple[int, int]:
+    """The discovery grid's bin size, and how many bins downstream of a sharp
+    pile of read ends its peak lands: a pile convolved with the binned kernel
+    peaks at the kernel's highest bin."""
+    _, effective_bin_size, binned_kernel, kernel_minimum_bin = _proximal_grid(
+        kernel, kernel_minimum_offset, overlap_threshold, bin_size
+    )
+    return effective_bin_size, kernel_minimum_bin + int(np.argmax(binned_kernel))
+
+
+def filter_internal_exon_ends(
+    candidates: Iterable[PacCandidate],
+    donors: Mapping[tuple[str, str], Sequence[int]],
+    shift_bins: int,
+    bin_size: int,
+) -> tuple[list[PacCandidate], list[PacCandidate]]:
+    """Reject proximal candidates made by read ends at an internal exon's 3' end.
+
+    Reads that cross a splice junction, but whose short overhang into the next
+    exon is not aligned, end at the donor. Their pile peaks ``shift_bins``
+    downstream of the donor's bin, and a candidate within one bin of that
+    position is rejected.
+    """
+    expected = {
+        key: sorted(
+            _nearest_bin(_oriented_coordinate(donor, key[1]), bin_size) + shift_bins
+            for donor in values
+        )
+        for key, values in donors.items()
+    }
+    accepted: list[PacCandidate] = []
+    rejected: list[PacCandidate] = []
+    for candidate in candidates:
+        bins = expected.get((candidate.contig, candidate.strand), [])
+        position = _nearest_bin(
+            _oriented_coordinate(candidate.coordinate, candidate.strand), bin_size
+        )
+        if bisect_right(bins, position + 1) > bisect_left(bins, position - 1):
+            rejected.append(
+                replace(candidate, status="rejected", rejection_reason="internal_exon_end")
+            )
+        else:
+            accepted.append(candidate)
+    return accepted, rejected
+
+
 def filter_constitutive_readthrough(
     candidates: Iterable[PacCandidate],
     continuations: Iterable[SpliceContinuation],
     sample_conditions: Mapping[str, str],
     minimum_junction_count: int,
-    minimum_replicate_support: float | str,
+    shift_bins: int,
+    bin_size: int,
 ) -> tuple[list[PacCandidate], list[PacCandidate]]:
-    """Reject proximal candidates in exon blocks continued in every condition.
+    """Reject proximal candidates whose reads end inside an exon spliced onward.
 
-    Continuation is assessed only from immediate exon-to-next-exon CIGAR edges.
-    A condition must independently meet the replicate-support threshold, so a
-    condition without consistent continuation protects a candidate.
+    A candidate's reads pile up ``shift_bins`` upstream of it. Continuation
+    reads are direct CIGAR splices out of an exon block that holds the pile,
+    within one bin of either end of the block, on either strand. A candidate
+    is rejected when, in every condition whose replicates support it, the
+    continuation reads pooled over that condition's samples reach
+    ``minimum_junction_count``. A supporting condition without them keeps the
+    candidate; conditions that do not support it are not consulted, so their
+    coverage cannot protect it.
     """
     candidates = list(candidates)
     continuations = list(continuations)
@@ -399,13 +475,6 @@ def filter_constitutive_readthrough(
     condition_samples: defaultdict[str, list[str]] = defaultdict(list)
     for sample_id, condition in sample_conditions.items():
         condition_samples[condition].append(sample_id)
-    required_by_condition = {
-        condition: _required_constitutive_readthrough_replicates(
-            minimum_replicate_support,
-            len(sample_ids),
-        )
-        for condition, sample_ids in condition_samples.items()
-    }
 
     block_support: dict[
         tuple[str, str], dict[tuple[int, int], Counter[str]]
@@ -430,41 +499,38 @@ def filter_constitutive_readthrough(
         supports_by_block = block_support.get(key)
         if not supports_by_block:
             continue
+        strand = key[1]
         blocks = sorted(
+            (start, end, counts) for (start, end), counts in supports_by_block.items()
+        )
+        # Each candidate's read pile, in genomic coordinates, in increasing order.
+        piles = sorted(
             (
-                upstream_start,
-                upstream_end,
-                counts,
+                _genomic_coordinate(
+                    _oriented_coordinate(candidates[index].coordinate, strand)
+                    - shift_bins * bin_size,
+                    strand,
+                ),
+                index,
             )
-            for (upstream_start, upstream_end), counts in supports_by_block.items()
+            for index in indexes
         )
         active: list[tuple[int, Counter[str]]] = []
         next_block = 0
-        last_coordinate: int | None = None
-        last_support: Counter[str] = Counter()
-        for index in sorted(indexes, key=lambda value: candidates[value].coordinate):
-            coordinate = candidates[index].coordinate
-            if coordinate != last_coordinate:
-                while next_block < len(blocks) and blocks[next_block][0] <= coordinate:
-                    _, upstream_end, counts = blocks[next_block]
-                    active.append((upstream_end, counts))
-                    next_block += 1
-                active = [
-                    (upstream_end, counts)
-                    for upstream_end, counts in active
-                    if coordinate < upstream_end
-                ]
-                last_support = Counter()
-                for _, counts in active:
-                    last_support.update(counts)
-                last_coordinate = coordinate
-            if all(
-                sum(
-                    last_support.get(sample_id, 0) >= minimum_junction_count
-                    for sample_id in sample_ids
-                )
-                >= required_by_condition[condition]
-                for condition, sample_ids in condition_samples.items()
+        for pile, index in piles:
+            while next_block < len(blocks) and blocks[next_block][0] <= pile + bin_size:
+                _, end, counts = blocks[next_block]
+                active.append((end, counts))
+                next_block += 1
+            active = [(end, counts) for end, counts in active if end >= pile - bin_size]
+            support: Counter[str] = Counter()
+            for _, counts in active:
+                support.update(counts)
+            conditions = candidates[index].supporting_conditions
+            if conditions and all(
+                sum(support.get(sample_id, 0) for sample_id in condition_samples[condition])
+                >= minimum_junction_count
+                for condition in conditions
             ):
                 rejected_indexes.add(index)
 
@@ -482,15 +548,6 @@ def filter_constitutive_readthrough(
         else:
             accepted.append(candidate)
     return accepted, rejected
-
-
-def _required_constitutive_readthrough_replicates(
-    threshold: float | str,
-    condition_size: int,
-) -> int:
-    if threshold == "all":
-        return condition_size
-    return math.ceil(threshold * condition_size) if threshold < 1 else int(threshold)
 
 
 def _discover_proximal_group(
@@ -561,7 +618,7 @@ def _discover_proximal_group(
                 if selected is not None:
                     counts[selected, sample_index] += count
 
-    total_supporting, condition_support, supporting_conditions, support_passes = (
+    total_supporting, condition_support, supporting_conditions, support_passes, passing = (
         _condition_support_arrays(
             counts,
             sample_indexes,
@@ -604,6 +661,7 @@ def _discover_proximal_group(
             resolution_nt=resolution,
             total_supporting_samples=int(total_supporting[index]),
             supporting_condition=str(supporting_conditions[index]),
+            supporting_conditions=passing[index],
         )
         (accepted if status == "primary" else rejected).append(candidate)
     return accepted, rejected
@@ -615,7 +673,7 @@ def _condition_support_arrays(
     minimum_sample_count: int,
     sample_conditions: Mapping[str, str],
     minimum_supporting_samples: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[tuple[str, ...]]]:
     qualifying = counts >= minimum_sample_count
     total_supporting = qualifying.sum(axis=1)
     missing = sorted(set(sample_indexes).difference(sample_conditions))
@@ -632,6 +690,7 @@ def _condition_support_arrays(
     winners = np.full(len(counts), "", dtype=object)
     passes = np.zeros(len(counts), dtype=bool)
     best_scores = np.full(len(counts), -1.0)
+    passing: list[list[str]] = [[] for _ in range(len(counts))]
     fractional = minimum_supporting_samples < 1
     for condition in sorted(condition_sizes):
         indexes = condition_samples[condition]
@@ -645,6 +704,8 @@ def _condition_support_arrays(
             condition_sizes[condition],
         )
         condition_passes = support >= required
+        for index in np.flatnonzero(condition_passes & (support > 0)):
+            passing[index].append(condition)
         scores = (
             support / condition_sizes[condition]
             if fractional
@@ -665,7 +726,7 @@ def _condition_support_arrays(
         winners[replace] = condition
         passes[replace] = condition_passes[replace]
         best_scores[replace] = scores[replace]
-    return total_supporting, maximum, winners, passes
+    return total_supporting, maximum, winners, passes, [tuple(values) for values in passing]
 
 
 def _regional_peaks(
@@ -830,4 +891,5 @@ def candidates_as_rows(
     for candidate in candidates:
         row = asdict(candidate)
         row["member_coordinates"] = ",".join(map(str, candidate.member_coordinates))
+        row["supporting_conditions"] = ";".join(candidate.supporting_conditions)
         yield row

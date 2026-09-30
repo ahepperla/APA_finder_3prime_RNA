@@ -8,6 +8,65 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-30: Exon-end peaks, pooled readthrough, and potential internal priming
+
+Status: accepted (project lead)
+
+Tacc2 in the lead's Plasmidsaurus data prompted this. Eight candidates at
+internal exon 3' ends reached its atlas, and a real CR8 intronic gain at an
+internal-priming-flagged site made the gene `other`.
+
+**Internal exon ends** (`internal_exon_end_filter`, default true)
+- Proximal-tag candidates where a pile of read ends at an annotated internal
+  exon's donor would peak are rejected as `internal_exon_end`: within one
+  25-nt bin of the donor's bin plus the kernel's peak offset.
+- Donors within two bins of any transcript's 3' end are left out, since the
+  filter reaches one and a half bins from a donor; a real end there is never
+  rejected. Genes without transcript IDs have no donors.
+- A real site whose reads pile up that close to an internal donor is rejected
+  too, whatever its reads show.
+- The filter uses only the annotation and the kernel, so the atlas is still
+  built without contrasts.
+
+**Readthrough**
+- The CIGAR rule now pools each condition's replicates, and only conditions
+  that support the candidate decide. A supporting condition without
+  continuation reads keeps it.
+- `constitutive_readthrough_min_replicate_support` is removed.
+  `constitutive_readthrough_min_junction_count` (default 2) is now pooled
+  over a supporting condition's samples.
+- The block test uses the candidate's read pile, one bin either way, the same
+  on both strands.
+- Testing the candidate's whole resolution window was considered and not
+  chosen, because it would reject real sites within about 150 nt of an exon.
+- **Cost, accepted by the lead (option a):** a real site is rejected too when
+  its reads pile up inside an exon that every supporting condition splices
+  onward from, within about one read length of the donor. That covers
+  minority-isoform internal-exon sites. README and design say so.
+- Two alternatives were raised in review and not chosen: a threshold
+  relative to the candidate's own reads, and exempting piles that outnumber
+  the continuation reads.
+
+**Potential internal priming**
+- Every pattern gets a form with the suffix `_potential_internal_priming`,
+  for a pattern that holds only once calls on flagged PACs count. The forms
+  follow the confident patterns, and a gene has at most one form of each.
+- `potential_internal_priming_withheld_calls` (default true) lets a flagged
+  PAC's gain or loss count when only the flag withheld it. The lead asked for
+  this to be a parameter.
+- **Figures:** these patterns keep their pattern's color.
+  - They are counted in a panel of their own, marked `*` on the grid, and
+    drawn as diamonds on the distal plot.
+  - Lighter tints were checked with the dataviz palette validator and
+    failed: intronic gain's tint met intronic loss's tan at a normal-vision
+    ΔE of 7.6, against a floor of 15.
+
+**Left alone:** searching the whole resolution window for a PAS.
+
+The atlas changes for proximal-tag runs, which reseeds their statistics.
+Parameters are not checked against a list of names, so the removed
+parameter, if still set, is ignored.
+
 ## 2026-09-29: Figures across comparisons and the PAU PCA figure
 
 Status: accepted (project lead)

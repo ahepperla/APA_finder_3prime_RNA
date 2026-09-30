@@ -63,3 +63,5 @@ three02	null	+	123500	0	49	184	123	111
 three03	null	-	125000	0	144	157	59	91
 three03	null	-	125400	1	82	102	41	53
 three03	null	-	125800	2	38	33	36	54
+exon_end00	artifact_host	+	129500	0	150	155	160	165
+readthrough00	artifact_host	+	132500	0	150	155	160	165

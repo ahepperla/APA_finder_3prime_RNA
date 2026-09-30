@@ -299,14 +299,17 @@ test_case("F-19", "distal labels go on the 20 largest changes in each direction"
     "labels: ", paste(labels$gene_id, collapse = ", "))
 })
 
-test_case("F-21", "pattern counts give each class its genes, counting two-class genes twice", {
+test_case("F-21", "pattern counts give each class its genes, apart where only flagged PACs support it", {
   comparisons <- data.frame(stem = c("A_vs_C", "B_vs_C"), stringsAsFactors = FALSE)
+  potential <- function(pattern) paste0(pattern, "_potential_internal_priming")
   genes <- rbind(
     gene_row("g1", apa_pattern = "intronic_gain;utr_shortening"),
     gene_row("g2", apa_pattern = "intronic_gain"),
     gene_row("g3", apa_pattern = "alternative_last_exon"),
     gene_row("g4", apa_pattern = "other"),
-    gene_row("g5", apa_pattern = "none")
+    gene_row("g5", apa_pattern = "none"),
+    gene_row("g6", apa_pattern = potential("intronic_gain")),
+    gene_row("g7", apa_pattern = paste0("utr_shortening;", potential("intronic_loss")))
   )
   counts <- figures$pattern_count_table(
     comparisons, list(A_vs_C = genes, B_vs_C = genes[0, , drop = FALSE])
@@ -316,21 +319,32 @@ test_case("F-21", "pattern counts give each class its genes, counting two-class 
     "utr_lengthening", "other"
   )
   check(identical(levels(counts$pattern), classes), "pattern levels.")
+  check(identical(levels(counts$support), c("supported", "flagged")), "support levels.")
   first <- counts[counts$comparison == "A_vs_C", , drop = FALSE]
-  observed <- stats::setNames(first$count, as.character(first$pattern))
+  observed <- stats::setNames(first$count, paste(first$support, first$pattern))
   expected <- c(
-    intronic_gain = 2L, intronic_loss = 0L, alternative_last_exon = 1L,
-    utr_shortening = 1L, utr_lengthening = 0L, other = 1L
+    "supported intronic_gain" = 2L, "supported intronic_loss" = 0L,
+    "supported alternative_last_exon" = 1L, "supported utr_shortening" = 2L,
+    "supported utr_lengthening" = 0L, "supported other" = 1L,
+    "flagged intronic_gain" = 1L, "flagged intronic_loss" = 1L,
+    "flagged alternative_last_exon" = 0L, "flagged utr_shortening" = 0L,
+    "flagged utr_lengthening" = 0L
   )
   check(identical(observed, expected), "counts: ", paste(names(observed), observed, sep = "=", collapse = ", "))
   check(all(counts$count[counts$comparison == "B_vs_C"] == 0L), "the empty comparison.")
 })
 
-test_case("F-22", "a gene is colored by its first APA pattern", {
-  colors <- figures$first_pattern(c("intronic_gain;utr_shortening", "other", "none", NA, "unknown"))
-  check(identical(as.character(colors), c("intronic_gain", "other", "none", "none", "none")),
+test_case("F-22", "a gene is colored by its first APA pattern, and marked when only flagged PACs support it", {
+  potential <- "intronic_gain_potential_internal_priming"
+  values <- c("intronic_gain;utr_shortening", "other", "none", NA, "unknown", potential,
+    paste0("utr_lengthening;", potential))
+  colors <- figures$first_pattern(values)
+  check(identical(as.character(colors),
+    c("intronic_gain", "other", "none", "none", "none", "intronic_gain", "utr_lengthening")),
     "first patterns: ", paste(colors, collapse = ", "))
   check(identical(levels(colors), names(figures$APA_CLASSES)), "levels.")
+  flagged <- figures$first_pattern_flagged(values)
+  check(identical(flagged, c(FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE)), "flagged: ", paste(flagged, collapse = ", "))
 })
 
 test_case("F-20", "the coverage figure counts the PACs it leaves out", {
@@ -630,6 +644,28 @@ test_case("F-29", "the concordance figure says which pairs it leaves out", {
   check(identical(placeholder_message(figures$plot_concordance(data[0, ], pairs[0, ], summary[0, ], 0L)), "Only one comparison"), "one comparison.")
 })
 
+test_case("F-30", "flagged patterns are marked on the grid and the distal plot", {
+  potential <- "intronic_gain_potential_internal_priming"
+  # The grid marks a flagged first pattern with *, and two patterns with +.
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C"))
+  table <- figures$pattern_grid_table(comparisons, list(
+    A_vs_C = pattern_genes(c("g1", "g2"), c(potential, "utr_shortening"), c(0.01, 0.02)),
+    B_vs_C = pattern_genes(c("g1", "g2"), c(paste0(potential, ";utr_shortening"), "other"), c(0.01, 0.02))
+  ))
+  plot <- figures$plot_pattern_grid(table, comparisons)
+  marks <- plot$layers[[2]]$data
+  observed <- stats::setNames(marks$mark, paste(marks$gene_id, marks$comparison))
+  check(identical(observed[order(names(observed))], c("g1 A_vs_C" = "*", "g1 B_vs_C" = "+*")),
+    "grid marks: ", paste(names(observed), observed, collapse = ", "))
+  # The distal plot draws a flagged pattern's gene as a diamond.
+  pacs <- pac_table(pac_row("p1", "g1", event_type = "increased_usage", control = 0.2, treatment = 0.5, pac_fdr = 0.001))
+  distal <- figures$distal_usage_table(pacs, data.frame(pac_id = "p1", coordinate = 100),
+    genes_of(pacs, c(g1 = potential)))
+  shapes <- figures$plot_distal_usage(distal, comparison, params)
+  check(identical(as.character(shapes$data$call), "Confirmed *"), "distal mark: ", as.character(shapes$data$call))
+  check(grepl("Diamonds: pattern only from PACs flagged for internal priming", shapes$labels$subtitle, fixed = TRUE), "distal subtitle.")
+})
+
 # ---- Saving -------------------------------------------------------------------
 
 test_case("F-09", "PDFs carry no dates or producer, and PNGs have the requested size", {
@@ -776,7 +812,7 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   }
   check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1000)), "event_counts size.")
   check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 650)), "coverage size.")
-  sizes <- list(apa_pattern_grid = c(900, 500), concordance = c(1500, 700),
+  sizes <- list(apa_pattern_grid = c(900, 525), concordance = c(1500, 700),
     concordance_matrix = c(950, 950), pau_pca = c(1100, 1000))
   for (name in names(sizes)) {
     size <- png_size(file.path(directory, "figures", paste0(name, ".png")))

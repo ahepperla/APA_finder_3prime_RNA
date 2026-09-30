@@ -67,11 +67,14 @@ ATLAS_ANNOTATION_COLUMNS <- c(
   "known_rescue_only", "primary_pas_motif", "primary_pas_motif_rna",
   "primary_motif_class"
 )
-# Gene-level APA patterns, in the order apa_pattern lists them.
+# Gene-level APA patterns, in the order apa_pattern lists them. A pattern that
+# only calls on PACs flagged for possible internal priming support takes the
+# suffix, and follows every pattern without it.
 APA_PATTERN_CLASSES <- c(
   "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
   "utr_lengthening"
 )
+POTENTIAL_INTERNAL_PRIMING <- "_potential_internal_priming"
 # PACs in introns or internal exons form a gene's upstream region (Tian and
 # Manley, 2017); PACs in a last exon or downstream of the gene, its 3' region.
 UPSTREAM_CLASSES <- c("intronic", "other_exon")
@@ -1305,23 +1308,59 @@ gene_level_events <- function(pacs, params) {
 
 # One row per gene: its APA pattern and the numbers behind it, from each
 # region's share of the fitted usage and the confirmed PAC calls. A call gates
-# a pattern only on a PAC that is not low confidence, so internal-priming
-# sites never do. A pattern needs a gene that passes the gene-level screen;
-# the numbers are given for every gene with fitted usage.
+# a pattern only on a PAC that is not low confidence. A pattern that holds
+# only once calls on PACs flagged for possible internal priming count gets
+# the _potential_internal_priming suffix; with
+# potential_internal_priming_withheld_calls, those calls include gains and
+# losses that the flag alone withheld. A pattern needs a gene that passes the
+# gene-level screen; the numbers are given for every gene with fitted usage.
 apa_patterns <- function(pacs, coordinate, params) {
   up <- pacs$event_type %in% c("gained", "increased_usage")
   down <- pacs$event_type %in% c("lost", "decreased_usage")
   gating <- is.na(pacs$confidence) | pacs$confidence != "low"
+  flagged <- truth_values(pacs$internal_priming_flag)
+  withheld <- withheld_calls(pacs, flagged, params)
+  flagged_up <- flagged & (up | withheld$up)
+  flagged_down <- flagged & (down | withheld$down)
+  called <- up | down | withheld$up | withheld$down
   groups <- split(seq_len(nrow(pacs)), factor(pacs$gene_id, levels = unique(pacs$gene_id)))
   rows <- lapply(groups, function(index) {
     gene_apa_pattern(
-      pacs[index, , drop = FALSE], coordinate[index], up[index] & gating[index],
-      down[index] & gating[index], up[index] | down[index], params
+      pacs[index, , drop = FALSE], coordinate[index],
+      list(up = up[index] & gating[index], down = down[index] & gating[index]),
+      list(up = flagged_up[index], down = flagged_down[index]), called[index], params
     )
   })
   result <- do.call(rbind, c(list(empty_apa_patterns()), rows))
   rownames(result) <- NULL
   result
+}
+
+truth_values <- function(values) {
+  tolower(trimws(as.character(values))) %in% c("true", "t", "1")
+}
+
+# Gains and losses on PACs flagged for possible internal priming that the flag
+# alone withheld: classified again with the flag lifted, each would be a
+# confirmed gained or lost call. None when
+# potential_internal_priming_withheld_calls is false.
+withheld_calls <- function(pacs, flagged, params) {
+  enabled <- params$potential_internal_priming_withheld_calls
+  if (!is.logical(enabled) || length(enabled) != 1L || is.na(enabled)) {
+    stop("potential_internal_priming_withheld_calls must be true or false.")
+  }
+  up <- rep(FALSE, nrow(pacs))
+  down <- up
+  candidates <- flagged & pacs$event_type %in% c("gained_candidate", "lost_candidate")
+  if (!enabled || !any(candidates)) return(list(up = up, down = down))
+  trusted <- pacs[candidates, , drop = FALSE]
+  trusted$confidence <- "moderate"
+  trusted$internal_priming_flag <- FALSE
+  events <- classify_table_events(trusted, params)
+  exploratory <- truth_values(trusted$exploratory_insufficient_replicates)
+  up[candidates] <- events == "gained" & !exploratory
+  down[candidates] <- events == "lost" & !exploratory
+  list(up = up, down = down)
 }
 
 empty_apa_patterns <- function() {
@@ -1331,7 +1370,9 @@ empty_apa_patterns <- function() {
   )
 }
 
-gene_apa_pattern <- function(rows, coordinate, gate_up, gate_down, called, params) {
+# gate and flagged hold the up and down calls, by PAC, that support a
+# pattern and that support one only as potential internal priming.
+gene_apa_pattern <- function(rows, coordinate, gate, flagged, called, params) {
   result <- data.frame(
     gene_id = rows$gene_id[[1]], apa_pattern = "none", delta_intronic_share = NA_real_,
     delta_utr_distal_share = NA_real_, last_exon_switch = NA_real_, stringsAsFactors = FALSE
@@ -1380,38 +1421,48 @@ gene_apa_pattern <- function(rows, coordinate, gate_up, gate_down, called, param
 
   screened <- !is.na(rows$gene_fdr[[1]]) && rows$gene_fdr[[1]] <= params$gene_fdr
   if (!screened || !any(called)) return(result)
-  classes <- character()
-  if (delta_intronic >= threshold && any(gate_up & upstream)) {
-    classes <- c(classes, "intronic_gain")
-  }
-  if (delta_intronic <= -threshold && any(gate_down & upstream)) {
-    classes <- c(classes, "intronic_loss")
-  }
-  if (!is.na(result$last_exon_switch) && result$last_exon_switch >= threshold) {
-    gaining <- exons[[which.max(exon_delta)]]
-    losing <- exons[[which.min(exon_delta)]]
-    if (any(gate_up[gaining]) && any(gate_down[losing])) {
-      classes <- c(classes, "alternative_last_exon")
+  # The patterns that calls gate_up and gate_down support, in order.
+  supported <- function(gate_up, gate_down) {
+    classes <- character()
+    if (delta_intronic >= threshold && any(gate_up & upstream)) {
+      classes <- c(classes, "intronic_gain")
     }
-  }
-  utr_change <- result$delta_utr_distal_share
-  if (!is.na(utr_change) && abs(utr_change) >= threshold) {
-    # A shift into or out of the main last exon moves all of its PACs one
-    # way, so only calls in the other direction can show a change within it.
-    shifted <- abs(delta_intronic) >= threshold ||
-      (!is.na(result$last_exon_switch) && result$last_exon_switch >= threshold)
-    main_change <- sum(treatment[main]) - sum(control[main])
-    use_up <- !shifted || main_change < 0
-    use_down <- !shifted || main_change > 0
-    proximal <- setdiff(main, distal)
-    if (utr_change < 0) {
-      evidence <- (use_up && any(gate_up[proximal])) || (use_down && gate_down[[distal]])
-      if (evidence) classes <- c(classes, "utr_shortening")
-    } else {
-      evidence <- (use_up && gate_up[[distal]]) || (use_down && any(gate_down[proximal]))
-      if (evidence) classes <- c(classes, "utr_lengthening")
+    if (delta_intronic <= -threshold && any(gate_down & upstream)) {
+      classes <- c(classes, "intronic_loss")
     }
+    if (!is.na(result$last_exon_switch) && result$last_exon_switch >= threshold) {
+      gaining <- exons[[which.max(exon_delta)]]
+      losing <- exons[[which.min(exon_delta)]]
+      if (any(gate_up[gaining]) && any(gate_down[losing])) {
+        classes <- c(classes, "alternative_last_exon")
+      }
+    }
+    utr_change <- result$delta_utr_distal_share
+    if (!is.na(utr_change) && abs(utr_change) >= threshold) {
+      # A shift into or out of the main last exon moves all of its PACs one
+      # way, so only calls in the other direction can show a change within it.
+      shifted <- abs(delta_intronic) >= threshold ||
+        (!is.na(result$last_exon_switch) && result$last_exon_switch >= threshold)
+      main_change <- sum(treatment[main]) - sum(control[main])
+      use_up <- !shifted || main_change < 0
+      use_down <- !shifted || main_change > 0
+      proximal <- setdiff(main, distal)
+      if (utr_change < 0) {
+        evidence <- (use_up && any(gate_up[proximal])) || (use_down && gate_down[[distal]])
+        if (evidence) classes <- c(classes, "utr_shortening")
+      } else {
+        evidence <- (use_up && gate_up[[distal]]) || (use_down && any(gate_down[proximal]))
+        if (evidence) classes <- c(classes, "utr_lengthening")
+      }
+    }
+    classes
   }
+  confident <- supported(gate$up, gate$down)
+  # Every rule only gains patterns from more calls, so the confident ones are
+  # among these.
+  potential <- setdiff(supported(gate$up | flagged$up, gate$down | flagged$down), confident)
+  if (length(potential)) potential <- paste0(potential, POTENTIAL_INTERNAL_PRIMING)
+  classes <- c(confident, potential)
   result$apa_pattern <- if (length(classes)) paste(classes, collapse = ";") else "other"
   result
 }

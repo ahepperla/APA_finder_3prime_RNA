@@ -166,6 +166,7 @@ statistics_params <- function(replicates = 40L) {
     event_min_treatment_pau = 0.05,
     event_max_control_pau = 0.01,
     event_min_supporting_samples = 2L,
+    potential_internal_priming_withheld_calls = TRUE,
     motif_preference_min_genes = 50L
   )
 }

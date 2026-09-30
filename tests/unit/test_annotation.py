@@ -9,6 +9,7 @@ from pacusage.annotation import (
     KnownSiteIndex,
     annotate_candidates,
     find_motifs,
+    internal_exon_donors,
     load_known_pacs,
 )
 from pacusage.models import PacCandidate
@@ -531,3 +532,40 @@ def test_load_known_pacs_from_bed(tmp_path: Path) -> None:
     # Empty path
     empty_index = load_known_pacs(None)
     assert not empty_index
+
+
+def exon(
+    start: int, end: int, transcript_id: str, gene_id: str = "g", strand: str = "+"
+) -> GenomicFeature:
+    return GenomicFeature("chr1", start, end, strand, "exon", gene_id, transcript_id)
+
+
+def test_internal_exon_donors_are_the_three_prime_ends_of_spliced_exons() -> None:
+    exons = [
+        # t1 has three exons; t2 skips the middle one and ends further on.
+        exon(100, 200, "t1"), exon(300, 400, "t1"), exon(500, 600, "t1"),
+        exon(100, 200, "t2"), exon(500, 650, "t2"),
+        # Single-exon genes have no donors.
+        exon(2000, 2100, "s1", "single"),
+        # On the minus strand, the 3' end of an exon spliced onward is its start.
+        exon(1000, 1100, "m1", "minus", "-"), exon(1300, 1400, "m1", "minus", "-"),
+    ]
+    assert internal_exon_donors(exons, 25) == {("chr1", "+"): [200, 400], ("chr1", "-"): [1300]}
+
+
+def test_internal_exon_donors_keep_clear_of_transcript_ends() -> None:
+    exons = [exon(100, 200, "t1"), exon(300, 400, "t1"), exon(500, 600, "t1")]
+    # Another gene on the strand ends 10 nt past the donor at 400, so a
+    # transcript may end there.
+    ending = exons + [exon(300, 410, "o1", "other")]
+    assert internal_exon_donors(ending, 25) == {("chr1", "+"): [200]}
+    assert internal_exon_donors(ending, 5) == {("chr1", "+"): [200, 400]}
+    # A gene on the other strand does not protect it.
+    opposite = exons + [exon(300, 410, "o1", "other", "-")]
+    assert internal_exon_donors(opposite, 25) == {("chr1", "+"): [200, 400]}
+
+
+def test_genes_without_transcript_ids_have_no_donors() -> None:
+    # Without transcript IDs, alternative last exons would look spliced onward.
+    exons = [exon(100, 200, ""), exon(300, 400, ""), exon(500, 600, "")]
+    assert internal_exon_donors(exons, 25) == {}

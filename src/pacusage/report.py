@@ -29,8 +29,9 @@ COMPARISON_FIGURES = (
         "Each point is a tested gene: the fitted usage of its most 3' tested PAC in the "
         "terminal exon or downstream, control against treatment. Colors show the gene's "
         "APA pattern from the .genes table; filled points have a confirmed call at the "
-        "distal PAC. Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, "
-        "the largest changes, are labeled.",
+        "distal PAC, and diamonds mark a pattern that only PACs flagged for possible "
+        "internal priming support. Up to 20 genes whose distal PAC rose and 20 whose "
+        "distal PAC fell, the largest changes, are labeled.",
     ),
     (
         "site_classes",
@@ -47,16 +48,18 @@ SUMMARY_FIGURES = (
         "PAC events count PACs, with candidates in lighter shades. Gene events count "
         "genes that pass the gene-level screen, from the dominant_switch and "
         "complexity_change columns of the .genes tables. The lower panel counts genes "
-        "per APA pattern (apa_pattern); a gene with two patterns counts in both.",
+        "per APA pattern (apa_pattern); a gene with two patterns counts in both. Patterns "
+        "that only PACs flagged for possible internal priming support, the "
+        "_potential_internal_priming patterns, are counted apart.",
     ),
     (
         "apa_pattern_grid",
         "APA patterns shared between comparisons",
         "Genes with an APA pattern in two or more comparisons, up to 50: those shared by "
         "the most comparisons first, then by best gene FDR. Each cell shows the gene's "
-        "first pattern in that comparison, and a + marks two or more; grey marks a gene "
-        "not tested there. figures/apa_patterns_by_comparison.tsv.gz lists every tested "
-        "gene.",
+        "first pattern in that comparison: a + marks two or more, and a * a pattern that "
+        "only PACs flagged for possible internal priming support. Grey marks a gene not "
+        "tested there. figures/apa_patterns_by_comparison.tsv.gz lists every tested gene.",
     ),
     (
         "concordance_matrix",

@@ -106,6 +106,7 @@ APA_PATTERN_CLASSES = (
     "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
     "utr_lengthening",
 )
+POTENTIAL_INTERNAL_PRIMING = "_potential_internal_priming"
 APA_METRIC_COLUMNS = ("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
 APA_TOLERANCE = 1e-9
 
@@ -265,10 +266,39 @@ def check_gene_events(tables: dict[str, pd.DataFrame], params: dict) -> None:
             assert labelled <= flagged[kind], f"{name}: {label} labels outside flagged genes"
 
 
+def truthy(values: pd.Series) -> np.ndarray:
+    return values.astype(str).str.lower().isin(["true", "t", "1"]).to_numpy()
+
+
+def withheld_calls(rows: pd.DataFrame, params: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Gains and losses on flagged PACs that the flag alone withheld: a
+    candidate that is significant, stable, covered, and not exploratory."""
+    none = np.zeros(len(rows), dtype=bool)
+    if not params["potential_internal_priming_withheld_calls"]:
+        return none, none
+    events = rows["event_type"].to_numpy()
+    gene_fdr = rows["gene_fdr"].to_numpy(dtype=float)
+    pac_fdr = rows["pac_fdr"].to_numpy(dtype=float)
+    trusted = (
+        truthy(rows["internal_priming_flag"])
+        & (gene_fdr <= params["gene_fdr"])
+        & (pac_fdr <= params["site_fdr"])
+        & ~truthy(rows["zero_boundary_unstable"])
+        & ~truthy(rows["exploratory_insufficient_replicates"])
+    )
+    covered = params["min_gene_total"]
+    gains = trusted & (events == "gained_candidate")
+    gains &= rows["control_gene_total"].to_numpy(dtype=float) >= covered
+    losses = trusted & (events == "lost_candidate")
+    losses &= rows["treatment_gene_total"].to_numpy(dtype=float) >= covered
+    return gains, losses
+
+
 def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -> dict:
     """APA patterns recomputed from a PAC table, independently of the R code:
     region shares of the fitted usage, gated by confirmed calls on PACs that
-    are not low confidence."""
+    are not low confidence. A pattern that holds only once flagged PACs'
+    calls, withheld ones included, count takes the potential suffix."""
     threshold = params["min_abs_delta_pau"] - APA_TOLERANCE
     minimum = params["event_min_treatment_pau"] - APA_TOLERANCE
     results = {}
@@ -286,9 +316,13 @@ def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -
         three_prime = np.flatnonzero(np.isin(classes, ["terminal_exon", "downstream"]))
         events = rows["event_type"].to_numpy()
         confident = rows["confidence"].to_numpy() != "low"
-        gate_up = np.isin(events, ["gained", "increased_usage"]) & confident
-        gate_down = np.isin(events, ["lost", "decreased_usage"]) & confident
-        called = np.isin(events, ["gained", "increased_usage", "lost", "decreased_usage"])
+        up = np.isin(events, ["gained", "increased_usage"])
+        down = np.isin(events, ["lost", "decreased_usage"])
+        flagged = truthy(rows["internal_priming_flag"])
+        withheld_gains, withheld_losses = withheld_calls(rows, params)
+        flagged_up = flagged & (up | withheld_gains)
+        flagged_down = flagged & (down | withheld_losses)
+        called = up | down | withheld_gains | withheld_losses
         delta_intronic = treatment[upstream].sum() - control[upstream].sum()
         metrics["delta_intronic_share"] = delta_intronic
         last_exon = rows["last_exon"].fillna("").to_numpy()[three_prime]
@@ -322,33 +356,51 @@ def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -
         if not (np.isfinite(gene_fdr) and gene_fdr <= params["gene_fdr"]) or not called.any():
             results[gene_id] = ("none", metrics)
             continue
-        found = []
-        if delta_intronic >= threshold and (gate_up & upstream).any():
-            found.append("intronic_gain")
-        if delta_intronic <= -threshold and (gate_down & upstream).any():
-            found.append("intronic_loss")
-        switch = metrics["last_exon_switch"]
-        if np.isfinite(switch) and switch >= threshold:
-            gaining = exons[int(np.argmax(exon_delta))]
-            losing = exons[int(np.argmin(exon_delta))]
-            if gate_up[gaining].any() and gate_down[losing].any():
-                found.append("alternative_last_exon")
-        utr = metrics["delta_utr_distal_share"]
-        if np.isfinite(utr) and abs(utr) >= threshold:
-            shifted = abs(delta_intronic) >= threshold or (
-                np.isfinite(switch) and switch >= threshold
-            )
-            main_change = treatment[main].sum() - control[main].sum()
-            use_up = not shifted or main_change < 0
-            use_down = not shifted or main_change > 0
-            proximal = np.setdiff1d(main, [distal])
-            if utr < 0:
-                if (use_up and gate_up[proximal].any()) or (use_down and gate_down[distal]):
-                    found.append("utr_shortening")
-            elif (use_up and gate_up[distal]) or (use_down and gate_down[proximal].any()):
-                found.append("utr_lengthening")
+        gene = {
+            "delta_intronic": delta_intronic, "upstream": upstream, "exons": exons,
+            "exon_delta": exon_delta, "switch": metrics["last_exon_switch"],
+            "utr": metrics["delta_utr_distal_share"], "control": control,
+            "treatment": treatment, "main": main, "distal": distal,
+        }
+        found = supported_patterns(gene, up & confident, down & confident, threshold)
+        wider = supported_patterns(
+            gene, (up & confident) | flagged_up, (down & confident) | flagged_down, threshold
+        )
+        found += [pattern + POTENTIAL_INTERNAL_PRIMING for pattern in wider if pattern not in found]
         results[gene_id] = (";".join(found) if found else "other", metrics)
     return results
+
+
+def supported_patterns(
+    gene: dict, gate_up: np.ndarray, gate_down: np.ndarray, threshold: float
+) -> list[str]:
+    """The patterns that the calls gate_up and gate_down support, in order."""
+    found = []
+    delta_intronic, upstream = gene["delta_intronic"], gene["upstream"]
+    if delta_intronic >= threshold and (gate_up & upstream).any():
+        found.append("intronic_gain")
+    if delta_intronic <= -threshold and (gate_down & upstream).any():
+        found.append("intronic_loss")
+    switch = gene["switch"]
+    if np.isfinite(switch) and switch >= threshold:
+        gaining = gene["exons"][int(np.argmax(gene["exon_delta"]))]
+        losing = gene["exons"][int(np.argmin(gene["exon_delta"]))]
+        if gate_up[gaining].any() and gate_down[losing].any():
+            found.append("alternative_last_exon")
+    utr = gene["utr"]
+    if np.isfinite(utr) and abs(utr) >= threshold:
+        shifted = abs(delta_intronic) >= threshold or (np.isfinite(switch) and switch >= threshold)
+        main, distal = gene["main"], gene["distal"]
+        main_change = gene["treatment"][main].sum() - gene["control"][main].sum()
+        use_up = not shifted or main_change < 0
+        use_down = not shifted or main_change > 0
+        proximal = np.setdiff1d(main, [distal])
+        if utr < 0:
+            if (use_up and gate_up[proximal].any()) or (use_down and gate_down[distal]):
+                found.append("utr_shortening")
+        elif (use_up and gate_up[distal]) or (use_down and gate_down[proximal].any()):
+            found.append("utr_lengthening")
+    return found
 
 
 def check_apa_patterns(tables: dict[str, pd.DataFrame], params: dict) -> None:
@@ -386,18 +438,23 @@ def check_apa_patterns(tables: dict[str, pd.DataFrame], params: dict) -> None:
         }
         wanted = {gene_id: EXPECTED_APA_PATTERNS[name].get(gene_id, "none") for gene_id in designed}
         assert designed == wanted, f"{name}: designed patterns {designed}"
-        valid = {*APA_PATTERN_CLASSES, "other", "none"}
+        valid = {
+            *APA_PATTERN_CLASSES,
+            *(pattern + POTENTIAL_INTERNAL_PRIMING for pattern in APA_PATTERN_CLASSES),
+            "other",
+            "none",
+        }
         for pattern in genes["apa_pattern"]:
             assert set(pattern.split(";")) <= valid, f"{name}: invalid pattern {pattern}"
 
 
 def grid_pixels(figures: Path) -> tuple[int, int]:
-    """The shared-genes grid: 3 + 0.75 inches per comparison wide, and 2.25
+    """The shared-genes grid: 3 + 0.75 inches per comparison wide, and 2.375
     inches, 0.875 for the longest label line ("vs TreatmentA"), and 0.125 per
     drawn gene high."""
     grid = pd.read_csv(figures / "apa_patterns_by_comparison.tsv.gz", sep="\t")
     rows = min(50, int((grid["patterned_comparisons"] >= 2).sum()))
-    return 200 * 3 + 150 * len(COMPARISONS), round(200 * (2.25 + 0.875 + 0.125 * rows))
+    return 200 * 3 + 150 * len(COMPARISONS), round(200 * (2.375 + 0.875 + 0.125 * rows))
 
 
 def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text: str) -> None:

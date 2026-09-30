@@ -57,7 +57,11 @@ DISTAL_DIRECTIONS <- c(
   down_candidate = "distal_down_candidate", none = "none"
 )
 # Gene-level APA patterns from the genes tables, in the order apa_pattern
-# lists them; a gene is drawn with its first.
+# lists them; a gene is drawn with its first. A pattern that only calls on
+# PACs flagged for possible internal priming support carries the suffix; it
+# keeps its pattern's color and is marked instead, since a lighter tint of
+# intronic gain would match intronic loss.
+POTENTIAL_INTERNAL_PRIMING <- "_potential_internal_priming"
 APA_CLASSES <- c(
   intronic_gain = "Intronic gain", intronic_loss = "Intronic loss",
   alternative_last_exon = "Alternative last exon", utr_shortening = "UTR shortening",
@@ -112,6 +116,11 @@ APA_COLORS <- c(
 CALL_DIRECTION_LABELS <- c(up = "Increased or gained", down = "Decreased or lost")
 MARK_SHAPES <- c(
   "Confirmed" = 16, "Candidate" = 1, "Confirmed, p = 0" = 17, "Candidate, p = 0" = 2
+)
+# The distal PAC's call on the distal-usage plot; diamonds mark a gene whose
+# pattern only flagged PACs support.
+DISTAL_SHAPES <- c(
+  "Confirmed" = 16, "None or candidate" = 1, "Confirmed *" = 18, "None or candidate *" = 5
 )
 
 # ---- Command line -----------------------------------------------------------
@@ -340,32 +349,54 @@ event_count_table <- function(comparisons, pacs_tables, genes_tables) {
   )
 }
 
-# Genes per APA pattern in each comparison, with zeros; a gene with two
-# patterns counts in both.
+# Genes per APA pattern in each comparison, with zeros, apart for patterns
+# that only flagged PACs support; a gene with two patterns counts in both.
+# "other" is not a pattern, so it counts with the supported ones.
 pattern_count_table <- function(comparisons, genes_tables) {
   classes <- setdiff(names(APA_CLASSES), "none")
+  labels <- c(classes, paste0(setdiff(classes, "other"), POTENTIAL_INTERNAL_PRIMING))
   rows <- lapply(comparisons$stem, function(stem) {
     genes <- genes_tables[[stem]]
     genes <- genes[!duplicated(genes$gene_id), , drop = FALSE]
     parts <- strsplit(genes$apa_pattern, ";", fixed = TRUE)
-    counts <- vapply(classes, function(class) {
-      sum(vapply(parts, function(part) class %in% part, logical(1)))
+    counts <- vapply(labels, function(label) {
+      sum(vapply(parts, function(part) label %in% part, logical(1)))
     }, integer(1))
-    data.frame(comparison = stem, pattern = classes, count = unname(counts))
+    data.frame(comparison = stem, label = labels, count = unname(counts))
   })
   counts <- do.call(rbind, rows)
+  potential <- endsWith(counts$label, POTENTIAL_INTERNAL_PRIMING)
   data.frame(
     comparison = factor(counts$comparison, levels = comparisons$stem),
-    pattern = factor(counts$pattern, levels = classes),
+    pattern = factor(pattern_base(counts$label), levels = classes),
+    support = factor(ifelse(potential, "flagged", "supported"), levels = PATTERN_SUPPORT),
     count = counts$count
   )
 }
 
-# A gene's first APA pattern, which colors it.
+# Facets of the pattern counts: patterns that unflagged PACs support, and
+# those that only PACs flagged for possible internal priming do.
+PATTERN_SUPPORT <- c("supported", "flagged")
+PATTERN_SUPPORT_LABELS <- c(
+  supported = "Supported by unflagged PACs",
+  flagged = "Only flagged PACs: potential internal priming"
+)
+
+pattern_base <- function(apa_pattern) {
+  sub(paste0(POTENTIAL_INTERNAL_PRIMING, "$"), "", apa_pattern)
+}
+
+# A gene's first APA pattern, which colors it, without the suffix.
 first_pattern <- function(apa_pattern) {
-  first <- sub(";.*$", "", apa_pattern)
+  first <- pattern_base(sub(";.*$", "", apa_pattern))
   first[is.na(first) | !first %in% names(APA_CLASSES)] <- "none"
   factor(first, levels = names(APA_CLASSES))
+}
+
+# Whether that first pattern is one only flagged PACs support.
+first_pattern_flagged <- function(apa_pattern) {
+  first <- sub(";.*$", "", apa_pattern)
+  !is.na(first) & endsWith(first, POTENTIAL_INTERNAL_PRIMING)
 }
 
 # PACs with a change and a p-value. A p-value that underflows to 0 is drawn
@@ -737,10 +768,9 @@ plot_distal_usage <- function(result, comparison, params) {
     is.finite(table$fitted_treatment_distal_pau)
   shown <- table[fitted, , drop = FALSE]
   shown$pattern <- first_pattern(shown$apa_pattern)
-  shown$call <- factor(
-    ifelse(shown$direction %in% c("distal_up", "distal_down"), "Confirmed", "None or candidate"),
-    levels = c("Confirmed", "None or candidate")
-  )
+  flagged <- first_pattern_flagged(shown$apa_pattern)
+  call <- ifelse(shown$direction %in% c("distal_up", "distal_down"), "Confirmed", "None or candidate")
+  shown$call <- factor(paste0(call, ifelse(flagged, " *", "")), levels = names(DISTAL_SHAPES))
   # Genes without a pattern first, under the others.
   shown <- shown[order(shown$pattern != "none", shown$gene_id, method = "radix"), ,
     drop = FALSE]
@@ -754,6 +784,9 @@ plot_distal_usage <- function(result, comparison, params) {
   subtitle <- paste0(
     subtitle, "\nDistal PAC: the most 3' tested PAC in a last exon or downstream"
   )
+  if (any(flagged)) {
+    subtitle <- paste0(subtitle, "\nDiamonds: pattern only from PACs flagged for internal priming")
+  }
   labels <- distal_labels(shown)
   labels$gene_name <- ascii_text(labels$gene_name)
   counts <- sprintf(
@@ -776,8 +809,7 @@ plot_distal_usage <- function(result, comparison, params) {
       guide = guide_legend(order = 1, ncol = 2)
     ) +
     scale_shape_manual(
-      values = c("Confirmed" = 16, "None or candidate" = 1), name = "Distal PAC call",
-      guide = guide_legend(order = 2, nrow = 1)
+      values = DISTAL_SHAPES, name = "Distal PAC call", guide = guide_legend(order = 2, ncol = 2)
     ) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
     labs(
@@ -833,6 +865,20 @@ plot_site_classes <- function(counts, comparison) {
   plot
 }
 
+# A count axis: whole-number breaks, and at least 0 to 1, so an empty facet
+# gets no fractional axis. The right-hand room holds the bar totals.
+count_axis <- function() {
+  scale_x_continuous(
+    limits = function(range) c(0, max(range[[2]], 1)),
+    breaks = function(limits) {
+      values <- pretty(limits)
+      # pretty() can miss a whole number by a rounding error.
+      round(values[abs(values - round(values)) < 1e-9])
+    },
+    expand = expansion(mult = c(0, 0.2))
+  )
+}
+
 # Two plots stacked in one figure: the PAC and gene events, and the genes per
 # APA pattern, each with its own legend.
 plot_event_counts <- function(counts, patterns, comparisons) {
@@ -849,21 +895,23 @@ figure_stack <- function(plots, heights) {
 
 plot_pattern_bars <- function(patterns, comparisons) {
   titles <- stats::setNames(comparisons$title, comparisons$stem)
-  totals <- stats::aggregate(count ~ comparison, data = patterns, FUN = sum)
+  totals <- stats::aggregate(count ~ comparison + support, data = patterns, FUN = sum)
   ggplot(patterns, aes(x = count, y = comparison, fill = pattern)) +
     geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
     geom_text(data = totals, aes(x = count, y = comparison, label = count),
       inherit.aes = FALSE, hjust = -0.3, size = 2.6) +
+    facet_wrap(~support, scales = "free_x", labeller = as_labeller(PATTERN_SUPPORT_LABELS)) +
     scale_fill_manual(values = APA_COLORS, labels = APA_CLASSES, name = NULL, drop = FALSE) +
     scale_y_discrete(limits = rev(comparisons$stem), labels = titles) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+    count_axis() +
     guides(fill = guide_legend(nrow = 2)) +
     labs(
       title = "APA patterns per comparison",
       subtitle = "Genes per pattern, from the genes tables; a gene with two patterns counts in both",
       x = "Genes", y = NULL
     ) +
-    figure_theme()
+    figure_theme() +
+    theme(panel.spacing.x = grid::unit(1, "lines"))
 }
 
 plot_event_bars <- function(counts, comparisons) {
@@ -876,14 +924,15 @@ plot_event_bars <- function(counts, comparisons) {
     facet_wrap(~level, scales = "free_x") +
     scale_fill_manual(values = EVENT_COLORS, labels = EVENT_LABELS, name = NULL, drop = FALSE) +
     scale_y_discrete(limits = rev(comparisons$stem), labels = titles) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+    count_axis() +
     guides(fill = guide_legend(nrow = 3)) +
     labs(
       title = "Events per comparison",
       subtitle = "PAC events count PACs; gene events count genes that pass the gene-level screen",
       x = "Count", y = NULL
     ) +
-    figure_theme()
+    figure_theme() +
+    theme(panel.spacing.x = grid::unit(1, "lines"))
 }
 
 plot_effect_vs_coverage <- function(data, comparisons, params, dropped) {
@@ -957,18 +1006,23 @@ plot_pattern_grid <- function(table, comparisons) {
   colors <- c(APA_COLORS[names(APA_COLORS) != "none"], none = "white", not_tested = "grey88")
   # The mark is white on a dark fill and black on a light one.
   dark <- colSums(grDevices::col2rgb(colors) * c(0.299, 0.587, 0.114)) < 128
-  several <- cells[!is.na(cells$value) & grepl(";", cells$value, fixed = TRUE), , drop = FALSE]
-  several$mark <- ifelse(dark[as.character(several$fill)], "white", "black")
+  several <- !is.na(cells$value) & grepl(";", cells$value, fixed = TRUE)
+  cells$mark <- paste0(ifelse(several, "+", ""), ifelse(first_pattern_flagged(cells$value), "*", ""))
+  marked <- cells[cells$mark != "", , drop = FALSE]
+  marked$ink <- ifelse(dark[as.character(marked$fill)], "white", "black")
   subtitle <- sprintf("%s with a pattern in 2 or more comparisons", plural(shared, "gene"))
   if (shared > GRID_GENE_LIMIT) {
     subtitle <- paste0(subtitle, sprintf("\nThe first %d are shown; the table lists all",
       GRID_GENE_LIMIT))
   }
-  subtitle <- paste0(subtitle, "\n+ marks two or more patterns in one comparison")
+  subtitle <- paste0(
+    subtitle, "\n+ marks two or more patterns in one comparison",
+    "\n* marks a pattern only from flagged PACs"
+  )
   ggplot(cells, aes(x = comparison, y = gene_id)) +
     # show.legend = TRUE draws keys for patterns absent from the drawn genes.
     geom_tile(aes(fill = fill), colour = "grey60", linewidth = 0.2, show.legend = TRUE) +
-    geom_text(data = several, aes(colour = mark), label = "+", size = 3) +
+    geom_text(data = marked, aes(label = mark, colour = ink), size = 3) +
     scale_fill_manual(values = colors, labels = c(APA_CLASSES, not_tested = "Not tested"),
       name = NULL, drop = FALSE) +
     scale_colour_identity() +
@@ -1203,7 +1257,7 @@ run_across_comparisons <- function(arguments, params, samples, comparisons, pacs
   grid <- pattern_grid_table(comparisons, genes_tables)
   write_gzip_tsv(grid, output("apa_patterns_by_comparison.tsv.gz"))
   save_figure(plot_pattern_grid(grid, comparisons), output("apa_pattern_grid"),
-    3 + 0.75 * nrow(comparisons), 2.25 + labels + 0.125 * nrow(grid_genes(grid)))
+    3 + 0.75 * nrow(comparisons), 2.375 + labels + 0.125 * nrow(grid_genes(grid)))
   pairs <- concordance_pairs(comparisons)
   pair_data <- concordance_data(pairs, pacs_tables)
   pair_summary <- concordance_summary(pairs, pair_data)

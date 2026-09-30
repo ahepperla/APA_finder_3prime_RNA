@@ -23,7 +23,9 @@ coverage before making broad or negative structural claims.
   contrasts:
   - candidates come from every sample's read ends pooled;
   - a PAC needs replicate support within the condition that supports it;
-  - the readthrough filter also works per condition.
+  - the readthrough filter also works per condition, asking each condition
+    that supports a candidate; the internal-exon-end filter uses only the
+    annotation and the kernel.
 
   Differential testing compares each treatment only with its declared direct
   control.
@@ -44,9 +46,10 @@ coverage before making broad or negative structural claims.
   - RECORD_SOFTWARE_VERSIONS loads the R packages of both R scripts right
     after validation. Keep the R scripts out of VALIDATE_INPUTS, or every edit
     to one reruns the whole pipeline on `-resume`.
-  - ANNOTATE_PACS stages `annotation.py` and `reference.py` as inputs, so
-    `-resume` reruns annotation and every step after it when they change.
-    Nextflow tracks no other part of the Python package.
+  - CLUSTER_PACS stages `clustering.py`, `annotation.py`, and `reference.py`,
+    and ANNOTATE_PACS stages `annotation.py` and `reference.py`, as inputs.
+    So `-resume` reruns discovery or annotation, and every step after it, when
+    they change. Nextflow tracks no other part of the Python package.
 - Do not modify source FASTA or alignment inputs.
   - Prepared alignments, indexes, and the prepared FASTA are symlinks to the
     sources. Never write through them.
