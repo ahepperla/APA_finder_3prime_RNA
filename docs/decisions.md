@@ -8,6 +8,63 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-09-30: Plain-language output names and a column guide
+
+Status: accepted (project lead)
+
+The lead asked for outputs that read without knowing the pipeline: one
+shouldn't need its internals to know what a column or label means. The
+version rises to 0.4.0, since scripts written against the old names break.
+The atlas columns change, so its checksum, and with it the seeded statistics,
+change too.
+
+**Calls and gene events**
+- `CONDITION_vs_CONTROL.events.tsv.gz` becomes `.calls.tsv.gz`, the `.pacs`
+  rows with a call.
+- `event_type` holds only PAC calls. The gene labels `dominant_switch`,
+  `complexity_gain`, and `complexity_loss` no longer go on PAC rows. They
+  marked PACs that had not changed, and undercounted genes whose PACs all had
+  calls. The `.genes` tables already record every gene's events.
+- `complexity_change` (`gain`, `loss`) becomes `active_pacs_change` (`more`,
+  `fewer`). An active PAC has at least `active_pac_min_pau` (default 0.05) of
+  its gene's fitted usage in a group.
+  - The new parameter replaces `event_min_treatment_pau` for this count only.
+    That parameter keeps the gained and lost calls and the UTR share, so the
+    lead can raise the active-PAC threshold without changing calls.
+  - The lead chose "active" over "present". "Detected" keeps its meaning,
+    reads in at least `event_min_supporting_samples` samples of a group, for
+    gained and lost calls. The per-PAC counts become `control_active_pacs`
+    and `treatment_active_pacs`.
+
+**Other renames**
+- `assignment_class` becomes `gene_region`, with values `last_exon`,
+  `internal_exon`, `intron`, `downstream_of_gene`, and `intergenic` (were
+  `terminal_exon`, `other_exon`, `intronic`, `downstream`). In the figure
+  tables, `distal_assignment_class` becomes `distal_gene_region`.
+- `last_exon`, a locus, becomes `last_exon_locus`.
+- `supporting_condition` becomes `best_supporting_condition`.
+- Test columns name their level:
+  - `.pacs` gets `pac_pvalue`, `gene_pvalue`, `pac_likelihood_ratio`, and
+    `pac_degrees_of_freedom`.
+  - `.genes` and `FAMILY.gene_omnibus` get `gene_pvalue`,
+    `gene_likelihood_ratio`, and `gene_degrees_of_freedom`.
+  - The motif tables' `p_value` becomes `pvalue`, like `fdr` beside it.
+- `apa_pattern` `other` becomes `unclassified_change`.
+- `model_status` `drimseq` becomes `fitted`, and `drimseq_add_uniform`
+  becomes `fitted_with_zero_count_stabilization`.
+- Figure file names stay; the `site_classes` figure is titled "PAC calls by
+  gene region".
+
+**The guide and the report**
+- `docs/output_columns.md` explains every published table and column: a
+  glossary, then each column's meaning, units, and values. The README links it
+  from a "Reading the results" section, and the report from a glossary line
+  at its top.
+- `tests/pipeline/column_guide.py` checks, in both fixture runs, that the
+  guide documents exactly the columns each published table has.
+- The report's headings say what each table holds, such as "TreatmentA vs
+  DMSO: PACs with a call", with a one-line description under each.
+
 ## 2026-09-30: Exon-end peaks, pooled readthrough, and potential internal priming
 
 Status: accepted (project lead)

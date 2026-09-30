@@ -28,8 +28,8 @@ def test_report_tolerates_unavailable_model_statistics(tmp_path: Path) -> None:
             {
                 "gene_id": "gene-1",
                 "pac_id": "pac-1",
-                "pvalue_pac": None,
-                "model_status": "drimseq_add_uniform",
+                "pac_pvalue": None,
+                "model_status": "fitted_with_zero_count_stabilization",
                 "zero_boundary_unstable": None,
                 "bootstrap_successes": None,
                 "delta_pau_ci_low": None,
@@ -56,8 +56,8 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
             {
                 "gene_id": "gene-1",
                 "pac_id": "pac-1",
-                "pvalue_pac": 0.01,
-                "model_status": "drimseq",
+                "pac_pvalue": 0.01,
+                "model_status": "fitted",
                 "zero_boundary_unstable": False,
                 "bootstrap_successes": 40,
                 "delta_pau_ci_low": 0.10,
@@ -66,8 +66,8 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
             {
                 "gene_id": "gene-2",
                 "pac_id": "pac-2",
-                "pvalue_pac": 0.02,
-                "model_status": "drimseq_add_uniform",
+                "pac_pvalue": 0.02,
+                "model_status": "fitted_with_zero_count_stabilization",
                 "zero_boundary_unstable": False,
                 "bootstrap_successes": 14,
                 "delta_pau_ci_low": None,
@@ -76,8 +76,8 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
             {
                 "gene_id": "gene-3",
                 "pac_id": "pac-3",
-                "pvalue_pac": 0.50,
-                "model_status": "drimseq",
+                "pac_pvalue": 0.50,
+                "model_status": "fitted",
                 "zero_boundary_unstable": False,
                 "bootstrap_successes": 0,
                 "delta_pau_ci_low": None,
@@ -94,6 +94,8 @@ def test_bootstrap_interval_metric_counts_finite_intervals(tmp_path: Path) -> No
     assert "Model diagnostics" in report
     assert "<strong>1</strong>Bootstrap intervals" in report
     assert "<strong>2</strong>Bootstrap intervals" not in report
+    assert "<strong>3</strong>Finite PAC p-values" in report
+    assert "<strong>1</strong>Tests with zero-count stabilization" in report
 
 
 def _kernel_diagnostics(status: str, reason: str) -> dict[str, object]:
@@ -126,9 +128,9 @@ def test_calibration_warning_leads_the_report(tmp_path: Path) -> None:
     assert "<separated>" not in report
     headings = [
         "<section class='warning'><h2>Calibration warning</h2>",
-        "<h2>Input validation</h2>",
-        "<h2>Library calibration</h2>",
-        "<h2>Calibration kernel</h2>",
+        "<h2>Input checks</h2>",
+        "<h2>Where reads end, relative to known transcript ends</h2>",
+        "<h2>Read-end offset profile</h2>",
     ]
     positions = [report.index(heading) for heading in headings]
     assert positions == sorted(positions)
@@ -143,7 +145,7 @@ def test_ok_calibration_kernel_is_tabulated_without_a_warning(tmp_path: Path) ->
 
     report = output.read_text()
     assert "Calibration warning" not in report
-    assert "<h2>Calibration kernel</h2>" in report
+    assert "<h2>Read-end offset profile</h2>" in report
 
 
 def test_report_tolerates_missing_calibration_diagnostics(tmp_path: Path) -> None:
@@ -152,7 +154,7 @@ def test_report_tolerates_missing_calibration_diagnostics(tmp_path: Path) -> Non
 
     report = output.read_text()
     assert "Calibration warning" not in report
-    assert "<h2>Calibration kernel</h2>" not in report
+    assert "<h2>Read-end offset profile</h2>" not in report
 
 
 def test_pau_qc_uses_only_genes_covered_in_every_sample(tmp_path: Path) -> None:
@@ -386,7 +388,7 @@ def test_gene_plot_title_html_escapes_name(tmp_path: Path) -> None:
 
 
 def test_motif_class_preference_tables_are_rendered(tmp_path: Path) -> None:
-    """Tables matching *.preference_class.tsv.gz are rendered under 'Motif-class preference'."""
+    """*.preference_class.tsv.gz tables are rendered under 'PolyA-signal preference by class'."""
     motifs = tmp_path / "motifs"
     motifs.mkdir()
 
@@ -402,7 +404,8 @@ def test_motif_class_preference_tables_are_rendered(tmp_path: Path) -> None:
     build_report(tmp_path, output, 1)
 
     report = output.read_text()
-    assert "<h2>Motif-class preference</h2>" in report
+    assert "<h2>PolyA-signal preference by class</h2>" in report
+    assert "<h2>treatment vs control: polyA-signal preference by class</h2>" in report
     assert "<td>C1</td>" in report and "<td>C2</td>" in report
 
 
@@ -452,7 +455,7 @@ def test_figure_section_orders_comparisons_then_summaries(tmp_path: Path) -> Non
     assert re.findall(r"alt='([^']*)'", section)[:3] == [
         "Volcano plot for A vs B",
         "Distal PAC usage for A vs B",
-        "PAC calls by site class for A vs B",
+        "PAC calls by gene region for A vs B",
     ]
 
 
@@ -478,18 +481,50 @@ def test_report_has_no_figure_section_without_figures(tmp_path: Path) -> None:
     assert "Treatment-control figures" not in output.read_text()
 
 
-def test_figure_section_comes_before_the_events_tables(tmp_path: Path) -> None:
+def test_figure_section_comes_before_the_calls_tables(tmp_path: Path) -> None:
     write_figures(tmp_path, ["A_vs_B.volcano"])
     write_tsv(
         [{"pac_id": "p1", "gene_id": "g1", "event_type": "increased_usage"}],
-        tmp_path / "A_vs_B.events.tsv.gz",
+        tmp_path / "A_vs_B.calls.tsv.gz",
     )
     output = tmp_path / "report" / "index.html"
     build_report(tmp_path, output, 1)
     report = output.read_text()
     assert report.index("<h2>Treatment-control figures</h2>") < report.index(
-        "<h2>A vs B.events</h2>"
+        "<h2>A vs B: PACs with a call</h2>"
     )
+
+
+def test_statistics_tables_are_titled_by_comparison_and_described(tmp_path: Path) -> None:
+    # Underscores inside a condition's name survive; only _vs_ is replaced.
+    for suffix in ("calls", "pacs"):
+        write_tsv(
+            [{"pac_id": "p1", "gene_id": "g1", "event_type": "increased_usage"}],
+            tmp_path / f"Drug_high_vs_DMSO.{suffix}.tsv.gz",
+        )
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+    report = output.read_text()
+    calls = report.index(
+        "<h2>Drug_high vs DMSO: PACs with a call</h2><p class='chart-note'>PACs that gained"
+    )
+    tested = report.index(
+        "<h2>Drug_high vs DMSO: every tested PAC</h2><p class='chart-note'>Every tested PAC,"
+    )
+    assert calls < tested
+    assert "Drug high" not in report
+
+
+def test_report_opens_with_the_glossary_and_the_column_guide_link(tmp_path: Path) -> None:
+    output = tmp_path / "report" / "index.html"
+    build_report(tmp_path, output, 1)
+    report = output.read_text()
+    main = report[report.index("<main>"):]
+    assert main.startswith("<main><p class='chart-note'>A PAC is a polyadenylation site")
+    assert (
+        "<a href='https://github.com/ahepperla/APA_finder_3prime_RNA/blob/main/docs/"
+        "output_columns.md'>docs/output_columns.md</a>"
+    ) in main
 
 
 def test_report_with_figures_is_byte_identical_across_runs(tmp_path: Path) -> None:

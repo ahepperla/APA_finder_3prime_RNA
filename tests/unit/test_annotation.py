@@ -66,7 +66,7 @@ def test_motif_position_and_minus_strand_annotation(tmp_path: Path) -> None:
     assert (rows[1]["start"], rows[1]["end"], rows[1]["locus"]) == (200, 201, "chr1:201-201")
     assert rows[0]["resolution_nt"] == 0
     assert rows[0]["total_supporting_samples"] == 0
-    assert rows[0]["supporting_condition"] == ""
+    assert rows[0]["best_supporting_condition"] == ""
     assert rows[1]["primary_pas_motif_rna"] == "AAUAAA"
     assert rows[1]["gene_id"] == "minus"
 
@@ -150,7 +150,7 @@ def test_atlas_gene_names_line_up_with_gene_ids(tmp_path: Path) -> None:
     assert rows[0]["gene_name"] == "Zeta,Alpha,g_c"
     assert rows[0]["ambiguous_gene_assignment"] is True
     # A PAC shared by several genes belongs to no one gene's last exon.
-    assert rows[0]["last_exon"] == ""
+    assert rows[0]["last_exon_locus"] == ""
 
 
 def test_annotation_contigs_scans_without_materializing_features(tmp_path: Path) -> None:
@@ -255,9 +255,9 @@ def _reference_assign(
         in terminal_exons
     ]
     if terminal:
-        return [("terminal_exon", item) for item in terminal]
+        return [("last_exon", item) for item in terminal]
     if exon_matches:
-        return [("other_exon", item) for item in exon_matches]
+        return [("internal_exon", item) for item in exon_matches]
 
     intronic = [
         feature
@@ -267,7 +267,7 @@ def _reference_assign(
         and feature.start <= coordinate <= feature.end
     ]
     if intronic:
-        return [("intronic", item) for item in intronic]
+        return [("intron", item) for item in intronic]
 
     # Find downstream genes
     same_strand_genes = [
@@ -287,7 +287,7 @@ def _reference_assign(
                 for other in same_strand_genes
             )
             if not intervening:
-                downstream.append(("downstream", gene))
+                downstream.append(("downstream_of_gene", gene))
 
     if downstream:
         nearest = min(
@@ -379,7 +379,7 @@ def test_feature_index_matches_brute_force_assignment(tmp_path: Path, rows) -> N
                 observed = index.assign("chr1", strand, coordinate, maximum_downstream)
                 assert key(observed) == key(expected), (coordinate, strand, maximum_downstream)
                 classes.update(label for label, _ in expected)
-    assert classes == {"terminal_exon", "other_exon", "intronic", "downstream"}
+    assert classes == {"last_exon", "internal_exon", "intron", "downstream_of_gene"}
 
 
 def _index(rows: list[tuple[str, int, int, str, str, str]], tmp_path: Path) -> FeatureIndex:
@@ -413,11 +413,11 @@ def test_retained_intron_and_fragment_ends_are_not_terminal_exons(tmp_path: Path
         return assignments[0][0], spans, index.last_exon(assignments)
 
     # The retained intron is an exon of one model, not a transcript end.
-    assert classify(700) == ("other_exon", [(400, 1000)], "")
-    assert classify(450) == ("other_exon", [(400, 450), (400, 500), (400, 1000)], "")
-    assert classify(280) == ("other_exon", [(250, 300)], "")
-    assert classify(1000) == ("terminal_exon", [(800, 1000)], "chr1:801-1000")
-    assert classify(350) == ("intronic", [(100, 1000)], "")
+    assert classify(700) == ("internal_exon", [(400, 1000)], "")
+    assert classify(450) == ("internal_exon", [(400, 450), (400, 500), (400, 1000)], "")
+    assert classify(280) == ("internal_exon", [(250, 300)], "")
+    assert classify(1000) == ("last_exon", [(800, 1000)], "chr1:801-1000")
+    assert classify(350) == ("intron", [(100, 1000)], "")
 
 
 def test_last_exons_merge_overlapping_ends_and_separate_alternative_ones(
@@ -449,7 +449,7 @@ def test_last_exons_merge_overlapping_ends_and_separate_alternative_ones(
     assert last_exon(700) == "chr1:401-700"
     assert last_exon(900) == "chr1:801-900"
     # A PAC past the gene's end belongs to its 3'-most last exon.
-    assert index.assign("chr1", "+", 950, 100)[0][0] == "downstream"
+    assert index.assign("chr1", "+", 950, 100)[0][0] == "downstream_of_gene"
     assert last_exon(950) == "chr1:801-900"
 
 
@@ -465,7 +465,7 @@ def test_minus_strand_downstream_pacs_take_the_three_prime_last_exon(tmp_path: P
         tmp_path,
     )
     downstream = index.assign("chr1", "-", 1950, 100)
-    assert downstream[0][0] == "downstream"
+    assert downstream[0][0] == "downstream_of_gene"
     assert index.last_exon(downstream) == "chr1:2001-2100"
     assert index.last_exon(index.assign("chr1", "-", 2200, 100)) == "chr1:2201-2300"
     assert index.last_exon(index.assign("chr1", "-", 2550, 100)) == ""

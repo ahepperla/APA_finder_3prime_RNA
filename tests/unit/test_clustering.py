@@ -140,7 +140,7 @@ def test_exact_fractional_support_uses_each_condition_size() -> None:
     )
     assert not rejected
     assert len(accepted) == 1
-    assert accepted[0].supporting_condition == "small"
+    assert accepted[0].best_supporting_condition == "small"
     assert accepted[0].supporting_samples == 2
     assert accepted[0].total_supporting_samples == 5
 

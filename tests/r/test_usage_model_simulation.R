@@ -113,7 +113,7 @@ test_case("S1", "null genes are calibrated", {
   for (comparison in c("T1_vs_C", "T2_vs_C")) {
     pacs <- main_table(comparison)
     nulls <- gene_rows(pacs[pacs$class == "null", , drop = FALSE])
-    p <- as_number(nulls$pvalue_gene)
+    p <- as_number(nulls$gene_pvalue)
     check(length(p) == 120L && all(is.finite(p)), comparison, ": null gene p-values are missing.")
     at_05 <- record(paste0(comparison, " null p<=0.05"), mean(p <= 0.05))
     at_01 <- record(paste0(comparison, " null p<=0.01"), mean(p <= 0.01))
@@ -121,7 +121,7 @@ test_case("S1", "null genes are calibrated", {
     check(at_05 <= 0.15, comparison, ": ", format(at_05), " of null genes have p <= 0.05.")
     check(at_01 <= 0.07, comparison, ": ", format(at_01), " of null genes have p <= 0.01.")
     check(middle >= 0.35 && middle <= 0.75, comparison, ": null median p is ", format(middle), ".")
-    pac_p <- as_number(pacs$pvalue_pac[pacs$class == "null"])
+    pac_p <- as_number(pacs$pac_pvalue[pacs$class == "null"])
     pac_05 <- record(paste0(comparison, " null PAC p<=0.05"), mean(pac_p[is.finite(pac_p)] <= 0.05))
     check(pac_05 <= 0.12, comparison, ": ", format(pac_05), " of null PAC tests have p <= 0.05.")
   }
@@ -162,7 +162,7 @@ test_case("S3", "gained and lost PACs are recovered without cross-talk", {
   check(!any(unrelated$event_type %in% labels), "events in comparisons without an effect.")
   unrelated_genes <- gene_rows(unrelated)
   check(nrow(unrelated_genes) == 18L, "expected 18 unaffected boundary gene comparisons.")
-  check(all(is.finite(as_number(unrelated_genes$pvalue_gene))), "unaffected boundary genes lack p.")
+  check(all(is.finite(as_number(unrelated_genes$gene_pvalue))), "unaffected boundary genes lack p.")
   check(all(as_number(unrelated_genes$gene_fdr) > 0.05), "an unaffected boundary gene was called.")
 })
 

@@ -25,7 +25,7 @@ dir.create(work)
 
 # One PAC row, typed as read_pacs() returns it.
 pac_row <- function(pac_id, gene_id, strand = "+", event_type = "none",
-                    assignment_class = "terminal_exon", control = 0.5, treatment = 0.5,
+                    gene_region = "last_exon", control = 0.5, treatment = 0.5,
                     pac_fdr = NA_real_, gene_fdr = 0.5, pvalue = 0.5,
                     control_total = 100, treatment_total = 100, condition = "T",
                     control_condition = "C") {
@@ -35,7 +35,7 @@ pac_row <- function(pac_id, gene_id, strand = "+", event_type = "none",
     control_condition = control_condition, event_type = event_type,
     fitted_control_pau = control, fitted_treatment_pau = treatment,
     delta_pau = treatment - control, pac_fdr = pac_fdr, gene_fdr = gene_fdr,
-    pvalue_pac = pvalue, assignment_class = assignment_class,
+    pac_pvalue = pvalue, gene_region = gene_region,
     control_gene_total = control_total, treatment_gene_total = treatment_total,
     exploratory_insufficient_replicates = FALSE, stringsAsFactors = FALSE
   )
@@ -47,12 +47,12 @@ pac_table <- function(...) {
   do.call(rbind, rows)
 }
 
-gene_row <- function(gene_id, dominant_switch = FALSE, complexity_change = "none",
+gene_row <- function(gene_id, dominant_switch = FALSE, active_pacs_change = "none",
                      gene_fdr = 0.5, apa_pattern = "none") {
   data.frame(
     gene_id = gene_id, gene_name = toupper(gene_id), condition = "T",
     control_condition = "C", dominant_switch = dominant_switch,
-    complexity_change = complexity_change, apa_pattern = apa_pattern, gene_fdr = gene_fdr,
+    active_pacs_change = active_pacs_change, apa_pattern = apa_pattern, gene_fdr = gene_fdr,
     exploratory_insufficient_replicates = FALSE, stringsAsFactors = FALSE
   )
 }
@@ -94,15 +94,15 @@ layer_classes <- function(layers) {
 
 # ---- Figure data --------------------------------------------------------------
 
-test_case("F-01", "the distal PAC is the most 3' terminal-exon or downstream PAC", {
+test_case("F-01", "the distal PAC is the most 3' last-exon or downstream PAC", {
   pacs <- pac_table(
-    pac_row("p100", "plus", "+", assignment_class = "terminal_exon"),
-    pac_row("p200", "plus", "+", "increased_usage", "downstream", 0.2, 0.45, 0.001, 0.01),
-    pac_row("p300", "plus", "+", "decreased_usage", "intronic"),
-    pac_row("m500", "minus", "-", "none", "terminal_exon"),
-    pac_row("m400", "minus", "-", "lost", "terminal_exon", 0.3, 0.0, 0.002, 0.02),
-    pac_row("i1", "upstream_only", "+", assignment_class = "intronic"),
-    pac_row("i2", "upstream_only", "+", assignment_class = "other_exon")
+    pac_row("p100", "plus", "+", gene_region = "last_exon"),
+    pac_row("p200", "plus", "+", "increased_usage", "downstream_of_gene", 0.2, 0.45, 0.001, 0.01),
+    pac_row("p300", "plus", "+", "decreased_usage", "intron"),
+    pac_row("m500", "minus", "-", "none", "last_exon"),
+    pac_row("m400", "minus", "-", "lost", "last_exon", 0.3, 0.0, 0.002, 0.02),
+    pac_row("i1", "upstream_only", "+", gene_region = "intron"),
+    pac_row("i2", "upstream_only", "+", gene_region = "internal_exon")
   )
   coordinates <- data.frame(
     pac_id = c("p100", "p200", "p300", "m500", "m400", "i1", "i2"),
@@ -117,7 +117,7 @@ test_case("F-01", "the distal PAC is the most 3' terminal-exon or downstream PAC
   check(identical(table$apa_pattern, c("utr_lengthening", "none")), "patterns: ", paste(table$apa_pattern, collapse = ", "))
   check(isTRUE(all.equal(table$delta_distal_pau, c(0.25, -0.3))), "delta: ", paste(table$delta_distal_pau, collapse = ", "))
   check(identical(table$distal_pac_fdr, c(0.001, 0.002)), "distal pac_fdr was not the distal row's.")
-  check(identical(table$distal_assignment_class, c("downstream", "terminal_exon")), "classes.")
+  check(identical(table$distal_gene_region, c("downstream_of_gene", "last_exon")), "regions.")
   check(identical(table$tested_pacs, c(3L, 2L)), "tested_pacs: ", paste(table$tested_pacs, collapse = ", "))
   check(identical(result$without_distal, 1L), "without_distal: ", result$without_distal)
 })
@@ -125,7 +125,7 @@ test_case("F-01", "the distal PAC is the most 3' terminal-exon or downstream PAC
 test_case("F-02", "the direction is the distal PAC's own call", {
   events <- c(
     "gained", "increased_usage", "lost", "decreased_usage", "gained_candidate",
-    "lost_candidate", "dominant_switch", "complexity_gain", "complexity_loss", "none"
+    "lost_candidate", "none"
   )
   genes <- sprintf("g%02d", seq_along(events))
   pacs <- do.call(rbind, lapply(seq_along(events), function(index) {
@@ -137,8 +137,7 @@ test_case("F-02", "the direction is the distal PAC's own call", {
   expected <- c(
     gained = "distal_up", increased_usage = "distal_up", lost = "distal_down",
     decreased_usage = "distal_down", gained_candidate = "distal_up_candidate",
-    lost_candidate = "distal_down_candidate", dominant_switch = "none",
-    complexity_gain = "none", complexity_loss = "none", none = "none"
+    lost_candidate = "distal_down_candidate", none = "none"
   )
   check(identical(directions, expected), "directions: ", paste(names(directions), directions, sep = "=", collapse = ", "))
 })
@@ -163,26 +162,26 @@ test_case("F-03", "distal rows sort by gene FDR with missing FDRs last", {
   check(grepl("atlas lacks coordinates for PACs: absent", missing, fixed = TRUE), "missing coordinate: ", missing)
 })
 
-test_case("F-04", "site classes count confirmed calls only, with every class present", {
+test_case("F-04", "gene regions count confirmed calls only, with every region present", {
   pacs <- pac_table(
     pac_row("t1", "g1", event_type = "increased_usage"),
     pac_row("t2", "g1", event_type = "lost"),
     pac_row("t3", "g2", event_type = "gained_candidate"),
-    pac_row("i1", "g3", event_type = "gained", assignment_class = "intronic"),
-    pac_row("i2", "g3", event_type = "dominant_switch", assignment_class = "intronic"),
-    pac_row("o1", "g4", event_type = "complexity_gain", assignment_class = "other_exon")
+    pac_row("i1", "g3", event_type = "gained", gene_region = "intron"),
+    pac_row("i2", "g3", event_type = "none", gene_region = "intron"),
+    pac_row("o1", "g4", event_type = "lost_candidate", gene_region = "internal_exon")
   )
   counts <- figures$site_class_counts(pacs)
   check(nrow(counts) == 8L, "rows: ", nrow(counts))
-  check(identical(as.character(counts$assignment_class), rep(names(figures$SITE_CLASSES), 2)), "classes.")
+  check(identical(as.character(counts$gene_region), rep(names(figures$GENE_REGIONS), 2)), "regions.")
   check(identical(as.character(counts$direction), rep(c("down", "up"), each = 4)), "directions.")
   check(identical(counts$count, c(1L, 0L, 0L, 0L, 1L, 0L, 1L, 0L)), "counts: ", paste(counts$count, collapse = ", "))
   check(identical(counts$tested, rep(c(3L, 1L, 2L, 0L), 2)), "tested: ", paste(counts$tested, collapse = ", "))
   unexpected <- tryCatch(
-    figures$site_class_counts(pac_table(pac_row("x", "g", assignment_class = "intergenic"))),
+    figures$site_class_counts(pac_table(pac_row("x", "g", gene_region = "intergenic"))),
     error = function(error) conditionMessage(error)
   )
-  check(grepl("Unexpected assignment_class values: intergenic", unexpected, fixed = TRUE), unexpected)
+  check(grepl("Unexpected gene_region values: intergenic", unexpected, fixed = TRUE), unexpected)
 })
 
 test_case("F-05", "gene events come from the genes table, PAC events from the PAC rows", {
@@ -197,15 +196,13 @@ test_case("F-05", "gene events come from the genes table, PAC events from the PA
     pac_row("p4", "g2", event_type = "decreased_usage"),
     pac_row("p5", "g3", event_type = "gained_candidate"),
     pac_row("p6", "g3", event_type = "lost_candidate"),
-    # Labels whose genes the genes table does not flag are not counted.
-    pac_row("p7", "g4", event_type = "dominant_switch"),
-    pac_row("p8", "g5", event_type = "complexity_gain"),
-    pac_row("p9", "g5", event_type = "complexity_gain")
+    pac_row("p7", "g4"),
+    pac_row("p8", "g5")
   )
   genes <- rbind(
     gene_row("g1", dominant_switch = TRUE),
-    gene_row("g2", complexity_change = "gain"),
-    gene_row("g3", dominant_switch = TRUE, complexity_change = "loss"),
+    gene_row("g2", active_pacs_change = "more"),
+    gene_row("g3", dominant_switch = TRUE, active_pacs_change = "fewer"),
     gene_row("g4"),
     gene_row("g5")
   )
@@ -223,7 +220,7 @@ test_case("F-05", "gene events come from the genes table, PAC events from the PA
   expected <- c(
     gained = 2L, increased_usage = 1L, decreased_usage = 1L, lost = 0L,
     gained_candidate = 1L, lost_candidate = 1L, dominant_switch = 2L,
-    complexity_gain = 1L, complexity_loss = 1L
+    more_active_pacs = 1L, fewer_active_pacs = 1L
   )
   check(identical(observed, expected), "counts: ", paste(names(observed), observed, sep = "=", collapse = ", "))
   check(identical(as.character(first$level), rep(c("PAC events", "Gene events"), c(6, 3))), "levels.")
@@ -306,7 +303,7 @@ test_case("F-21", "pattern counts give each class its genes, apart where only fl
     gene_row("g1", apa_pattern = "intronic_gain;utr_shortening"),
     gene_row("g2", apa_pattern = "intronic_gain"),
     gene_row("g3", apa_pattern = "alternative_last_exon"),
-    gene_row("g4", apa_pattern = "other"),
+    gene_row("g4", apa_pattern = "unclassified_change"),
     gene_row("g5", apa_pattern = "none"),
     gene_row("g6", apa_pattern = potential("intronic_gain")),
     gene_row("g7", apa_pattern = paste0("utr_shortening;", potential("intronic_loss")))
@@ -316,7 +313,7 @@ test_case("F-21", "pattern counts give each class its genes, apart where only fl
   )
   classes <- c(
     "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
-    "utr_lengthening", "other"
+    "utr_lengthening", "unclassified_change"
   )
   check(identical(levels(counts$pattern), classes), "pattern levels.")
   check(identical(levels(counts$support), c("supported", "flagged")), "support levels.")
@@ -325,7 +322,7 @@ test_case("F-21", "pattern counts give each class its genes, apart where only fl
   expected <- c(
     "supported intronic_gain" = 2L, "supported intronic_loss" = 0L,
     "supported alternative_last_exon" = 1L, "supported utr_shortening" = 2L,
-    "supported utr_lengthening" = 0L, "supported other" = 1L,
+    "supported utr_lengthening" = 0L, "supported unclassified_change" = 1L,
     "flagged intronic_gain" = 1L, "flagged intronic_loss" = 1L,
     "flagged alternative_last_exon" = 0L, "flagged utr_shortening" = 0L,
     "flagged utr_lengthening" = 0L
@@ -336,11 +333,11 @@ test_case("F-21", "pattern counts give each class its genes, apart where only fl
 
 test_case("F-22", "a gene is colored by its first APA pattern, and marked when only flagged PACs support it", {
   potential <- "intronic_gain_potential_internal_priming"
-  values <- c("intronic_gain;utr_shortening", "other", "none", NA, "unknown", potential,
+  values <- c("intronic_gain;utr_shortening", "unclassified_change", "none", NA, "unknown", potential,
     paste0("utr_lengthening;", potential))
   colors <- figures$first_pattern(values)
   check(identical(as.character(colors),
-    c("intronic_gain", "other", "none", "none", "none", "intronic_gain", "utr_lengthening")),
+    c("intronic_gain", "unclassified_change", "none", "none", "none", "intronic_gain", "utr_lengthening")),
     "first patterns: ", paste(colors, collapse = ", "))
   check(identical(levels(colors), names(figures$APA_CLASSES)), "levels.")
   flagged <- figures$first_pattern_flagged(values)
@@ -437,12 +434,12 @@ test_case("F-23", "the pattern grid table orders genes by shared patterns, then 
   genes_tables <- list(
     A_vs_C = pattern_genes(
       c("g1", "g2", "g3", "g4", "g6"),
-      c("utr_shortening", "none", "intronic_gain;utr_lengthening", "other", "utr_lengthening"),
+      c("utr_shortening", "none", "intronic_gain;utr_lengthening", "unclassified_change", "utr_lengthening"),
       c(0.01, 0.5, 0.2, 0.03, 0.01)
     ),
     B_vs_C = pattern_genes(
       c("g1", "g3", "g4", "g5", "g6"),
-      c("utr_lengthening", "none", "other", "alternative_last_exon", "utr_lengthening"),
+      c("utr_lengthening", "none", "unclassified_change", "alternative_last_exon", "utr_lengthening"),
       c(0.02, 0.001, 0.04, 0.3, 0.05)
     ),
     # g7's empty pattern counts as none, as the grid draws it.
@@ -473,7 +470,7 @@ test_case("F-24", "the grid draws at most 50 genes, with untested and multi-patt
   first <- both
   first$apa_pattern[[1]] <- "intronic_gain;utr_shortening"
   second <- both[-2, , drop = FALSE]
-  second <- rbind(second, pattern_genes("g61", "other", 0.9))
+  second <- rbind(second, pattern_genes("g61", "unclassified_change", 0.9))
   table <- figures$pattern_grid_table(comparisons, list(A_vs_C = first, B_vs_C = second))
   shown <- figures$grid_genes(table)
   check(nrow(shown) == 50L, "grid genes: ", nrow(shown))
@@ -650,7 +647,9 @@ test_case("F-30", "flagged patterns are marked on the grid and the distal plot",
   comparisons <- comparisons_of(c("A_vs_C", "B_vs_C"))
   table <- figures$pattern_grid_table(comparisons, list(
     A_vs_C = pattern_genes(c("g1", "g2"), c(potential, "utr_shortening"), c(0.01, 0.02)),
-    B_vs_C = pattern_genes(c("g1", "g2"), c(paste0(potential, ";utr_shortening"), "other"), c(0.01, 0.02))
+    B_vs_C = pattern_genes(
+      c("g1", "g2"), c(paste0(potential, ";utr_shortening"), "unclassified_change"), c(0.01, 0.02)
+    )
   ))
   plot <- figures$plot_pattern_grid(table, comparisons)
   marks <- plot$layers[[2]]$data
@@ -732,7 +731,7 @@ write_inputs <- function(directory, filled) {
     pac_row("g1_p1", "g1", "+", "decreased_usage", control = 0.7, treatment = 0.3, pac_fdr = 0.001, gene_fdr = 0.001, pvalue = 1e-6, condition = "T1"),
     pac_row("g1_p2", "g1", "+", "increased_usage", control = 0.3, treatment = 0.7, pac_fdr = 0.001, gene_fdr = 0.001, pvalue = 1e-6, condition = "T1"),
     pac_row("g2_p1", "g2", "-", "none", control = 0.5, treatment = 0.55, gene_fdr = 0.8, pvalue = 0.7, condition = "T1"),
-    pac_row("g2_p2", "g2", "-", "none", assignment_class = "intronic", control = 0.5, treatment = 0.45, gene_fdr = 0.8, pvalue = 0.7, condition = "T1")
+    pac_row("g2_p2", "g2", "-", "none", gene_region = "intron", control = 0.5, treatment = 0.45, gene_fdr = 0.8, pvalue = 0.7, condition = "T1")
   )
   genes <- rbind(
     gene_row("g1", dominant_switch = TRUE, gene_fdr = 0.001, apa_pattern = "utr_lengthening"),

@@ -419,7 +419,7 @@ def test_kmer_enrichment_tolerates_unavailable_model_statistics(
             {
                 "pac_id": "pac-event",
                 "event_type": "gained",
-                "pvalue_pac": None,
+                "pac_pvalue": None,
                 "gene_fdr": None,
                 "delta_pau_ci_low": None,
                 "delta_pau_ci_high": None,
@@ -428,14 +428,14 @@ def test_kmer_enrichment_tolerates_unavailable_model_statistics(
             {
                 "pac_id": "pac-background",
                 "event_type": None,
-                "pvalue_pac": None,
+                "pac_pvalue": None,
                 "gene_fdr": None,
                 "delta_pau_ci_low": None,
                 "delta_pau_ci_high": None,
                 "bootstrap_successes": None,
             },
         ],
-        statistics / "treatment_vs_control.events.tsv.gz",
+        statistics / "treatment_vs_control.calls.tsv.gz",
     )
     write_tsv(
         [
@@ -495,7 +495,7 @@ def test_kmer_enrichment_restricts_background_to_tested_pacs(
             {
                 "pac_id": "pac-event",
                 "event_type": "gained",
-                "pvalue_pac": None,
+                "pac_pvalue": None,
                 "gene_fdr": None,
                 "delta_pau_ci_low": None,
                 "delta_pau_ci_high": None,
@@ -504,14 +504,14 @@ def test_kmer_enrichment_restricts_background_to_tested_pacs(
             {
                 "pac_id": "pac-background",
                 "event_type": None,
-                "pvalue_pac": None,
+                "pac_pvalue": None,
                 "gene_fdr": None,
                 "delta_pau_ci_low": None,
                 "delta_pau_ci_high": None,
                 "bootstrap_successes": None,
             },
         ],
-        statistics / "treatment_vs_control.events.tsv.gz",
+        statistics / "treatment_vs_control.calls.tsv.gz",
     )
     write_tsv(
         [
@@ -585,7 +585,7 @@ def test_kmer_enrichment_raises_on_missing_pacs_file(
             {
                 "pac_id": "pac-event",
                 "event_type": "gained",
-                "pvalue_pac": None,
+                "pac_pvalue": None,
                 "gene_fdr": None,
                 "delta_pau_ci_low": None,
                 "delta_pau_ci_high": None,
@@ -594,14 +594,14 @@ def test_kmer_enrichment_raises_on_missing_pacs_file(
             {
                 "pac_id": "pac-background",
                 "event_type": None,
-                "pvalue_pac": None,
+                "pac_pvalue": None,
                 "gene_fdr": None,
                 "delta_pau_ci_low": None,
                 "delta_pau_ci_high": None,
                 "bootstrap_successes": None,
             },
         ],
-        statistics / "treatment_vs_control.events.tsv.gz",
+        statistics / "treatment_vs_control.calls.tsv.gz",
     )
 
     atlas = tmp_path / "atlas.tsv.gz"
@@ -649,13 +649,13 @@ def test_merge_statistics_concatenates_precision_shards_with_model_status(tmp_pa
                 "gene_id": "g1",
                 "precision": "10.5",
                 "family": "A",
-                "model_status": "drimseq",
+                "model_status": "fitted",
             },
             {
                 "gene_id": "g2",
                 "precision": "20",
                 "family": "A",
-                "model_status": "drimseq_add_uniform",
+                "model_status": "fitted_with_zero_count_stabilization",
             },
         ],
         family_a / "gene_precision.tsv.gz",
@@ -691,11 +691,11 @@ def test_merge_statistics_concatenates_precision_shards_with_model_status(tmp_pa
     assert merged[0]["gene_id"] == "g1"
     assert merged[0]["precision"] == "10.5"
     assert merged[0]["family"] == "A"
-    assert merged[0]["model_status"] == "drimseq"
+    assert merged[0]["model_status"] == "fitted"
     assert merged[1]["gene_id"] == "g2"
     assert merged[1]["precision"] == "20"
     assert merged[1]["family"] == "A"
-    assert merged[1]["model_status"] == "drimseq_add_uniform"
+    assert merged[1]["model_status"] == "fitted_with_zero_count_stabilization"
     assert merged[2]["gene_id"] == "g3"
     assert merged[2]["precision"] == "30"
     assert merged[2]["family"] == "B"
@@ -715,13 +715,13 @@ def test_merge_statistics_rejects_mismatched_precision_headers(
                 "gene_id": "g1",
                 "precision": "10.5",
                 "family": "A",
-                "model_status": "drimseq",
+                "model_status": "fitted",
             },
             {
                 "gene_id": "g2",
                 "precision": "20",
                 "family": "A",
-                "model_status": "drimseq_add_uniform",
+                "model_status": "fitted_with_zero_count_stabilization",
             },
         ],
         family_a / "gene_precision.tsv.gz",
@@ -759,7 +759,7 @@ def test_merge_statistics_orders_shards_by_family_not_task_number(tmp_path: Path
             "gene_id": f"{family}_gene",
             "precision": "1",
             "family": family,
-            "model_status": "drimseq",
+            "model_status": "fitted",
         }
         fitted_row = {
             "gene_id": f"{family}_gene",

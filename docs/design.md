@@ -259,6 +259,7 @@ dm_zero_sensitivity_repeats: 5
 dm_zero_max_delta_pau_spread: 0.02
 random_seed: 1729
 event_min_treatment_pau: 0.05
+active_pac_min_pau: 0.05
 event_max_control_pau: 0.01
 event_min_supporting_samples: 2
 potential_internal_priming_withheld_calls: true
@@ -754,7 +755,8 @@ For each PAC, record:
 - downstream A fraction and longest A run;
 - same-strand known-PAC matches;
 - gene and transcript assignments;
-- terminal-exon, other-exon, intronic, downstream, or intergenic class;
+- gene region (`gene_region`): `last_exon`, `internal_exon`, `intron`,
+  `downstream_of_gene`, or `intergenic`;
 - proximal-to-distal rank;
 - confidence tier and explicit reasons.
 
@@ -763,12 +765,12 @@ Strict filtering may be exposed as an optional parameter.
 
 Assign genes in this order:
 
-1. Same-strand terminal exon.
-2. Same-strand nonterminal exon.
-3. Same-strand intron.
+1. Same-strand terminal exon (`last_exon`).
+2. Same-strand other exon (`internal_exon`).
+3. Same-strand intron (`intron`).
 4. Downstream of a transcript end within the configured distance, without
-   crossing an intervening same-strand gene.
-5. Intergenic.
+   crossing an intervening same-strand gene (`downstream_of_gene`).
+5. Intergenic (`intergenic`).
 
 **Terminal exons.** A transcript's final exon is a terminal exon unless:
 - it overlaps an internal exon of another transcript of the gene, as the
@@ -776,7 +778,7 @@ Assign genes in this order:
 - it is a single-exon model apart from every exon of the gene's multi-exon
   transcripts, such as a fragment inside an intron.
 
-PACs in such exons are nonterminal-exon PACs. Without transcript IDs, a gene
+PACs in such exons are `internal_exon` PACs. Without transcript IDs, a gene
 is one transcript, so only its 3'-most exon is terminal.
 
 The rule cannot tell a composite terminal exon, an internal exon extended into
@@ -794,7 +796,7 @@ false last exon.
 
 **Last exons.** A gene's terminal exons that overlap, sharing even a single
 coordinate, form one last exon. The atlas records each terminal-exon PAC's
-last exon as a 1-based locus in `last_exon`. A PAC downstream of a gene gets
+last exon as a 1-based locus in `last_exon_locus`. A PAC downstream of a gene gets
 the gene's 3'-most last exon. Every other PAC gets none.
 
 Retain ambiguous assignments in the atlas but exclude them from primary
@@ -992,7 +994,8 @@ family:
    medians of the repeats: proportions, precision, and likelihood ratios, with
    p-values from the median likelihood ratio. A gene needs at least 80 percent
    of repeats to succeed.
-6. Record that stabilization was used (`model_status` `drimseq_add_uniform`).
+6. Record that stabilization was used (`model_status`
+   `fitted_with_zero_count_stabilization`; an unstabilized fit is `fitted`).
    Never write the perturbed values to a count or PAU output.
 7. Flag the PAC as `zero_boundary_unstable`, with a reason, when any of these
    holds:
@@ -1042,20 +1045,20 @@ Classify PACs using both statistical evidence and detection evidence:
   PAU;
 - **dominant switch:** in a gene that passes the contrast-specific gene test,
   the highest fitted-usage PAC differs between treatment and control;
-- **complexity gain or loss:** in a gene that passes the contrast-specific gene
-  test, the number of tested PACs with fitted PAU at least
-  `event_min_treatment_pau` differs between the groups.
+- **more or fewer active PACs:** in a gene that passes the contrast-specific
+  gene test, the number of active PACs differs between the groups. An active
+  PAC has fitted PAU of at least `active_pac_min_pau` in a group.
 
-A PAC carries one `event_type`, so the dominant-switch and complexity labels
-go only on PACs without a call of their own. The `.genes` table records these
-two events for every gene, in `dominant_switch` and `complexity_change`, after
-`control_condition`, followed by the APA pattern:
+The first four are PAC calls, a PAC's `event_type`. The last two are gene
+events, and only the `.genes` table records them, in `dominant_switch` and
+`active_pacs_change` (`more`, `fewer`, or `none`), after `control_condition`,
+followed by the APA pattern:
 
 ```text
-gene_id  gene_name  condition  control_condition  dominant_switch  complexity_change
+gene_id  gene_name  condition  control_condition  dominant_switch  active_pacs_change
 apa_pattern  delta_intronic_share  delta_utr_distal_share  last_exon_switch
-gene_fdr  pvalue  lr  df  model_status  stabilization_successes
-exploratory_insufficient_replicates
+gene_fdr  gene_pvalue  gene_likelihood_ratio  gene_degrees_of_freedom  model_status
+stabilization_successes  exploratory_insufficient_replicates
 ```
 
 #### APA Patterns
@@ -1065,8 +1068,9 @@ between 3' UTR APA, among tandem sites of a last exon, and upstream-region APA,
 at sites in introns or internal exons (Tian and Manley, 2017).
 
 **Regions.**
-- **Upstream region:** intronic and nonterminal-exon PACs.
-- **3' region:** terminal-exon and downstream PACs, grouped by `last_exon`.
+- **Upstream region:** `intron` and `internal_exon` PACs.
+- **3' region:** `last_exon` and `downstream_of_gene` PACs, grouped by
+  `last_exon_locus`.
 
 **Gating calls.**
 - A gating call is a confirmed call (`gained`, `increased_usage`, `lost`,
@@ -1112,8 +1116,9 @@ usage, and has a confirmed call or a counted withheld one.
   calls also count takes the suffix `_potential_internal_priming`. Every rule
   only gains patterns from more calls, so a gene has at most one form of each.
 - `apa_pattern` joins the patterns found with `;`: the gated ones in this
-  order, then the potential ones in the same order. It is `other` for a
-  classified gene with no pattern, and `none` for every other gene.
+  order, then the potential ones in the same order. It is
+  `unclassified_change` for a classified gene with no pattern, and `none` for
+  every other gene.
 
 When detection and effect-size requirements for `gained` or `lost` pass but a
 stable PAC-level p-value cannot be obtained, report `gained_candidate` or
@@ -1136,20 +1141,20 @@ Default gained-PAC requirements:
 Use the label `gained` or `not detected in control`, not `de novo`, unless
 independent evidence establishes biological absence in the control.
 
-The `.pacs` table, and its `.events` subset, start with the identity block of
+The `.pacs` table, and its `.calls` subset, start with the identity block of
 every PAC-level table, then run from the answer to the evidence:
 
 ```text
 pac_id  gene_id  gene_name  chrom  start  end  strand  locus
 condition  control_condition  event_type
 fitted_control_pau  fitted_treatment_pau  delta_pau  delta_pau_ci_low  delta_pau_ci_high
-pac_fdr  gene_fdr  pvalue_pac  pvalue_gene  lr  df
-assignment_class  last_exon  confidence  internal_priming_flag  known_pac  known_rescue_only
+pac_fdr  gene_fdr  pac_pvalue  gene_pvalue  pac_likelihood_ratio  pac_degrees_of_freedom
+gene_region  last_exon_locus  confidence  internal_priming_flag  known_pac  known_rescue_only
 primary_pas_motif  primary_pas_motif_rna  primary_motif_class
 control_/treatment_supporting_samples  control_/treatment_gene_total
 raw_control_/treatment_counts  observed_control_/treatment_pau
 effect_exceeds_threshold  dominant_pac_control/treatment
-control_/treatment_detected_complexity
+control_/treatment_active_pacs
 model_status  precision  alpha_control  alpha_treatment
 stabilization_successes  stabilization_delta_pau_spread
 zero_boundary_unstable  zero_boundary_reason
@@ -1262,8 +1267,8 @@ make no calls of their own. For each comparison:
   the pattern. Up to 20 genes whose distal PAC rose and 20 whose
   distal PAC fell, the largest changes, are labeled by gene name.
   `CONDITION_vs_CONTROL.distal_usage.tsv.gz` lists the genes.
-- **site classes:** confirmed gains and losses by assignment class, so
-  intronic polyadenylation shows as intron gains.
+- **site classes:** confirmed gains and losses by gene region, titled "PAC
+  calls by gene region", so intronic polyadenylation shows as intron gains.
 
 Across comparisons:
 
@@ -1345,7 +1350,7 @@ results/
     FAMILY.statistical_filtering.tsv.gz
     CONDITION_vs_CONTROL.genes.tsv.gz
     CONDITION_vs_CONTROL.pacs.tsv.gz
-    CONDITION_vs_CONTROL.events.tsv.gz
+    CONDITION_vs_CONTROL.calls.tsv.gz
     fitted_pau.tsv.gz
     gene_precision.tsv.gz
   motifs/
@@ -1509,8 +1514,9 @@ Cover:
   bootstrap intervals;
 - separate plus- and minus-strand browser tracks;
 - YAML and command-line parameter precedence;
-- gene-level dominant-switch and complexity events on PACs with their own
-  calls;
+- gene-level dominant-switch and active-PAC events in genes whose PACs have
+  their own calls, and PAC rows that carry only PAC calls;
+- a column guide that documents exactly the columns of every published table;
 - terminal exons without retained-intron, 3'-incomplete, or stray
   single-exon ends, and last exons merged by overlap, on both strands;
 - APA patterns from region shares and direction-matched calls, including

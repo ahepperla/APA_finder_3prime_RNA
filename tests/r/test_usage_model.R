@@ -51,15 +51,15 @@ boundary_genes <- c("gene_gain", "gene_unrelated_zero")
 
 # Independent stageR computation on a table's own p-values, with simple keys.
 stager_oracle <- function(pacs, alpha) {
-  genes <- unique(pacs[, c("gene_id", "pvalue_gene")])
+  genes <- unique(pacs[, c("gene_id", "gene_pvalue")])
   check(!anyDuplicated(genes$gene_id), "Gene p-values differ within a gene.")
   gene_keys <- paste0("g", seq_len(nrow(genes)))
-  screen <- as_number(genes$pvalue_gene)
+  screen <- as_number(genes$gene_pvalue)
   screen[!is.finite(screen)] <- NA_real_
   names(screen) <- gene_keys
   if (!any(is.finite(screen))) return(rep(NA_real_, nrow(pacs)))
   feature_keys <- paste0("f", seq_len(nrow(pacs)))
-  confirmation <- as_number(pacs$pvalue_pac)
+  confirmation <- as_number(pacs$pac_pvalue)
   missing <- !is.finite(confirmation)
   confirmation[missing] <- 1
   confirmation <- matrix(confirmation, ncol = 1L, dimnames = list(feature_keys, "contrast"))
@@ -133,14 +133,17 @@ test_case("M-02", "a PAC silent in the control is called gained", {
   check(as_number(row$fitted_treatment_pau) >= 0.25, "fitted treatment PAU is ", row$fitted_treatment_pau)
   check(as_number(row$delta_pau) >= 0.25, "delta PAU is ", row$delta_pau, ".")
   check(!as_flag(row$zero_boundary_unstable), "the PAC is flagged unstable.")
-  check(identical(row$model_status, "drimseq_add_uniform"), "model_status is ", row$model_status)
+  check(
+    identical(row$model_status, "fitted_with_zero_count_stabilization"),
+    "model_status is ", row$model_status
+  )
   check(as_number(row$stabilization_successes) == 5, "stabilization successes: ", row$stabilization_successes)
   check(identical(row$raw_control_counts, "C_1=0,C_2=0,C_3=0"), "raw control counts changed.")
   check(identical(row$observed_control_pau, "C_1=0,C_2=0,C_3=0"), "observed control PAU changed.")
-  events <- read_result(run$final_directory, "T1_vs_C.events.tsv.gz")
+  calls <- read_result(run$final_directory, "T1_vs_C.calls.tsv.gz")
   check(
-    sum(events$pac_id == gain_pac3 & events$event_type == "gained") == 1L,
-    "the events table does not contain exactly one gained row."
+    sum(calls$pac_id == gain_pac3 & calls$event_type == "gained") == 1L,
+    "the calls table does not contain exactly one gained row."
   )
 })
 
@@ -149,7 +152,7 @@ test_case("M-03", "a PAC silent only in another treatment leaves this comparison
   t1 <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
   rows <- t1[t1$gene_id == "gene_unrelated_zero", , drop = FALSE]
   check(nrow(rows) == 3L, "expected 3 rows, found ", nrow(rows), ".")
-  for (column in c("pvalue_gene", "pvalue_pac", "fitted_control_pau", "fitted_treatment_pau")) {
+  for (column in c("gene_pvalue", "pac_pvalue", "fitted_control_pau", "fitted_treatment_pau")) {
     check(all(is.finite(as_number(rows[[column]]))), "non-finite ", column, " in T1_vs_C.")
   }
   check(!any(as_flag(rows$zero_boundary_unstable)), "rows are flagged unstable in T1_vs_C.")
@@ -164,7 +167,7 @@ test_case("M-03", "a PAC silent only in another treatment leaves this comparison
   lost <- one_row(t2, pac_id = unrelated_pac3)
   check(identical(lost$event_type, "lost"), "PAC3 in T2_vs_C is ", lost$event_type, ".")
   gain_rows <- t2[t2$gene_id == "gene_gain", , drop = FALSE]
-  check(all(is.finite(as_number(gain_rows$pvalue_gene))), "gene_gain lacks a gene p in T2_vs_C.")
+  check(all(is.finite(as_number(gain_rows$gene_pvalue))), "gene_gain lacks a gene p in T2_vs_C.")
   labelled <- c(
     "gained", "lost", "increased_usage", "decreased_usage", "gained_candidate", "lost_candidate"
   )
@@ -198,7 +201,7 @@ test_case("M-04", "stabilized genes get precision, proportions, and gene p-value
     }
     genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))
     check(
-      all(is.finite(as_number(genes$pvalue[genes$gene_id %in% boundary_genes]))),
+      all(is.finite(as_number(genes$gene_pvalue[genes$gene_id %in% boundary_genes]))),
       comparison, ": the genes table lacks p-values for stabilized genes."
     )
   }
@@ -389,14 +392,15 @@ test_case("H-05", "event classification", {
   }
 })
 
-test_case("H-07", "descriptive events need a gene that passes the screen", {
+test_case("H-07", "gene-level events need a gene that passes the screen, and stay off PAC rows", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
-    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
+    active_pac_min_pau = 0.05, min_gene_total = 20,
+    potential_internal_priming_withheld_calls = TRUE
   )
-  # Every PAC is detected in both groups with a PAC FDR of 0.5, so no tested
-  # label applies and only the descriptive labels can.
+  # Every PAC is detected in both groups with a PAC FDR of 0.5, so no PAC has
+  # a call and only the gene-level events can apply.
   gene <- function(gene_id, gene_fdr, control, treatment) {
     data.frame(
       feature_id = paste0(gene_id, "_p", seq_along(control)),
@@ -418,25 +422,97 @@ test_case("H-07", "descriptive events need a gene that passes the screen", {
     )
   }
   switched <- list(c(0.7, 0.3), c(0.3, 0.7))
-  complexity <- list(c(1.0, 0.0), c(0.8, 0.2))
+  more_active <- list(c(1.0, 0.0), c(0.8, 0.2))
   pacs <- rbind(
     gene("switch_screened", 0.01, switched[[1]], switched[[2]]),
     gene("switch_unscreened", 0.5, switched[[1]], switched[[2]]),
     gene("switch_untested", NA_real_, switched[[1]], switched[[2]]),
-    gene("complexity_screened", 0.01, complexity[[1]], complexity[[2]]),
-    gene("complexity_unscreened", 0.5, complexity[[1]], complexity[[2]])
+    gene("more_screened", 0.01, more_active[[1]], more_active[[2]]),
+    gene("more_unscreened", 0.5, more_active[[1]], more_active[[2]])
   )
-  events <- stats::setNames(model$assign_events(pacs, params)$event_type, pacs$feature_id)
-  expected <- c(
-    switch_screened_p1 = "none", switch_screened_p2 = "dominant_switch",
-    switch_unscreened_p1 = "none", switch_unscreened_p2 = "none",
-    switch_untested_p1 = "none", switch_untested_p2 = "none",
-    complexity_screened_p1 = "complexity_gain", complexity_screened_p2 = "complexity_gain",
-    complexity_unscreened_p1 = "none", complexity_unscreened_p2 = "none"
+  labelled <- model$assign_events(pacs, params)
+  check(
+    all(labelled$event_type == "none"),
+    "PAC rows carry ", paste(unique(labelled$event_type), collapse = ", ")
+  )
+  genes <- model$gene_level_events(labelled, params)
+  expected <- list(
+    gene_id = c(
+      "switch_screened", "switch_unscreened", "switch_untested", "more_screened",
+      "more_unscreened"
+    ),
+    dominant_switch = c(TRUE, FALSE, FALSE, FALSE, FALSE),
+    active_pacs_change = c("none", "none", "none", "more", "none")
   )
   check(
-    identical(events, expected),
-    "events were ", paste(names(events), events, sep = "=", collapse = ", ")
+    identical(as.list(genes), expected),
+    "gene events were ",
+    paste(genes$gene_id, genes$dominant_switch, genes$active_pacs_change, collapse = "; ")
+  )
+})
+
+test_case("H-08", "active_pac_min_pau sets the active-PAC count, not gained or lost calls", {
+  params <- list(
+    event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
+    site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
+    active_pac_min_pau = 0.05, min_gene_total = 20,
+    potential_internal_priming_withheld_calls = TRUE
+  )
+  # p1 falls, p2 barely moves, and p3, absent from the control, is gained
+  # with 0.12 of the gene in the treatment.
+  pacs <- data.frame(
+    feature_id = c("p1", "p2", "p3"),
+    gene_id = "g",
+    fitted_control_pau = c(0.94, 0.06, 0.00),
+    fitted_treatment_pau = c(0.80, 0.08, 0.12),
+    delta_pau = c(-0.14, 0.02, 0.12),
+    gene_fdr = 0.01,
+    pac_fdr = c(0.001, 0.5, 0.001),
+    control_supporting_samples = c(2, 2, 0),
+    treatment_supporting_samples = 2,
+    control_gene_total = 100,
+    treatment_gene_total = 100,
+    zero_boundary_unstable = FALSE,
+    confidence = "moderate",
+    internal_priming_flag = FALSE,
+    exploratory_insufficient_replicates = FALSE,
+    stringsAsFactors = FALSE
+  )
+  outcome <- function(changes) {
+    labelled <- model$assign_events(pacs, utils::modifyList(params, changes))
+    genes <- model$gene_level_events(labelled, utils::modifyList(params, changes))
+    list(
+      events = labelled$event_type,
+      active = c(labelled$control_active_pacs[[1]], labelled$treatment_active_pacs[[1]]),
+      change = genes$active_pacs_change
+    )
+  }
+  calls <- c("decreased_usage", "none", "gained")
+  describe <- function(result) {
+    paste0(
+      paste(result$events, collapse = ","), " active ", paste(result$active, collapse = "/"),
+      " ", result$change
+    )
+  }
+  default <- outcome(list())
+  check(
+    identical(default, list(events = calls, active = c(2L, 3L), change = "more")),
+    "defaults gave ", describe(default)
+  )
+  # Only PACs with at least 0.13 of the gene count as active; the calls stay.
+  raised <- outcome(list(active_pac_min_pau = 0.13))
+  check(
+    identical(raised, list(events = calls, active = c(1L, 1L), change = "none")),
+    "active_pac_min_pau = 0.13 gave ", describe(raised)
+  )
+  # A gained call now needs 0.13 in the treatment; the active count stays.
+  stricter <- outcome(list(event_min_treatment_pau = 0.13))
+  check(
+    identical(
+      stricter,
+      list(events = c("decreased_usage", "none", "none"), active = c(2L, 3L), change = "more")
+    ),
+    "event_min_treatment_pau = 0.13 gave ", describe(stricter)
   )
 })
 
@@ -698,11 +774,11 @@ test_case("M-18", "a condition with no counts leaves only its comparisons untest
   rows <- t2[t2$gene_id == "null_01", , drop = FALSE]
   check(nrow(rows) == 3L, "expected 3 T2 rows for null_01.")
   check(all(rows$model_status == "group_without_counts"), "T2 rows are not group_without_counts.")
-  check(all(is.na(as_number(rows$pvalue_pac)) & is.na(as_number(rows$pvalue_gene))), "T2 has p-values.")
+  check(all(is.na(as_number(rows$pac_pvalue)) & is.na(as_number(rows$gene_pvalue))), "T2 has p-values.")
   check(all(rows$event_type == "none"), "T2 rows have events: ", paste(rows$event_type, collapse = ", "))
   t1 <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
   rows <- t1[t1$gene_id == "null_01", , drop = FALSE]
-  check(all(is.finite(as_number(rows$pvalue_gene))), "T1_vs_C lost its gene p-value.")
+  check(all(is.finite(as_number(rows$gene_pvalue))), "T1_vs_C lost its gene p-value.")
   check(!any(rows$model_status == "group_without_counts"), "T1_vs_C was masked.")
   omnibus <- read_result(run$final_directory, "C.gene_omnibus.tsv.gz")
   check(one_row(omnibus, gene_id = "null_01")$model_status == "group_without_counts", "omnibus not masked.")
@@ -820,7 +896,7 @@ test_case("M-22", "motif preference uses the family design, covariates included"
   classes <- read_result(directory, "B_vs_A.preference_class.tsv.gz")
   class_columns <- c(
     "primary_motif_class", "condition", "control_condition", "delta_motif_usage", "fdr",
-    "p_value", "control_mean", "treatment_mean", "transformed_coefficient", "informative_genes"
+    "pvalue", "control_mean", "treatment_mean", "transformed_coefficient", "informative_genes"
   )
   check(identical(names(classes), class_columns), "unexpected class columns.")
   check(
@@ -842,11 +918,12 @@ test_case("M-23", "versions mode writes a table, then appends to it", {
   check(identical(table$version[2:3], c("1.38.0", "1.2.3")), "package versions were not written.")
 })
 
-test_case("M-24", "the genes table records every gene-level event, even on called PACs", {
+test_case("M-24", "the genes table records every gene-level event, with or without PAC calls", {
   params <- list(
     event_min_supporting_samples = 2, min_abs_delta_pau = 0.10, gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_treatment_pau = 0.05,
-    min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
+    active_pac_min_pau = 0.05, min_gene_total = 20,
+    potential_internal_priming_withheld_calls = TRUE
   )
   gene <- function(gene_id, gene_fdr, pac_fdr, control, treatment) {
     data.frame(
@@ -868,8 +945,7 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
       stringsAsFactors = FALSE
     )
   }
-  # In switch_called and gain_called both PACs have their own calls, so no PAC
-  # can carry the gene's label; in loss no PAC has a call.
+  # In switch_called and gain_called both PACs have calls; in loss none does.
   pacs <- rbind(
     gene("switch_called", 0.01, 0.001, c(0.7, 0.3), c(0.3, 0.7)),
     gene("switch_unscreened", 0.5, 0.001, c(0.7, 0.3), c(0.3, 0.7)),
@@ -882,7 +958,7 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
     switch_called_p1 = "decreased_usage", switch_called_p2 = "increased_usage",
     switch_unscreened_p1 = "none", switch_unscreened_p2 = "none",
     gain_called_p1 = "decreased_usage", gain_called_p2 = "increased_usage",
-    loss_p1 = "complexity_loss", loss_p2 = "complexity_loss", loss_p3 = "complexity_loss"
+    loss_p1 = "none", loss_p2 = "none", loss_p3 = "none"
   )
   check(
     identical(events, expected_events),
@@ -892,15 +968,16 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
   expected <- list(
     gene_id = c("switch_called", "switch_unscreened", "gain_called", "loss"),
     dominant_switch = c(TRUE, FALSE, FALSE, FALSE),
-    complexity_change = c("none", "none", "gain", "loss")
+    active_pacs_change = c("none", "none", "more", "fewer")
   )
   check(
     identical(as.list(genes), expected),
-    "gene events were ", paste(genes$gene_id, genes$dominant_switch, genes$complexity_change, collapse = "; ")
+    "gene events were ",
+    paste(genes$gene_id, genes$dominant_switch, genes$active_pacs_change, collapse = "; ")
   )
 
   # The fitted tables agree: each gene's flags follow from its PAC rows, and
-  # every PAC label sits in a gene the genes table flags.
+  # the PAC rows carry only PAC calls.
   run <- require_run(run_a)
   for (comparison in c("T1_vs_C", "T2_vs_C")) {
     genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))
@@ -919,8 +996,7 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
     switched <- screened & !is.na(first$dominant_pac_control) &
       !is.na(first$dominant_pac_treatment) &
       first$dominant_pac_control != first$dominant_pac_treatment
-    change <- as_number(first$treatment_detected_complexity) -
-      as_number(first$control_detected_complexity)
+    change <- as_number(first$treatment_active_pacs) - as_number(first$control_active_pacs)
     change[!screened | !fitted] <- 0
     index <- match(first$gene_id, genes$gene_id)
     check(!anyNA(index) && nrow(genes) == nrow(first), comparison, ": genes and PACs differ.")
@@ -929,19 +1005,20 @@ test_case("M-24", "the genes table records every gene-level event, even on calle
       comparison, ": dominant_switch disagrees with the PAC rows."
     )
     check(
-      identical(genes$complexity_change[index], ifelse(change > 0, "gain", ifelse(change < 0, "loss", "none"))),
-      comparison, ": complexity_change disagrees with the PAC rows."
+      identical(
+        genes$active_pacs_change[index],
+        ifelse(change > 0, "more", ifelse(change < 0, "fewer", "none"))
+      ),
+      comparison, ": active_pacs_change disagrees with the PAC rows."
     )
-    for (label in c("dominant_switch", "complexity_gain", "complexity_loss")) {
-      labelled_genes <- unique(pacs$gene_id[pacs$event_type == label])
-      flags <- genes[match(labelled_genes, genes$gene_id), , drop = FALSE]
-      flagged <- if (label == "dominant_switch") {
-        as_flag(flags$dominant_switch)
-      } else {
-        flags$complexity_change == sub("complexity_", "", label)
-      }
-      check(all(flagged), comparison, ": a ", label, " label sits in an unflagged gene.")
-    }
+    pac_calls <- c(
+      "gained", "lost", "increased_usage", "decreased_usage", "gained_candidate",
+      "lost_candidate", "none"
+    )
+    check(
+      all(pacs$event_type %in% pac_calls),
+      comparison, ": event_type holds ", paste(setdiff(pacs$event_type, pac_calls), collapse = ", ")
+    )
   }
 })
 
@@ -954,12 +1031,12 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
   # One row per PAC: coordinate, class, last exon, fitted PAU in each group,
   # event, and confidence. A low-confidence PAC is flagged for possible
   # internal priming; the other columns let a withheld call be classified.
-  gene <- function(gene_id, strand, coordinate, class, last_exon, control, treatment, event,
+  gene <- function(gene_id, strand, coordinate, region, last_exon, control, treatment, event,
                    confidence = "high", gene_fdr = 0.01, control_samples = 2, pac_fdr = 0.001,
                    exploratory = FALSE) {
     data.frame(
-      gene_id = gene_id, strand = strand, coordinate = coordinate, assignment_class = class,
-      last_exon = last_exon, fitted_control_pau = control, fitted_treatment_pau = treatment,
+      gene_id = gene_id, strand = strand, coordinate = coordinate, gene_region = region,
+      last_exon_locus = last_exon, fitted_control_pau = control, fitted_treatment_pau = treatment,
       event_type = event, confidence = confidence, gene_fdr = gene_fdr,
       internal_priming_flag = confidence == "low", control_supporting_samples = control_samples,
       treatment_supporting_samples = 2, delta_pau = treatment - control, pac_fdr = pac_fdr,
@@ -967,8 +1044,8 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
       control_gene_total = 100, treatment_gene_total = 100, stringsAsFactors = FALSE
     )
   }
-  intron <- "intronic"
-  last <- "terminal_exon"
+  intron <- "intron"
+  last <- "last_exon"
   cases <- list(
     # Tanc2 in AS_NT_PHA vs AS_NT_DMSO: usage moves from the last exon into
     # introns. Every call in the last exon is a decrease, which the intronic
@@ -982,9 +1059,8 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
         0.020962887, 0.087370443, 0.364917433, 0.043324496, 0.018143946, 0.36568228),
       c(0.060759901, 0.028172593, 0.061173605, 0.189594627, 0.213368603, 0.029396933,
         0.025721693, 0.041423914, 0.176342297, 0.050776227, 0.011048109, 0.112221497),
-      c("complexity_gain", "complexity_gain", "complexity_gain", "gained", "increased_usage",
-        "complexity_gain", "complexity_gain", "complexity_gain", "decreased_usage",
-        "complexity_gain", "complexity_gain", "decreased_usage"),
+      c("none", "none", "none", "gained", "increased_usage", "none", "none", "none",
+        "decreased_usage", "none", "none", "decreased_usage"),
       c("low", "moderate", "moderate", "moderate", "moderate", "moderate", "low", "moderate",
         "moderate", "low", "moderate", "moderate"),
       gene_fdr = 0
@@ -1119,7 +1195,7 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
     flagged_lengthening = potential("utr_lengthening"), both_sites = "intronic_gain",
     mixed = paste0("intronic_gain;", potential("utr_shortening")),
     withheld = potential("intronic_gain"), only_withheld = potential("intronic_gain"),
-    weak_withheld = "other", exploratory_withheld = "other"
+    weak_withheld = "unclassified_change", exploratory_withheld = "unclassified_change"
   )
   check(
     identical(observed, expected),
@@ -1133,7 +1209,8 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
   off <- stats::setNames(off$apa_pattern, off$gene_id)
   check(
     identical(off[c("withheld", "only_withheld", "primed")],
-      c(withheld = "other", only_withheld = "none", primed = potential("intronic_gain"))),
+      c(withheld = "unclassified_change", only_withheld = "none",
+        primed = potential("intronic_gain"))),
     "without withheld calls: ", paste(names(off), off, sep = "=", collapse = ", ")
   )
   unset <- tryCatch(
@@ -1144,7 +1221,7 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
   metric <- function(gene_id, column) patterns[[column]][patterns$gene_id == gene_id]
   near <- function(value, target) isTRUE(abs(value - target) < 1e-9)
   tanc2 <- cases$tanc2
-  exon <- tanc2$assignment_class == last
+  exon <- tanc2$gene_region == last
   check(
     near(metric("tanc2", "delta_intronic_share"),
       sum(tanc2$fitted_treatment_pau[!exon]) - sum(tanc2$fitted_control_pau[!exon])),
@@ -1173,7 +1250,7 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
   run <- require_run(run_a)
   classes <- c(
     model$APA_PATTERN_CLASSES, paste0(model$APA_PATTERN_CLASSES, model$POTENTIAL_INTERNAL_PRIMING),
-    "other", "none"
+    "unclassified_change", "none"
   )
   for (comparison in c("T1_vs_C", "T2_vs_C")) {
     genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))

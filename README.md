@@ -242,12 +242,12 @@ results/
                rejected_candidates.tsv.gz
   counts/      pac_counts.tsv.gz (samples as columns), pac_counts.long.parquet,
                gene_totals.tsv.gz, observed_pau.tsv.gz
-  statistics/  per comparison: CONDITION_vs_CONTROL.genes / .pacs / .events;
+  statistics/  per comparison: CONDITION_vs_CONTROL.genes / .pacs / .calls;
                per family: FAMILY.gene_omnibus and FAMILY.statistical_filtering;
                fitted_pau.tsv.gz, gene_precision.tsv.gz
   motifs/      pac_motifs.tsv.gz, motif_scores.tsv, per-comparison motif
                preference and exploratory k-mer enrichment tables
-  figures/     per comparison: volcano, distal-usage, and site-class figures
+  figures/     per comparison: volcano, distal-usage, and gene-region figures
                (PDF and PNG) and CONDITION_vs_CONTROL.distal_usage.tsv.gz;
                across comparisons: event counts, shared APA patterns,
                concordance, effect against coverage, and the PAU PCA, with
@@ -270,6 +270,30 @@ assembly, contig, strand, and the PAC's representative coordinate. Coordinates
 are zero-based and interbase, so a plus-strand PAC at 1234567 is the boundary
 after the 1,234,567th base.
 
+### Reading the results
+
+[docs/output_columns.md](docs/output_columns.md) explains every column of every
+table, with its units and possible values. Start with the table that answers
+your question:
+
+| Question | Table |
+|---|---|
+| Which PACs changed in a comparison? | `statistics/CONDITION_vs_CONTROL.calls.tsv.gz` |
+| How did every tested PAC's usage change? | `statistics/CONDITION_vs_CONTROL.pacs.tsv.gz` |
+| Which genes changed, and how (APA pattern)? | `statistics/CONDITION_vs_CONTROL.genes.tsv.gz` |
+| Why was a PAC not tested? | `statistics/FAMILY.statistical_filtering.tsv.gz` |
+| Where are the PACs, and what is known about each? | `atlas/pacs.v1.metadata.tsv.gz` |
+| Why was a candidate PAC rejected? | `atlas/rejected_candidates.tsv.gz` |
+| How many reads does each PAC have in each sample? | `counts/pac_counts.tsv.gz` |
+| Which genes share a pattern across comparisons? | `figures/apa_patterns_by_comparison.tsv.gz` |
+
+Three terms recur:
+- **PAC:** a polyadenylation site cluster, one place where transcripts end.
+- **PAU:** a PAC's share of its gene's reads in a sample. Fitted PAU comes from
+  the model; observed PAU from the counts.
+- **Gene FDR and PAC FDR:** the gene FDR says whether a gene's PAC usage
+  changed, and the PAC FDR which of its PACs changed.
+
 ### Columns
 
 Every table with one row per PAC starts with the same identity columns:
@@ -290,7 +314,7 @@ Gene-level tables start with `gene_id` and `gene_name`.
   sample, with rows in genomic order.
 
 After the identity columns, the results tables run from the answer to the
-evidence. In `.pacs` and `.events` the groups are:
+evidence. In `.pacs` and `.calls` the groups are:
 1. **the comparison and the call:** condition, control, `event_type`;
 2. **the effect:** fitted PAU per group, the change in PAU, and its interval;
 3. **significance:** `pac_fdr`, `gene_fdr`, the p-values, and the test
@@ -301,23 +325,25 @@ evidence. In `.pacs` and `.events` the groups are:
 6. **model diagnostics:** precision, stabilization, and the bootstrap.
 
 The `.pacs` tables are the main results: one row per tested PAC. The
-`.events` tables keep only the PACs with an event. The `.genes` tables have
-one row per tested gene: the gene-level events (`dominant_switch` and
-`complexity_change`), the APA pattern and its numbers, then the gene FDR.
+`.calls` tables keep only the PACs with a call. The `.genes` tables have one
+row per tested gene: the gene-level events (`dominant_switch` and
+`active_pacs_change`), the APA pattern and its numbers, then the gene FDR.
 
-| Event | When |
+A PAC's call is its `event_type`:
+
+| `event_type` | When |
 |---|---|
-| `gained`, `lost` | A PAC is detected (reads in at least two samples) in only one group, and that group's usage passes the fitted-PAU thresholds. The group without it has at least `min_gene_total` reads at the gene. The gene and the PAC pass their FDRs. The PAC is neither ambiguous nor flagged for internal priming. |
+| `gained`, `lost` | A PAC is detected (reads in at least two samples) in only one group, and that group's usage passes the fitted-PAU thresholds. The group without it has at least `min_gene_total` reads at the gene's tested PACs. The gene and the PAC pass their FDRs. The PAC is neither ambiguous nor flagged for internal priming. |
 | `gained_candidate`, `lost_candidate` | The detection rules hold, but significance, stability, coverage, or confidence does not, or the comparison is exploratory. These are not confirmed calls. |
 | `increased_usage`, `decreased_usage` | The PAC is detected in both groups, passes both FDRs, and its usage changes by at least `min_abs_delta_pau`. |
-| `dominant_switch` | The most-used PAC differs between the groups, in a gene that passes `gene_fdr`. The label goes on the treatment's most-used PAC only when that PAC has no call of its own. |
-| `complexity_gain`, `complexity_loss` | The number of PACs with fitted PAU of at least `event_min_treatment_pau` differs, in a gene that passes `gene_fdr`. The label goes only on the gene's PACs without a call of their own. |
+| `none` | No call. |
 
-A PAC has one `event_type`, so the gene-level labels undercount genes: a gene
-whose PACs all have their own calls carries no label. Every gene with a
-dominant switch or a complexity change is flagged in the `.genes` table's
-`dominant_switch` (`TRUE` or `FALSE`) and `complexity_change` (`gain`,
-`loss`, or `none`).
+A gene's events are in its `.genes` row:
+
+| Column | When |
+|---|---|
+| `dominant_switch` | `TRUE` when the most-used PAC differs between the groups, in a gene that passes `gene_fdr`. |
+| `active_pacs_change` | `more` or `fewer` when the gene's number of active PACs differs between the groups, in a gene that passes `gene_fdr`; otherwise `none`. An active PAC has at least `active_pac_min_pau` (default 0.05) of the gene's fitted usage in a group. The `.pacs` columns `control_active_pacs` and `treatment_active_pacs` give the counts. |
 
 ### APA patterns
 
@@ -336,7 +362,7 @@ needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
 | `alternative_last_exon` | One last exon gains and another loses at least the threshold of the gene's usage (`last_exon_switch`), each with a confirmed call in that direction. |
 | `utr_shortening`, `utr_lengthening` | In the gene's main last exon, the distal PAC's share of that exon (`delta_utr_distal_share`, the 3′-end counterpart of DaPars' PDUI) falls or rises by at least the threshold. A confirmed call must point the same way: for shortening, an increase at a more proximal PAC or a decrease at the distal one. |
 | `..._potential_internal_priming` | A pattern above that holds only once calls on PACs flagged for possible internal priming count, such as `intronic_gain_potential_internal_priming`. |
-| `other` | The gene passes `gene_fdr` and has calls, but no pattern applies. |
+| `unclassified_change` | The gene passes `gene_fdr` and has calls, but no pattern applies. |
 | `none` | Anything else. |
 
 - **Several patterns:** a gene can have more than one, joined by `;`, such as
@@ -366,8 +392,12 @@ needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
   tie goes to the 3′-most.
 
 **Where PACs sit.**
-- **Last exons:** the atlas column `last_exon` names the last exon of each
-  terminal-exon PAC, as a 1-based locus. Overlapping last exons of a gene's
+- **Gene regions:** the atlas column `gene_region` says where each PAC lies:
+  `last_exon`, `internal_exon` (any other exon), `intron`,
+  `downstream_of_gene` (within `max_downstream_distance` past the gene's end),
+  or `intergenic`.
+- **Last exons:** the atlas column `last_exon_locus` names the last exon of
+  each PAC in a terminal exon, as a 1-based locus. Overlapping last exons of a gene's
   transcripts merge into one. A PAC downstream of a gene belongs to the
   gene's 3′-most last exon.
 - **Terminal exons:** a transcript's final exon counts as a terminal exon
@@ -376,7 +406,7 @@ needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
     final exons of retained-intron and 3′-incomplete models do; or
   - it is a single-exon model apart from every exon of the gene's multi-exon
     transcripts, such as a fragment inside an intron.
-  PACs in such exons are `other_exon`, so they count toward the intronic
+  PACs in such exons are `internal_exon`, so they count toward the intronic
   share.
 
 **Caveats.**
@@ -402,7 +432,7 @@ needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
   confirmed by a call. It shows only in `delta_utr_distal_share`.
 - With three or more PACs in a last exon, losing a middle PAC raises the
   distal share, so the gene reads as `utr_lengthening`.
-- A PAC just past a last exon that is not the gene's 3′-most is `intronic`.
+- A PAC just past a last exon that is not the gene's 3′-most is `intron`.
 - Genes annotated without transcript IDs have only their 3′-most exon as a
   terminal exon, so they cannot show `alternative_last_exon`.
 - In an exploratory comparison, gained and lost calls are candidates, so
@@ -439,12 +469,13 @@ treatments.
     into an intron; the color tells which.
   - Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, those
     with the largest changes, are labeled with their gene names.
-- **`CONDITION_vs_CONTROL.site_classes`**: confirmed PAC calls by where the
-  PAC lies (terminal exon, other exon, intron, downstream of the gene), with
-  losses to the left of zero and gains to the right. A shift to intronic
-  polyadenylation shows as intron gains.
-- **`event_counts`**: PAC events, candidates in lighter shades, and gene
-  events from the `.genes` tables, for every comparison. A lower panel counts
+- **`CONDITION_vs_CONTROL.site_classes`**: confirmed PAC calls by the part
+  of the gene the PAC lies in, its `gene_region` (last exon, internal exon,
+  intron, downstream of the gene), with losses to the left of zero and gains
+  to the right. A shift to intronic polyadenylation shows as intron gains.
+- **`event_counts`**: PAC calls, candidates in lighter shades, and gene
+  events from the `.genes` tables (dominant switches, and more or fewer
+  active PACs), for every comparison. A lower panel counts
   genes per APA pattern; a gene with two patterns counts in both. Patterns
   that only flagged PACs support are counted in a panel of their own.
 - **`apa_pattern_grid`**: genes with an APA pattern in two or more
@@ -589,11 +620,12 @@ annotated ones calibration uses.
     PAU table.
   - A PAC whose effect changes direction, spreads by more than
     `dm_zero_max_delta_pau_spread`, or fits in fewer than 80% of the refits
-    is flagged `zero_boundary_unstable` and left untested.
+    is flagged `zero_boundary_unstable`. It keeps its row, without a p-value,
+    so it gets no confirmed call.
   - These refits are seeded from `random_seed` and the atlas. With another
     seed, a stabilized gene's precision and p-values can move by orders of
     magnitude while its change in PAU barely moves, so read them alongside
-    `model_status` (`drimseq_add_uniform`).
+    `model_status` (`fitted_with_zero_count_stabilization`).
   - A condition with no reads at all for a gene leaves that gene untested in
     its comparisons (`model_status` `group_without_counts`).
 - **Intervals.** A parametric bootstrap gives a 95% interval for the change
@@ -653,6 +685,28 @@ finished steps from it.
     - `constitutive_readthrough_min_replicate_support` is gone, and is
       ignored if still set.
     - The `.genes` tables gain the `_potential_internal_priming` patterns.
+  - **Version 0.4.0** renames output columns and values so they read without
+    knowing the pipeline. Scripts written against earlier names need
+    updating. The atlas columns change, which reseeds the statistics.
+    - `CONDITION_vs_CONTROL.events.tsv.gz` is now `.calls.tsv.gz`, and
+      `event_type` holds only PAC calls.
+    - In the atlas and `.pacs`: `assignment_class` is `gene_region`, with
+      values `last_exon`, `internal_exon`, `intron`, `downstream_of_gene`,
+      and `intergenic`; `last_exon` is `last_exon_locus`;
+      `supporting_condition` is `best_supporting_condition`.
+    - In `.pacs`: `pvalue_pac`, `pvalue_gene`, `lr`, and `df` are
+      `pac_pvalue`, `gene_pvalue`, `pac_likelihood_ratio`, and
+      `pac_degrees_of_freedom`; `control_detected_complexity` and
+      `treatment_detected_complexity` are `control_active_pacs` and
+      `treatment_active_pacs`.
+    - In `.genes` and `FAMILY.gene_omnibus`: `pvalue`, `lr`, and `df` are
+      `gene_pvalue`, `gene_likelihood_ratio`, and `gene_degrees_of_freedom`;
+      `complexity_change` (`gain`, `loss`) is `active_pacs_change` (`more`,
+      `fewer`), counted with the new `active_pac_min_pau`.
+    - `apa_pattern` `other` is `unclassified_change`; `model_status`
+      `drimseq` is `fitted`, and `drimseq_add_uniform` is
+      `fitted_with_zero_count_stabilization`; the motif tables' `p_value` is
+      `pvalue`.
 
 ## Troubleshooting
 

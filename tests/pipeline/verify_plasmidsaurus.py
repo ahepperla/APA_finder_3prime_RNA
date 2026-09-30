@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from column_guide import check_column_guide
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "plasmidsaurus"
 SAMPLES = ["DMSO_1", "DMSO_2", "TRA_1", "TRA_2"]
@@ -125,7 +126,7 @@ def main(root: Path) -> None:
     assert nulls["gene_id"].nunique() == 2, sorted(nulls["gene_id"].unique())
     assert set(nulls["event_type"]) == {"none"}, set(nulls["event_type"])
     assert (nulls["delta_pau"].abs() < 0.01).all(), list(nulls["delta_pau"])
-    assert (nulls["pvalue_gene"] > 0.5).all(), list(nulls["pvalue_gene"])
+    assert (nulls["gene_pvalue"] > 0.5).all(), list(nulls["gene_pvalue"])
 
     # Shifted genes lose usage at their distal PAC, their 3' UTRs shorten, and
     # their most-used PAC switches from distal to proximal.
@@ -167,10 +168,16 @@ def main(root: Path) -> None:
     report = root / "report" / "index.html"
     assert report.stat().st_size > 10000
     report_text = report.read_text()
-    assert "<h2>Calibration kernel</h2>" in report_text
+    assert "<h2>Read-end offset profile</h2>" in report_text
     assert "Calibration warning" not in report_text
     assert report_text.count("<img src='data:image/png;base64,") == len(stems)
-    print(f"Plasmidsaurus-like run verified: {len(atlas)} proximal-tag PACs.")
+    # run_nextflow.sh publishes the per-sample counts, so the column guide's
+    # section for them is checked too.
+    assert str(params["save_intermediates"]).lower() == "true", params["save_intermediates"]
+    per_sample = sorted((root / "counts" / "per_sample").glob("*.pac_counts.tsv.gz"))
+    assert [path.name for path in per_sample] == [f"{s}.pac_counts.tsv.gz" for s in SAMPLES]
+    tables = check_column_guide(root)
+    print(f"Plasmidsaurus-like run verified: {len(atlas)} proximal-tag PACs, {tables} tables.")
 
 
 if __name__ == "__main__":

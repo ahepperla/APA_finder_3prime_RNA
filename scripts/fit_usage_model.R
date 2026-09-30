@@ -22,7 +22,7 @@ REQUIRED_PRECISION_SLOTS <- c(
 )
 TEXT_COLUMNS <- c(
   "gene_id", "gene_name", "chrom", "locus", "pac_id", "feature_id", "sample_id", "condition", "control",
-  "control_condition", "comparison", "bootstrap_status", "model_status", "last_exon"
+  "control_condition", "comparison", "bootstrap_status", "model_status", "last_exon_locus"
 )
 BOOTSTRAP_STATUSES <- c(
   "ok", "insufficient_successes", "fit_unavailable", "not_selected", "disabled"
@@ -41,7 +41,7 @@ GENE_PRECISION_COLUMNS <- c("gene_id", "gene_name", "family", "precision", "mode
 FILTERING_COLUMNS <- c(IDENTITY_COLUMNS, "family", "tested", "reason")
 MOTIF_PREFERENCE_COLUMNS <- c(
   "primary_pas_motif_rna", "primary_motif_class", "condition", "control_condition",
-  "delta_motif_usage", "fdr", "p_value", "control_mean", "treatment_mean",
+  "delta_motif_usage", "fdr", "pvalue", "control_mean", "treatment_mean",
   "transformed_coefficient", "informative_genes"
 )
 # Motif preference is tested per primary hexamer and, in a second table, per
@@ -53,17 +53,19 @@ FITTED_PAU_COLUMNS <- c(
   "alpha_treatment"
 )
 OMNIBUS_COLUMNS <- c(
-  "gene_id", "gene_name", "family", "gene_fdr", "pvalue", "lr", "df", "model_status",
-  "stabilization_successes", "exploratory_insufficient_replicates"
+  "gene_id", "gene_name", "family", "gene_fdr", "gene_pvalue", "gene_likelihood_ratio",
+  "gene_degrees_of_freedom", "model_status", "stabilization_successes",
+  "exploratory_insufficient_replicates"
 )
 APA_METRIC_COLUMNS <- c("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
 GENE_COLUMNS <- c(
   "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-  "complexity_change", "apa_pattern", APA_METRIC_COLUMNS, "gene_fdr", "pvalue", "lr", "df",
-  "model_status", "stabilization_successes", "exploratory_insufficient_replicates"
+  "active_pacs_change", "apa_pattern", APA_METRIC_COLUMNS, "gene_fdr", "gene_pvalue",
+  "gene_likelihood_ratio", "gene_degrees_of_freedom", "model_status",
+  "stabilization_successes", "exploratory_insufficient_replicates"
 )
 ATLAS_ANNOTATION_COLUMNS <- c(
-  "assignment_class", "last_exon", "confidence", "internal_priming_flag", "known_pac",
+  "gene_region", "last_exon_locus", "confidence", "internal_priming_flag", "known_pac",
   "known_rescue_only", "primary_pas_motif", "primary_pas_motif_rna",
   "primary_motif_class"
 )
@@ -77,8 +79,8 @@ APA_PATTERN_CLASSES <- c(
 POTENTIAL_INTERNAL_PRIMING <- "_potential_internal_priming"
 # PACs in introns or internal exons form a gene's upstream region (Tian and
 # Manley, 2017); PACs in a last exon or downstream of the gene, its 3' region.
-UPSTREAM_CLASSES <- c("intronic", "other_exon")
-THREE_PRIME_CLASSES <- c("terminal_exon", "downstream")
+UPSTREAM_CLASSES <- c("intron", "internal_exon")
+THREE_PRIME_CLASSES <- c("last_exon", "downstream_of_gene")
 # Slack for comparing sums of fitted proportions with a threshold.
 APA_TOLERANCE <- 1e-9
 PAC_COLUMNS <- c(
@@ -86,13 +88,14 @@ PAC_COLUMNS <- c(
   "condition", "control_condition", "event_type",
   "fitted_control_pau", "fitted_treatment_pau", "delta_pau", "delta_pau_ci_low",
   "delta_pau_ci_high",
-  "pac_fdr", "gene_fdr", "pvalue_pac", "pvalue_gene", "lr", "df",
+  "pac_fdr", "gene_fdr", "pac_pvalue", "gene_pvalue", "pac_likelihood_ratio",
+  "pac_degrees_of_freedom",
   ATLAS_ANNOTATION_COLUMNS,
   "control_supporting_samples", "treatment_supporting_samples", "control_gene_total",
   "treatment_gene_total", "raw_control_counts", "raw_treatment_counts",
   "observed_control_pau", "observed_treatment_pau",
   "effect_exceeds_threshold", "dominant_pac_control", "dominant_pac_treatment",
-  "control_detected_complexity", "treatment_detected_complexity",
+  "control_active_pacs", "treatment_active_pacs",
   "model_status", "precision", "alpha_control", "alpha_treatment",
   "stabilization_successes", "stabilization_delta_pau_spread", "zero_boundary_unstable",
   "zero_boundary_reason",
@@ -991,20 +994,20 @@ summarize_zero_sensitivity <- function(repeats, genes, layout, params) {
 
 initialize_status_columns <- function(fit) {
   fit$omnibus$stabilization_successes <- 0L
-  fit$omnibus$model_status <- "drimseq"
+  fit$omnibus$model_status <- "fitted"
   for (comparison in names(fit$contrasts)) {
     genes <- fit$contrasts[[comparison]]$genes
     genes$stabilization_successes <- 0L
-    genes$model_status <- "drimseq"
+    genes$model_status <- "fitted"
     features <- fit$contrasts[[comparison]]$features
     features$stabilization_successes <- 0L
     features$stabilization_delta_pau_spread <- NA_real_
     features$zero_boundary_unstable <- FALSE
     features$zero_boundary_reason <- ""
-    features$model_status <- "drimseq"
+    features$model_status <- "fitted"
     fit$contrasts[[comparison]] <- list(genes = genes, features = features)
   }
-  fit$gene_status <- stats::setNames(rep("drimseq", length(fit$gene_ids)), fit$gene_ids)
+  fit$gene_status <- stats::setNames(rep("fitted", length(fit$gene_ids)), fit$gene_ids)
   fit
 }
 
@@ -1026,12 +1029,12 @@ write_back_boundary <- function(fit, summary, sets) {
     fit$proportions[rows, ] <- summary$proportions[fit$features$feature_id[rows], , drop = FALSE]
     fit$precision[genes] <- summary$precision[genes]
     gene_columns <- c("lr", "df", "pvalue", "stabilization_successes")
-    summary$omnibus$model_status <- "drimseq_add_uniform"
+    summary$omnibus$model_status <- "fitted_with_zero_count_stabilization"
     fit$omnibus <- replace_rows(fit$omnibus, summary$omnibus, "gene_id", c(gene_columns, "model_status"))
     for (comparison in names(fit$contrasts)) {
       stabilized <- summary$contrasts[[comparison]]
-      stabilized$genes$model_status <- "drimseq_add_uniform"
-      stabilized$features$model_status <- "drimseq_add_uniform"
+      stabilized$genes$model_status <- "fitted_with_zero_count_stabilization"
+      stabilized$features$model_status <- "fitted_with_zero_count_stabilization"
       fit$contrasts[[comparison]]$genes <- replace_rows(
         fit$contrasts[[comparison]]$genes, stabilized$genes, "gene_id",
         c(gene_columns, "model_status")
@@ -1044,7 +1047,7 @@ write_back_boundary <- function(fit, summary, sets) {
         )
       )
     }
-    fit$gene_status[genes] <- "drimseq_add_uniform"
+    fit$gene_status[genes] <- "fitted_with_zero_count_stabilization"
   }
   unavailable <- sets$unavailable
   if (length(unavailable)) {
@@ -1245,13 +1248,15 @@ assign_events <- function(pacs, params) {
   }, character(1))
   pacs$dominant_pac_control <- unname(dominant_control[pacs$gene_id])
   pacs$dominant_pac_treatment <- unname(dominant_treatment[pacs$gene_id])
-  pacs$control_detected_complexity <- ave(
-    pacs$fitted_control_pau >= params$event_min_treatment_pau,
+  # Active PACs: those with at least active_pac_min_pau of the gene's fitted
+  # usage in a group.
+  pacs$control_active_pacs <- ave(
+    pacs$fitted_control_pau >= params$active_pac_min_pau,
     pacs$gene_id,
     FUN = function(values) sum(values, na.rm = TRUE)
   )
-  pacs$treatment_detected_complexity <- ave(
-    pacs$fitted_treatment_pau >= params$event_min_treatment_pau,
+  pacs$treatment_active_pacs <- ave(
+    pacs$fitted_treatment_pau >= params$active_pac_min_pau,
     pacs$gene_id,
     FUN = function(values) sum(values, na.rm = TRUE)
   )
@@ -1259,32 +1264,22 @@ assign_events <- function(pacs, params) {
   exploratory <- as.logical(pacs$exploratory_insufficient_replicates)
   events[exploratory & events == "gained"] <- "gained_candidate"
   events[exploratory & events == "lost"] <- "lost_candidate"
-  # A PAC carries a descriptive label only when it has no call of its own, so
-  # the genes table, not the PAC table, records every gene with these events.
-  gene_events <- gene_level_events(pacs, params)
-  gene_index <- match(pacs$gene_id, gene_events$gene_id)
-  switched <- gene_events$dominant_switch[gene_index]
-  complexity <- gene_events$complexity_change[gene_index]
-  events[events == "none" & switched &
-    pacs$feature_id == pacs$dominant_pac_treatment] <- "dominant_switch"
-  events[events == "none" & complexity == "gain"] <- "complexity_gain"
-  events[events == "none" & complexity == "loss"] <- "complexity_loss"
   pacs$event_type <- events
   pacs
 }
 
 # One row per gene: whether its most-used PAC differs between the groups, and
-# whether the number of PACs with fitted PAU of at least
-# event_min_treatment_pau rises or falls. These describe fitted usage, so they
-# are given only in genes that pass the comparison's gene-level screen. Needs
-# the dominant_pac_* and *_detected_complexity columns from assign_events.
+# whether its number of active PACs, those with fitted PAU of at least
+# active_pac_min_pau, rises or falls. These describe fitted usage, so they are
+# given only in genes that pass the comparison's gene-level screen. Needs the
+# dominant_pac_* and *_active_pacs columns from assign_events.
 gene_level_events <- function(pacs, params) {
   first <- !duplicated(pacs$gene_id)
   screened <- !is.na(pacs$gene_fdr) & pacs$gene_fdr <= params$gene_fdr
   switched <- screened & !is.na(pacs$dominant_pac_control) &
     !is.na(pacs$dominant_pac_treatment) &
     pacs$dominant_pac_control != pacs$dominant_pac_treatment
-  complexity_delta <- pacs$treatment_detected_complexity - pacs$control_detected_complexity
+  active_delta <- pacs$treatment_active_pacs - pacs$control_active_pacs
   # A gene without fitted usage in either group (a condition with no counts)
   # has no usage pattern to compare, so it gets no descriptive event.
   unfitted <- ave(
@@ -1292,14 +1287,14 @@ gene_level_events <- function(pacs, params) {
     pacs$gene_id,
     FUN = any
   )
-  complexity_delta[!screened | as.logical(unfitted)] <- 0
-  complexity <- rep("none", sum(first))
-  complexity[complexity_delta[first] > 0] <- "gain"
-  complexity[complexity_delta[first] < 0] <- "loss"
+  active_delta[!screened | as.logical(unfitted)] <- 0
+  active <- rep("none", sum(first))
+  active[active_delta[first] > 0] <- "more"
+  active[active_delta[first] < 0] <- "fewer"
   data.frame(
     gene_id = pacs$gene_id[first],
     dominant_switch = switched[first],
-    complexity_change = complexity,
+    active_pacs_change = active,
     stringsAsFactors = FALSE
   )
 }
@@ -1381,15 +1376,15 @@ gene_apa_pattern <- function(rows, coordinate, gate, flagged, called, params) {
   treatment <- rows$fitted_treatment_pau
   if (!all(is.finite(control)) || !all(is.finite(treatment))) return(result)
   threshold <- params$min_abs_delta_pau - APA_TOLERANCE
-  upstream <- rows$assignment_class %in% UPSTREAM_CLASSES
-  three_prime <- which(rows$assignment_class %in% THREE_PRIME_CLASSES)
+  upstream <- rows$gene_region %in% UPSTREAM_CLASSES
+  three_prime <- which(rows$gene_region %in% THREE_PRIME_CLASSES)
   # Positions in transcript orientation, so larger is more 3'.
   oriented <- if (rows$strand[[1]] == "-") -coordinate else coordinate
   delta_intronic <- sum(treatment[upstream]) - sum(control[upstream])
   result$delta_intronic_share <- delta_intronic
 
   # Last exons, each with its share of the gene in each group.
-  last_exon <- rows$last_exon[three_prime]
+  last_exon <- rows$last_exon_locus[three_prime]
   last_exon[is.na(last_exon)] <- ""
   # Levels in row order, not the locale's collation, keep ties deterministic.
   exons <- split(three_prime, factor(last_exon, levels = unique(last_exon)))
@@ -1463,11 +1458,20 @@ gene_apa_pattern <- function(rows, coordinate, gate, flagged, called, params) {
   potential <- setdiff(supported(gate$up | flagged$up, gate$down | flagged$down), confident)
   if (length(potential)) potential <- paste0(potential, POTENTIAL_INTERNAL_PRIMING)
   classes <- c(confident, potential)
-  result$apa_pattern <- if (length(classes)) paste(classes, collapse = ";") else "other"
+  result$apa_pattern <- if (length(classes)) paste(classes, collapse = ";") else "unclassified_change"
   result
 }
 
 # ---- Per-comparison tables --------------------------------------------------
+
+# The gene test's statistics under their published names.
+gene_test_columns <- function(genes) {
+  genes$gene_pvalue <- genes$pvalue
+  genes$gene_likelihood_ratio <- genes$lr
+  genes$gene_degrees_of_freedom <- genes$df
+  genes
+}
+
 
 comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params, gene_names) {
   comparison <- comparison_row$comparison
@@ -1496,11 +1500,11 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
     feature_id = features$feature_id,
     gene_id = features$gene_id,
     gene_name = unname(gene_names[features$gene_id]),
-    lr = features$lr,
-    df = features$df,
-    pvalue_pac = features$pvalue,
+    pac_likelihood_ratio = features$lr,
+    pac_degrees_of_freedom = features$df,
+    pac_pvalue = features$pvalue,
     pac_fdr = features$pac_fdr,
-    pvalue_gene = genes$pvalue[gene_index],
+    gene_pvalue = genes$pvalue[gene_index],
     gene_fdr = genes$gene_fdr[gene_index],
     fitted_control_pau = unname(control_pau),
     fitted_treatment_pau = unname(treatment_pau),
@@ -1539,7 +1543,7 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
   gene_events <- gene_level_events(pacs, params)
   event_index <- match(genes$gene_id, gene_events$gene_id)
   genes$dominant_switch <- gene_events$dominant_switch[event_index]
-  genes$complexity_change <- gene_events$complexity_change[event_index]
+  genes$active_pacs_change <- gene_events$active_pacs_change[event_index]
   patterns <- apa_patterns(pacs, as.numeric(atlas$coordinate[annotation_index]), params)
   pattern_index <- match(genes$gene_id, patterns$gene_id)
   for (column in c("apa_pattern", APA_METRIC_COLUMNS)) {
@@ -1548,6 +1552,7 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
   genes$condition <- treatment
   genes$control_condition <- control
   genes$exploratory_insufficient_replicates <- layout$exploratory
+  genes <- gene_test_columns(genes)
   list(
     comparison = comparison,
     genes = genes,
@@ -1720,6 +1725,7 @@ fit_family <- function(
   omnibus$gene_fdr <- bh(omnibus$pvalue)
   omnibus$family <- family
   omnibus$exploratory_insufficient_replicates <- layout$exploratory
+  omnibus <- gene_test_columns(omnibus)
   write_gzip_tsv(
     select_columns(omnibus, OMNIBUS_COLUMNS, "The omnibus table"),
     file.path(output_dir, paste0(family, ".gene_omnibus.tsv.gz"))
@@ -1834,7 +1840,7 @@ fit_motif_preferences <- function(
       treatment_mean = treatment_mean,
       delta_motif_usage = treatment_mean - control_mean,
       transformed_coefficient = table$logFC,
-      p_value = table$P.Value,
+      pvalue = table$P.Value,
       fdr = bh(table$P.Value),
       informative_genes = minimum_genes[testable],
       stringsAsFactors = FALSE,
@@ -1865,9 +1871,9 @@ run_fit_mode <- function(arguments) {
   counts <- read_tsv(arguments$counts)
   atlas <- read_tsv(arguments$atlas)
   # Checked before the fit, so a stale atlas stops the run in minutes.
-  if (!"last_exon" %in% names(atlas)) {
+  if (!"last_exon_locus" %in% names(atlas)) {
     stop(
-      "The atlas lacks the last_exon column, so an older PACusage package wrote it. ",
+      "The atlas lacks the last_exon_locus column, so an older PACusage package wrote it. ",
       "Rebuild containers/pacusage.sif, or reinstall the package, from this checkout ",
       "and rerun; -resume reruns annotation and every step after it."
     )
@@ -2357,12 +2363,9 @@ finalize_preliminary_outputs <- function(preliminary_dir, interval_paths, output
       stop("Selected PACs in ", comparison, " received no bootstrap intervals.")
     }
     write_gzip_tsv(output, destination)
-    events <- output[output$event_type != "none", , drop = FALSE]
-    event_path <- file.path(
-      output_dir,
-      paste0(comparison, ".events.tsv.gz")
-    )
-    write_gzip_tsv(events, event_path)
+    # The calls table: the PACs with a call.
+    calls <- output[output$event_type != "none", , drop = FALSE]
+    write_gzip_tsv(calls, file.path(output_dir, paste0(comparison, ".calls.tsv.gz")))
   }
   invisible(NULL)
 }

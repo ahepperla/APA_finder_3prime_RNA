@@ -164,6 +164,7 @@ statistics_params <- function(replicates = 40L) {
     dm_zero_sensitivity_repeats = 5L,
     dm_zero_max_delta_pau_spread = 0.02,
     event_min_treatment_pau = 0.05,
+    active_pac_min_pau = 0.05,
     event_max_control_pau = 0.01,
     event_min_supporting_samples = 2L,
     potential_internal_priming_withheld_calls = TRUE,
@@ -223,9 +224,9 @@ assemble_usage_dataset <- function(genes, sample_ids, sample_condition, control,
       candidate_status = "primary",
       known_pac = FALSE,
       known_rescue_only = FALSE,
-      assignment_class = "terminal_exon",
+      gene_region = "last_exon",
       # Every test gene has one last exon holding all of its PACs.
-      last_exon = sprintf(
+      last_exon_locus = sprintf(
         "%s:%d-%d", gene$contig, min(gene$coordinates) - 99L, max(gene$coordinates)
       ),
       ambiguous_gene_assignment = FALSE,

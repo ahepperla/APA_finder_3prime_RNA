@@ -993,7 +993,7 @@ def command_annotate(args: argparse.Namespace) -> None:
             region_end=_optional_int(row.get("region_end")),
             resolution_nt=int(row.get("resolution_nt", 0)),
             total_supporting_samples=int(row.get("total_supporting_samples", 0)),
-            supporting_condition=row.get("supporting_condition", ""),
+            best_supporting_condition=row.get("best_supporting_condition", ""),
             supporting_conditions=tuple(
                 value for value in row.get("supporting_conditions", "").split(";") if value
             ),
@@ -1196,8 +1196,8 @@ def command_kmer_enrichment(args: argparse.Namespace) -> None:
         & (atlas["gene_id"].astype(str) != "")
     ].copy()
     completed = []
-    for event_path in sorted(statistics_directory.glob("*.events.tsv.gz")):
-        comparison = event_path.name.removesuffix(".events.tsv.gz")
+    for event_path in sorted(statistics_directory.glob("*.calls.tsv.gz")):
+        comparison = event_path.name.removesuffix(".calls.tsv.gz")
         pacs_path = statistics_directory / f"{comparison}.pacs.tsv.gz"
         if not pacs_path.exists():
             raise PacusageError(
@@ -1213,7 +1213,7 @@ def command_kmer_enrichment(args: argparse.Namespace) -> None:
         )
         rows = _kmer_rows(atlas_for_comparison, selected, int(params["motif_kmer_length"]))
         if rows:
-            adjusted = add_bh_fdr(row["p_value"] for row in rows)
+            adjusted = add_bh_fdr(row["pvalue"] for row in rows)
             for row, fdr in zip(rows, adjusted, strict=True):
                 row["fdr"] = fdr
         destination = output_directory / f"{comparison}.kmer_enrichment.tsv.gz"
@@ -1226,7 +1226,7 @@ def command_kmer_enrichment(args: argparse.Namespace) -> None:
                 "ci_low",
                 "ci_high",
                 "fdr",
-                "p_value",
+                "pvalue",
                 "event_pacs",
                 "background_pacs",
                 "informative_genes",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import html
-import json
 import urllib.parse
 from collections import Counter
 from pathlib import Path
@@ -27,7 +26,7 @@ COMPARISON_FIGURES = (
         "distal_usage",
         "Distal PAC usage",
         "Each point is a tested gene: the fitted usage of its most 3' tested PAC in the "
-        "terminal exon or downstream, control against treatment. Colors show the gene's "
+        "last exon or downstream of the gene, control against treatment. Colors show the gene's "
         "APA pattern from the .genes table; filled points have a confirmed call at the "
         "distal PAC, and diamonds mark a pattern that only PACs flagged for possible "
         "internal priming support. Up to 20 genes whose distal PAC rose and 20 whose "
@@ -35,10 +34,11 @@ COMPARISON_FIGURES = (
     ),
     (
         "site_classes",
-        "PAC calls by site class",
-        "Confirmed PAC calls by where the PAC lies. Left of zero, PACs that lost usage "
-        "(lost or decreased); right of zero, PACs that gained usage (gained or "
-        "increased). Each label gives the number of PACs tested in that class.",
+        "PAC calls by gene region",
+        "Confirmed PAC calls by the part of the gene the PAC lies in (gene_region). Left "
+        "of zero, PACs that lost usage (lost or decreased); right of zero, PACs that "
+        "gained usage (gained or increased). Each label gives the number of PACs tested "
+        "in that region.",
     ),
 )
 SUMMARY_FIGURES = (
@@ -47,7 +47,7 @@ SUMMARY_FIGURES = (
         "Events per comparison",
         "PAC events count PACs, with candidates in lighter shades. Gene events count "
         "genes that pass the gene-level screen, from the dominant_switch and "
-        "complexity_change columns of the .genes tables. The lower panel counts genes "
+        "active_pacs_change columns of the .genes tables. The lower panel counts genes "
         "per APA pattern (apa_pattern); a gene with two patterns counts in both. Patterns "
         "that only PACs flagged for possible internal priming support, the "
         "_potential_internal_priming patterns, are counted apart.",
@@ -86,6 +86,15 @@ SUMMARY_FIGURES = (
         "gained or lost call requires.",
     ),
 )
+COLUMN_GUIDE_URL = (
+    "https://github.com/ahepperla/APA_finder_3prime_RNA/blob/main/docs/output_columns.md"
+)
+GLOSSARY = (
+    "A PAC is a polyadenylation site cluster: one place where transcripts end. PAU is a "
+    "PAC's share of its gene's reads; fitted PAU comes from the model, observed PAU from "
+    "the counts. Gene FDR says whether a gene's usage changed, and PAC FDR which of its "
+    "PACs changed. The column guide explains every column: "
+)
 PCA_CAPTION = (
     "Each point is a sample, placed by its observed PAU at the PACs of genes with at "
     "least min_gene_total reads in every sample, each PAC centered across samples. "
@@ -100,19 +109,53 @@ def build_report(
     root = Path(results_root)
     sections = [
         _calibration_warning_section(_locate(root, "calibration_kernel_diagnostics.tsv")),
-        _table_section("Input validation", _locate(root, "input_validation.tsv")),
-        _table_section("Reference preparation", _locate(root, "reference_preparation.tsv")),
-        _combined_table_section(
-            "Alignment preparation", list(root.rglob("*.alignment_preparation.tsv"))
+        _table_section(
+            "Input checks", _locate(root, "input_validation.tsv"),
+            description="Each sample and file check, with PASS or the problem found.",
         ),
-        _table_section("Condition to control mapping", _locate(root, "control_mapping.tsv")),
-        _table_section("Library calibration", _locate(root, "library_calibration.tsv")),
-        _table_section("Calibration kernel", _locate(root, "calibration_kernel_diagnostics.tsv")),
-        _combined_table_section("Strandedness", list(root.rglob("*.strandedness.tsv"))),
-        _combined_table_section("Fragment filtering", list(root.rglob("*.fragment_filtering.tsv"))),
-        _table_section("PAC discovery", _locate(root, "pac_discovery.tsv")),
+        _table_section(
+            "Reference genome preparation", _locate(root, "reference_preparation.tsv"),
+            description="How the reference FASTA was linked and indexed.",
+        ),
+        _combined_table_section(
+            "Alignment preparation", list(root.rglob("*.alignment_preparation.tsv")),
+            description="How each sample's alignment was linked, sorted, or indexed.",
+        ),
+        _table_section(
+            "Which control each condition is compared with", _locate(root, "control_mapping.tsv"),
+            description="Each condition's direct control, and whether it is a treatment, a "
+            "control, or both.",
+        ),
+        _table_section(
+            "Where reads end, relative to known transcript ends",
+            _locate(root, "library_calibration.tsv"),
+            description="Per sample: how far read ends fall from annotated transcript ends, "
+            "which decides how PACs are found.",
+        ),
+        _table_section(
+            "Read-end offset profile", _locate(root, "calibration_kernel_diagnostics.tsv"),
+            description="The pooled profile of how far reads end from their PAC, which places "
+            "PACs, with the resolution it allows and any warning.",
+        ),
+        _combined_table_section(
+            "Library strandedness", list(root.rglob("*.strandedness.tsv")),
+            description="The read orientation found for each sample.",
+        ),
+        _combined_table_section(
+            "Reads kept and removed", list(root.rglob("*.fragment_filtering.tsv")),
+            description="Per sample: alignment records examined, fragments kept, and the "
+            "spliced reads recorded for the readthrough filter.",
+        ),
+        _table_section(
+            "PAC discovery", _locate(root, "pac_discovery.tsv"),
+            description="Candidate PACs accepted and rejected, by filter. "
+            "atlas/rejected_candidates.tsv.gz gives each rejection's reason.",
+        ),
         _statistical_filtering_section(list(root.rglob("*.statistical_filtering.tsv.gz"))),
-        _combined_table_section("Quantification", list(root.rglob("*.quantification.tsv"))),
+        _combined_table_section(
+            "Reads assigned to PACs", list(root.rglob("*.quantification.tsv")),
+            description="Per sample: reads assigned to a PAC, left unassigned, or ambiguous.",
+        ),
         _atlas_summary(_locate(root, "pacs.v1.metadata.tsv.gz")),
         _pau_qc_sections(root, minimum_gene_total),
         _model_diagnostic_sections(root),
@@ -120,10 +163,18 @@ def build_report(
         _statistics_sections(root),
         _top_genes_section(root),
         _gene_plot_section(root),
-        _table_section("Motif usage by sample", _locate(root, "motif_scores.tsv")),
+        _table_section(
+            "PolyA-signal usage by sample", _locate(root, "motif_scores.tsv"),
+            description="Each sample's usage of PACs grouped by the polyA-signal hexamer "
+            "upstream of them.",
+        ),
         _motif_sections(root),
     ]
     body = "\n".join(section for section in sections if section)
+    glossary = (
+        f"<p class='chart-note'>{html.escape(GLOSSARY)}"
+        f"<a href='{COLUMN_GUIDE_URL}'>docs/output_columns.md</a>.</p>"
+    )
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -190,7 +241,8 @@ figcaption {{ color:var(--muted); font-size:12px; margin-top:6px; }}
 </head>
 <body>
 <header><h1>PACusage</h1><p>Polyadenylation site discovery and usage analysis</p></header>
-<main>{body}</main>
+<main>{glossary}
+{body}</main>
 <script>
 for (const input of document.querySelectorAll('[data-table-filter]')) {{
   input.addEventListener('input', () => {{
@@ -238,7 +290,7 @@ def _calibration_warning_section(path: Path) -> str:
     )
 
 
-def _table_section(title: str, path: Path, limit: int = 200) -> str:
+def _table_section(title: str, path: Path, limit: int = 200, description: str = "") -> str:
     frame = _read_table(path, nrows=limit + 1)
     if frame is None:
         return ""
@@ -251,13 +303,19 @@ def _table_section(title: str, path: Path, limit: int = 200) -> str:
         else ""
     )
     return (
-        f"<section><h2>{html.escape(title)}</h2>"
+        f"<section><h2>{html.escape(title)}</h2>{_description(description)}"
         f"<input type='search' placeholder='Filter rows' data-table-filter='{table_id}'>"
         f"<div class='table-wrap'>{table}</div>{note}</section>"
     )
 
 
-def _combined_table_section(title: str, paths: list[Path], limit: int = 200) -> str:
+def _description(text: str) -> str:
+    return f"<p class='chart-note'>{html.escape(text)}</p>" if text else ""
+
+
+def _combined_table_section(
+    title: str, paths: list[Path], limit: int = 200, description: str = ""
+) -> str:
     frames = [frame for path in paths if (frame := _read_table(path)) is not None]
     if not frames:
         return ""
@@ -265,7 +323,7 @@ def _combined_table_section(title: str, paths: list[Path], limit: int = 200) -> 
     table_id = "table-" + "".join(character for character in title.lower() if character.isalnum())
     table = frame.head(limit).fillna("").to_html(index=False, escape=True, table_id=table_id)
     return (
-        f"<section><h2>{html.escape(title)}</h2>"
+        f"<section><h2>{html.escape(title)}</h2>{_description(description)}"
         f"<input type='search' placeholder='Filter rows' data-table-filter='{table_id}'>"
         f"<div class='table-wrap'>{table}</div></section>"
     )
@@ -276,13 +334,13 @@ def _atlas_summary(path: Path) -> str:
         "gene_id",
         "known_pac",
         "internal_priming_flag",
-        "assignment_class",
+        "gene_region",
         "confidence",
     }
     frame = _read_table(path, usecols=lambda name: name in columns)
     if frame is None:
         return ""
-    assignment = Counter(frame.get("assignment_class", pd.Series(dtype=str)).fillna("unassigned"))
+    regions = Counter(frame.get("gene_region", pd.Series(dtype=str)).fillna("unassigned"))
     confidence = Counter(frame.get("confidence", pd.Series(dtype=str)).fillna("unknown"))
     metrics = {
         "PACs in atlas": len(frame),
@@ -298,15 +356,18 @@ def _atlas_summary(path: Path) -> str:
         f"<div class='metric'><strong>{value:,}</strong>{html.escape(label)}</div>"
         for label, value in metrics.items()
     )
-    details = html.escape(
-        json.dumps(
-            {"assignment_class": dict(assignment), "confidence": dict(confidence)},
-            sort_keys=True,
-        )
+    details = "".join(
+        f"<p class='empty'>{html.escape(label)}: "
+        + html.escape(", ".join(f"{name} {count:,}" for name, count in sorted(counts.items())))
+        + "</p>"
+        for label, counts in (("PACs by gene region", regions), ("PACs by confidence", confidence))
     )
     return (
         "<section><h2>PAC atlas</h2>"
-        f"<div class='metrics'>{boxes}</div><p class='empty'>{details}</p></section>"
+        + _description(
+            "The PACs found, pooled across every sample, before any comparison was tested."
+        )
+        + f"<div class='metrics'>{boxes}</div>{details}</section>"
     )
 
 
@@ -331,7 +392,12 @@ def _statistical_filtering_section(paths: list[Path], limit: int = 200) -> str:
         else ""
     )
     return (
-        f"<section><h2>Statistical filtering</h2>{summary}"
+        "<section><h2>PACs left out of testing, and why</h2>"
+        + _description(
+            "Per comparison family: PACs tested and not tested. The table lists untested "
+            "PACs with the filter that removed each."
+        )
+        + f"{summary}"
         f"<input type='search' placeholder='Filter rows' data-table-filter='{table_id}'>"
         f"<div class='table-wrap'>{table}</div>{note}</section>"
     )
@@ -383,7 +449,7 @@ def _model_diagnostic_sections(root: Path) -> str:
     if not pac_files:
         return ""
     columns = {
-        "pvalue_pac",
+        "pac_pvalue",
         "model_status",
         "zero_boundary_unstable",
         "delta_pau_ci_low",
@@ -402,14 +468,14 @@ def _model_diagnostic_sections(root: Path) -> str:
             for frame in chunks:
                 tests += len(frame)
                 pvalues = pd.to_numeric(
-                    frame.get("pvalue_pac", pd.Series(dtype=float)), errors="coerce"
+                    frame.get("pac_pvalue", pd.Series(dtype=float)), errors="coerce"
                 ).dropna()
                 finite_pvalues += len(pvalues)
                 pvalue_parts.append(pvalues.to_numpy(dtype=float))
                 stabilized += int(
                     frame.get("model_status", pd.Series(dtype=str))
                     .astype(str)
-                    .str.contains("add_uniform")
+                    .str.contains("zero_count_stabilization")
                     .sum()
                 )
                 unstable += int(
@@ -435,8 +501,8 @@ def _model_diagnostic_sections(root: Path) -> str:
     metrics = {
         "PAC tests": tests,
         "Finite PAC p-values": finite_pvalues,
-        "Stabilized fits": stabilized,
-        "Unstable boundaries": unstable,
+        "Tests with zero-count stabilization": stabilized,
+        "Unstable at a zero boundary": unstable,
         "Bootstrap intervals": intervals,
     }
     boxes = "".join(
@@ -446,7 +512,12 @@ def _model_diagnostic_sections(root: Path) -> str:
     pvalues = np.concatenate(pvalue_parts) if pvalue_parts else np.asarray([], dtype=float)
     histogram = _histogram_svg(pvalues)
     return (
-        f"<section><h2>Model diagnostics</h2><div class='metrics'>{boxes}</div>"
+        "<section><h2>Model diagnostics</h2>"
+        + _description(
+            "PAC tests across comparisons, how many needed stabilizing, and the spread of "
+            "their p-values."
+        )
+        + f"<div class='metrics'>{boxes}</div>"
         f"{histogram}</section>"
     )
 
@@ -522,7 +593,12 @@ def _top_genes_section(root: Path) -> str:
         return ""
     values = pd.concat(frames, ignore_index=True, sort=False)
     values["gene_fdr"] = pd.to_numeric(values["gene_fdr"], errors="coerce")
-    return _frame_section("Top genes", values.sort_values("gene_fdr").head(50))
+    return _frame_section(
+        "Genes with the lowest gene FDR",
+        values.sort_values("gene_fdr").head(50),
+        note="Across comparisons, the 50 genes with the strongest evidence that their PAC "
+        "usage changed, from the .genes tables.",
+    )
 
 
 def _gene_plot_section(root: Path) -> str:
@@ -549,7 +625,7 @@ def _gene_plot_section(root: Path) -> str:
         _gene_svg(gene_id, merged[merged["gene_id"] == gene_id])
         for gene_id in gene_totals.head(8).index
     ]
-    return "<section><h2>Top gene usage profiles</h2>" + "".join(plots) + "</section>"
+    return "<section><h2>PAC usage in the most-read genes</h2>" + "".join(plots) + "</section>"
 
 
 def _gene_svg(gene_id: str, values: pd.DataFrame) -> str:
@@ -621,7 +697,7 @@ def _figure_sections(root: Path) -> str:
     )
     panels = []
     for comparison in comparisons:
-        title = comparison.replace("_", " ")
+        title = _comparison_title(comparison)
         figures = [
             _figure_html(images[f"{comparison}.{kind}.png"], f"{label} for {title}", caption)
             for kind, label, caption in COMPARISON_FIGURES
@@ -662,25 +738,61 @@ def _figure_html(path: Path, alt: str, caption: str) -> str:
     )
 
 
+def _comparison_title(stem: str) -> str:
+    """A comparison's file stem, CONDITION_vs_CONTROL, as a title."""
+    return stem.replace("_vs_", " vs ")
+
+
+STATISTICS_TABLES = (
+    (
+        ".calls.tsv.gz",
+        "PACs with a call",
+        "PACs that gained or lost usage, or rose or fell significantly, and the candidates. "
+        "Columns are described in docs/output_columns.md.",
+    ),
+    (
+        ".pacs.tsv.gz",
+        "every tested PAC",
+        "Every tested PAC, with its change in usage, its tests, and its annotation.",
+    ),
+)
+
+
 def _statistics_sections(root: Path) -> str:
     return "\n".join(
-        _table_section(path.name.replace(".tsv.gz", "").replace("_", " "), path)
-        for pattern in ("*.events.tsv.gz", "*.pacs.tsv.gz")
-        for path in sorted(root.rglob(pattern))
+        _table_section(
+            f"{_comparison_title(path.name.removesuffix(suffix))}: {label}", path,
+            description=description,
+        )
+        for suffix, label, description in STATISTICS_TABLES
+        for path in sorted(root.rglob(f"*{suffix}"))
     )
 
 
 def _motif_sections(root: Path) -> str:
-    def tables(pattern: str) -> list[str]:
+    def tables(suffix: str, label: str, description: str) -> list[str]:
         return [
-            _table_section(path.name.replace(".tsv.gz", "").replace("_", " "), path)
-            for path in sorted(root.rglob(pattern))
+            _table_section(
+                f"{_comparison_title(path.name.removesuffix(suffix))}: {label}", path,
+                description=description,
+            )
+            for path in sorted(root.rglob(f"*{suffix}"))
         ]
 
-    sections = tables("*.preference.tsv.gz")
-    class_tables = tables("*.preference_class.tsv.gz")
+    sections = tables(
+        ".preference.tsv.gz", "polyA-signal preference",
+        "Per polyA-signal hexamer: how the usage of PACs with that signal upstream changed, "
+        "treatment against control, with its FDR.",
+    )
+    class_tables = tables(
+        ".preference_class.tsv.gz", "polyA-signal preference by class",
+        "The same, with the hexamers grouped into classes: canonical, common variant, other "
+        "variant, and no recognized signal.",
+    )
     if class_tables:
         sections.append(
-            "<section><h2>Motif-class preference</h2>" + "\n".join(class_tables) + "</section>"
+            "<section><h2>PolyA-signal preference by class</h2>"
+            + "\n".join(class_tables)
+            + "</section>"
         )
     return "\n".join(sections)

@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from column_guide import check_column_guide
 
 from pacusage.cli import _kmer_rows
 from pacusage.models import IDENTITY_COLUMNS
@@ -44,7 +45,7 @@ FIGURE_PIXELS = {
 CONFIRMED_EVENTS = {"gained", "increased_usage", "lost", "decreased_usage"}
 DISTAL_COLUMNS = [
     "gene_id", "gene_name", "condition", "control_condition", "direction", "apa_pattern",
-    "distal_pac_id", "distal_locus", "distal_assignment_class", "fitted_control_distal_pau",
+    "distal_pac_id", "distal_locus", "distal_gene_region", "fitted_control_distal_pau",
     "fitted_treatment_distal_pau", "delta_distal_pau", "distal_event_type", "gene_fdr",
     "distal_pac_fdr", "tested_pacs",
 ]
@@ -75,8 +76,8 @@ EXPECTED_DISTAL_CALLS = {
         "ale01": "distal_down",
     },
 }
-# Designed genes with a dominant switch, a complexity gain, and a complexity
-# loss; the other designed genes have none.
+# Designed genes with a dominant switch, more active PACs, and fewer active
+# PACs; the other designed genes have none.
 EXPECTED_GENE_EVENTS = {
     "TreatmentA_vs_DMSO": (
         {"bg01", "bg03", "bg04", "bg05", "bg06", "gene_plus", "ipa01", "ale01"},
@@ -93,15 +94,20 @@ EXPECTED_APA_PATTERNS = {
     "TreatmentA_vs_DMSO": {
         "gene_plus": "utr_shortening", "bg04": "utr_shortening", "bg06": "utr_shortening",
         "bg01": "utr_lengthening", "bg03": "utr_lengthening", "bg05": "utr_lengthening",
-        "bg09": "other", "ipa01": "intronic_gain", "ale01": "alternative_last_exon",
+        "bg09": "unclassified_change", "ipa01": "intronic_gain", "ale01": "alternative_last_exon",
     },
     "TreatmentB_vs_Vehicle": {"gene_plus": "utr_shortening", "bg02": "utr_shortening"},
     "Rescue_vs_TreatmentA": {
         "gene_plus": "utr_lengthening", "bg04": "utr_lengthening", "bg06": "utr_lengthening",
         "bg01": "utr_shortening", "bg03": "utr_shortening", "bg05": "utr_shortening",
-        "bg09": "other", "ipa01": "intronic_loss", "ale01": "alternative_last_exon",
+        "bg09": "unclassified_change", "ipa01": "intronic_loss", "ale01": "alternative_last_exon",
     },
 }
+PAC_EVENT_TYPES = {
+    "gained", "lost", "increased_usage", "decreased_usage", "gained_candidate", "lost_candidate",
+    "none",
+}
+GENE_REGIONS = ("last_exon", "internal_exon", "intron", "downstream_of_gene", "intergenic")
 APA_PATTERN_CLASSES = (
     "intronic_gain", "intronic_loss", "alternative_last_exon", "utr_shortening",
     "utr_lengthening",
@@ -226,20 +232,21 @@ def png_size(path: Path) -> tuple[int, int]:
 
 
 def check_gene_events(tables: dict[str, pd.DataFrame], params: dict) -> None:
-    """The genes tables flag every gene with a switch or a complexity change,
-    including genes whose PACs all carry their own calls."""
-    for name, (switched, gained, lost) in EXPECTED_GENE_EVENTS.items():
+    """The genes tables flag every gene with a switch or a change in its
+    number of active PACs, and the PAC tables carry only PAC calls."""
+    for name, (switched, more, fewer) in EXPECTED_GENE_EVENTS.items():
         genes = statistics_table(f"{name}.genes.tsv.gz")
         assert list(genes.columns[:7]) == [
             "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-            "complexity_change", "apa_pattern",
+            "active_pacs_change", "apa_pattern",
         ], name
+        assert set(genes["active_pacs_change"]) <= {"more", "fewer", "none"}, name
         flagged = {
             "switch": set(genes.loc[is_true(genes["dominant_switch"]), "gene_id"]),
-            "gain": set(genes.loc[genes["complexity_change"] == "gain", "gene_id"]),
-            "loss": set(genes.loc[genes["complexity_change"] == "loss", "gene_id"]),
+            "more": set(genes.loc[genes["active_pacs_change"] == "more", "gene_id"]),
+            "fewer": set(genes.loc[genes["active_pacs_change"] == "fewer", "gene_id"]),
         }
-        kinds = zip(("switch", "gain", "loss"), (switched, gained, lost), strict=True)
+        kinds = zip(("switch", "more", "fewer"), (switched, more, fewer), strict=True)
         for kind, expected in kinds:
             observed = flagged[kind] & DESIGNED_GENES
             assert observed == expected, f"{name}: designed {kind} genes {sorted(observed)}"
@@ -252,18 +259,19 @@ def check_gene_events(tables: dict[str, pd.DataFrame], params: dict) -> None:
         screened = first["gene_fdr"] <= params["gene_fdr"]
         switch = screened & (first["dominant_pac_control"] != first["dominant_pac_treatment"])
         switch &= first["dominant_pac_control"].notna() & first["dominant_pac_treatment"].notna()
-        change = first["treatment_detected_complexity"] - first["control_detected_complexity"]
+        # Active PACs have at least active_pac_min_pau of the gene's fitted
+        # usage in a group.
+        minimum = params["active_pac_min_pau"]
+        for group in ("control", "treatment"):
+            active = (pacs[f"fitted_{group}_pau"] >= minimum).groupby(pacs["gene_id"]).sum()
+            recorded = first[f"{group}_active_pacs"]
+            assert (recorded == active.reindex(first.index)).all(), f"{name}: {group} active"
+        change = first["treatment_active_pacs"] - first["control_active_pacs"]
         change = change.where(screened & fitted.reindex(first.index), 0)
         assert flagged["switch"] == set(first.index[switch]), f"{name}: dominant_switch"
-        assert flagged["gain"] == set(first.index[change > 0]), f"{name}: complexity gain"
-        assert flagged["loss"] == set(first.index[change < 0]), f"{name}: complexity loss"
-        for label, kind in (
-            ("dominant_switch", "switch"),
-            ("complexity_gain", "gain"),
-            ("complexity_loss", "loss"),
-        ):
-            labelled = set(pacs.loc[pacs["event_type"] == label, "gene_id"])
-            assert labelled <= flagged[kind], f"{name}: {label} labels outside flagged genes"
+        assert flagged["more"] == set(first.index[change > 0]), f"{name}: more active PACs"
+        assert flagged["fewer"] == set(first.index[change < 0]), f"{name}: fewer active PACs"
+        assert set(pacs["event_type"]) <= PAC_EVENT_TYPES, f"{name}: {set(pacs['event_type'])}"
 
 
 def truthy(values: pd.Series) -> np.ndarray:
@@ -311,9 +319,9 @@ def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -
             continue
         coordinate = rows["pac_id"].map(coordinates).to_numpy(dtype=float)
         oriented = -coordinate if rows["strand"].iloc[0] == "-" else coordinate
-        classes = rows["assignment_class"].to_numpy()
-        upstream = np.isin(classes, ["intronic", "other_exon"])
-        three_prime = np.flatnonzero(np.isin(classes, ["terminal_exon", "downstream"]))
+        regions = rows["gene_region"].to_numpy()
+        upstream = np.isin(regions, ["intron", "internal_exon"])
+        three_prime = np.flatnonzero(np.isin(regions, ["last_exon", "downstream_of_gene"]))
         events = rows["event_type"].to_numpy()
         confident = rows["confidence"].to_numpy() != "low"
         up = np.isin(events, ["gained", "increased_usage"])
@@ -325,7 +333,7 @@ def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -
         called = up | down | withheld_gains | withheld_losses
         delta_intronic = treatment[upstream].sum() - control[upstream].sum()
         metrics["delta_intronic_share"] = delta_intronic
-        last_exon = rows["last_exon"].fillna("").to_numpy()[three_prime]
+        last_exon = rows["last_exon_locus"].fillna("").to_numpy()[three_prime]
         exons = [three_prime[last_exon == name] for name in dict.fromkeys(last_exon)]
         exon_control = [control[index].sum() for index in exons]
         exon_treatment = [treatment[index].sum() for index in exons]
@@ -367,7 +375,7 @@ def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -
             gene, (up & confident) | flagged_up, (down & confident) | flagged_down, threshold
         )
         found += [pattern + POTENTIAL_INTERNAL_PRIMING for pattern in wider if pattern not in found]
-        results[gene_id] = (";".join(found) if found else "other", metrics)
+        results[gene_id] = (";".join(found) if found else "unclassified_change", metrics)
     return results
 
 
@@ -410,15 +418,16 @@ def check_apa_patterns(tables: dict[str, pd.DataFrame], params: dict) -> None:
     atlas = pd.read_csv(
         ROOT / "atlas" / "pacs.v1.metadata.tsv.gz", sep="\t", keep_default_na=False
     )
-    last_exons = dict(zip(atlas["pac_id"], atlas["last_exon"], strict=True))
-    classes = dict(zip(atlas["pac_id"], atlas["assignment_class"], strict=True))
-    assert (classes[pac("chr3", "+", 1150)], last_exons[pac("chr3", "+", 1150)]) == ("intronic", "")
+    last_exons = dict(zip(atlas["pac_id"], atlas["last_exon_locus"], strict=True))
+    regions = dict(zip(atlas["pac_id"], atlas["gene_region"], strict=True))
+    assert (regions[pac("chr3", "+", 1150)], last_exons[pac("chr3", "+", 1150)]) == ("intron", "")
     assert last_exons[pac("chr3", "+", 2400)] == "chr3:2201-2400"
     assert last_exons[pac("chr3", "+", 5000)] == "chr3:4801-5000"
     assert last_exons[pac("chr3", "+", 5600)] == "chr3:5401-5600"
     assert last_exons[pac("chr1", "+", 350)] == "chr1:101-400"
-    terminal = atlas["assignment_class"] == "terminal_exon"
-    assert (atlas.loc[terminal, "last_exon"] != "").all(), "a terminal-exon PAC lacks its last exon"
+    in_last_exon = atlas["gene_region"] == "last_exon"
+    assert (atlas.loc[in_last_exon, "last_exon_locus"] != "").all(), "a last-exon PAC lacks a locus"
+    assert set(atlas["gene_region"]) <= set(GENE_REGIONS), set(atlas["gene_region"])
     coordinates = dict(zip(atlas["pac_id"], atlas["coordinate"].astype(float), strict=True))
     for name, table in tables.items():
         genes = statistics_table(f"{name}.genes.tsv.gz").set_index("gene_id")
@@ -441,7 +450,7 @@ def check_apa_patterns(tables: dict[str, pd.DataFrame], params: dict) -> None:
         valid = {
             *APA_PATTERN_CLASSES,
             *(pattern + POTENTIAL_INTERNAL_PRIMING for pattern in APA_PATTERN_CLASSES),
-            "other",
+            "unclassified_change",
             "none",
         }
         for pattern in genes["apa_pattern"]:
@@ -490,9 +499,9 @@ def check_figures(tables: dict[str, pd.DataFrame], trace_text: str, report_text:
         assert list(distal.columns) == DISTAL_COLUMNS, name
         ordered = distal.sort_values(["gene_fdr", "gene_id"], na_position="last", kind="stable")
         assert list(distal["gene_id"]) == list(ordered["gene_id"]), f"{name}: rows are not sorted"
-        # The distal PAC, recomputed: the most 3' tested PAC in the terminal
-        # exon or downstream of the gene.
-        eligible = table[table["assignment_class"].isin(["terminal_exon", "downstream"])].copy()
+        # The distal PAC, recomputed: the most 3' tested PAC in the last exon
+        # or downstream of the gene.
+        eligible = table[table["gene_region"].isin(["last_exon", "downstream_of_gene"])].copy()
         coordinate = eligible["pac_id"].map(coordinates)
         eligible["position"] = np.where(eligible["strand"] == "+", coordinate, -coordinate)
         chosen = eligible.sort_values(["gene_id", "position"]).groupby("gene_id").tail(1)
@@ -671,19 +680,40 @@ def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
         assert (rows["locus"] == loci).all(), f"{name}: locus is not the 1-based interval"
         named = rows[rows["gene_id"].astype(str).str.fullmatch(r"[^,]+")]
         assert (named["gene_name"] == named["gene_id"].map(expected_gene_name)).all(), name
+    # Names that version 0.4.0 replaced, by the tables that had them.
+    atlas_names = {"assignment_class", "last_exon", "supporting_condition"}
+    gene_names = {"pvalue", "lr", "df", "complexity_change"}
+    renamed = {
+        "atlas/pacs.v1.metadata.tsv.gz": atlas_names,
+        "atlas/rejected_candidates.tsv.gz": atlas_names,
+        "statistics/*.genes.tsv.gz": gene_names,
+        "statistics/*.gene_omnibus.tsv.gz": gene_names,
+        "motifs/*.tsv.gz": {"p_value"},
+    }
     removed = {"feature_id", "site_class", "family", "contig", "region_start", "region_end"}
+    removed |= atlas_names | gene_names | {
+        "pvalue_pac", "pvalue_gene", "control_detected_complexity", "treatment_detected_complexity",
+    }
     for name, table in tables.items():
         assert not removed & set(table.columns), f"{name}: {sorted(removed & set(table.columns))}"
+    for pattern, names in renamed.items():
+        paths = sorted(ROOT.glob(pattern))
+        assert paths, pattern
+        for path in paths:
+            columns = set(pd.read_csv(path, sep="\t", nrows=0).columns)
+            assert not names & columns, f"{path.name}: {sorted(names & columns)}"
+    assert not list((ROOT / "statistics").glob("*.events.tsv.gz")), "an events table remains"
     assert not {"contig", "region_start", "region_end", "resolution_group"} & set(atlas.columns)
     genes = statistics_table("TreatmentA_vs_DMSO.genes.tsv.gz")
     assert list(genes.columns[:2]) == ["gene_id", "gene_name"]
     assert (genes["gene_name"] == genes["gene_id"].map(expected_gene_name)).all()
 
-    # Descriptive labels are given only in genes that pass the gene screen.
-    descriptive = {"dominant_switch", "complexity_gain", "complexity_loss"}
-    for name, table in tables.items():
-        labelled = table[table["event_type"].isin(descriptive)]
-        assert (labelled["gene_fdr"] <= params["gene_fdr"]).all(), f"{name}: unscreened labels"
+    # Gene-level events are given only in genes that pass the gene screen.
+    for name in tables:
+        genes = statistics_table(f"{name}.genes.tsv.gz")
+        changed = genes["active_pacs_change"] != "none"
+        described = genes[is_true(genes["dominant_switch"]) | changed]
+        assert (described["gene_fdr"] <= params["gene_fdr"]).all(), f"{name}: unscreened events"
 
     # The k-mer background holds only PACs tested in the comparison: the
     # published tables equal a rerun on the atlas restricted that way, and the
@@ -726,7 +756,7 @@ def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
 def main() -> None:
     params = yaml.safe_load((ROOT / "manifest" / "resolved_params.yaml").read_text())
     tables = {name: statistics_table(f"{name}.pacs.tsv.gz") for name in COMPARISONS}
-    events = {name: statistics_table(f"{name}.events.tsv.gz") for name in COMPARISONS}
+    calls = {name: statistics_table(f"{name}.calls.tsv.gz") for name in COMPARISONS}
     treatment = tables["TreatmentA_vs_DMSO"]
 
     # chr1 PAC 350 has no reads in DMSO and is used in TreatmentA.
@@ -736,12 +766,16 @@ def main() -> None:
     assert number(gained["delta_pau"]) >= 0.3
     assert gained["delta_pau_ci_low"] > 0
     assert gained["raw_control_counts"] == "DMSO_1=0,DMSO_2=0"
-    assert gained["model_status"] == "drimseq_add_uniform"
-    gained_events = events["TreatmentA_vs_DMSO"]
-    is_gained = (gained_events["pac_id"] == pac("chr1", "+", 350)) & (
-        gained_events["event_type"] == "gained"
+    assert gained["model_status"] == "fitted_with_zero_count_stabilization"
+    gained_calls = calls["TreatmentA_vs_DMSO"]
+    is_gained = (gained_calls["pac_id"] == pac("chr1", "+", 350)) & (
+        gained_calls["event_type"] == "gained"
     )
     assert int(is_gained.sum()) == 1
+    # A calls table is its comparison's PAC rows with a call.
+    for name, table in tables.items():
+        called = table[table["event_type"] != "none"].reset_index(drop=True)
+        pd.testing.assert_frame_equal(calls[name], called, obj=f"{name}.calls")
 
     # bg01's middle PAC is silent only in TreatmentA: lost against DMSO and
     # gained again in the nested Rescue comparison.
@@ -776,8 +810,8 @@ def main() -> None:
         rows = tables[name][tables[name]["gene_id"] == gene_id]
         assert len(rows) >= 2, f"{name}: {gene_id} is missing"
         assert set(rows["event_type"]) == {"none"}, f"{name}: {gene_id} has events"
-        smallest = rows["pvalue_gene"].min()
-        assert (rows["pvalue_gene"] > 0.5).all(), f"{name}: {gene_id} gene p is {smallest}"
+        smallest = rows["gene_pvalue"].min()
+        assert (rows["gene_pvalue"] > 0.5).all(), f"{name}: {gene_id} gene p is {smallest}"
         assert (rows["delta_pau"].abs() < 0.01).all(), f"{name}: {gene_id} delta is not zero"
 
     # PAC-level FDRs exist wherever stageR confirms genes.
@@ -794,7 +828,7 @@ def main() -> None:
         assert rows["pac_fdr"].notna().all(), f"{name}: designed genes lack pac_fdr"
         screened = table[table["gene_fdr"] <= params["site_fdr"] / 2]
         assert screened["pac_fdr"].notna().all(), f"{name}: screened genes lack pac_fdr"
-        assert table["pvalue_pac"].notna().mean() >= 0.95, f"{name}: too many PAC tests are missing"
+        assert table["pac_pvalue"].notna().mean() >= 0.95, f"{name}: too many PAC tests are missing"
         assert "gene_minus" not in set(table["gene_id"]), f"{name}: gene_minus was tested"
         assert len(table) >= 2
     assert "primary_pas_motif_rna" in treatment
@@ -849,11 +883,17 @@ def main() -> None:
     report = ROOT / "report" / "index.html"
     assert report.stat().st_size > 10000
     report_text = report.read_text()
-    assert "<h2>Calibration kernel</h2>" in report_text
+    assert "<h2>Read-end offset profile</h2>" in report_text
     assert "Calibration warning" not in report_text
     assert "PAU sample correlation" in report_text
-    assert "<h2>Top gene usage profiles</h2>" in report_text
-    assert "<h2>Statistical filtering</h2>" in report_text
+    assert "<h2>PAC usage in the most-read genes</h2>" in report_text
+    assert "<h2>PACs left out of testing, and why</h2>" in report_text
+    assert "<h2>Genes with the lowest gene FDR</h2>" in report_text
+    for name in COMPARISONS:
+        title = name.replace("_vs_", " vs ")
+        assert f"<h2>{title}: PACs with a call</h2>" in report_text, name
+        assert f"<h2>{title}: every tested PAC</h2>" in report_text, name
+    assert "docs/output_columns.md</a>" in report_text
     assert "PAC-level p-value distribution" in report_text
     assert "primary_pas_motif_rna" in report_text
     assert "AAUAAA" in report_text
@@ -864,6 +904,7 @@ def main() -> None:
     assert f"<strong>{finite_intervals:,}</strong>Bootstrap intervals" in report_text
 
     check_output_layout(tables, params)
+    check_column_guide(ROOT)
 
     trace_text = (ROOT / "pipeline_info" / "execution_trace.txt").read_text()
     check_alignment_handling(trace_text)

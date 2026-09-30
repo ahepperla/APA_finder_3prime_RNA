@@ -80,7 +80,7 @@ def cmh_kmer_test(
             "common_odds_ratio": float("nan"),
             "ci_low": float("nan"),
             "ci_high": float("nan"),
-            "p_value": float("nan"),
+            "pvalue": float("nan"),
             "informative_genes": 0,
         }
     # Per stratum: a, b are event PACs with and without the k-mer; c, d are
@@ -98,7 +98,7 @@ def cmh_kmer_test(
         if table.sum() > 1
     )
     chi_square = score**2 / variance if variance else float("nan")
-    p_value = float(stats.chi2.sf(chi_square, 1)) if np.isfinite(chi_square) else float("nan")
+    pvalue = float(stats.chi2.sf(chi_square, 1)) if np.isfinite(chi_square) else float("nan")
     ci_low = ci_high = float("nan")
     if r.sum() > 0 and s.sum() > 0:
         # Robins-Breslow-Greenland variance of log(OR_MH), as in R's
@@ -116,7 +116,7 @@ def cmh_kmer_test(
         "common_odds_ratio": float(odds_ratio),
         "ci_low": ci_low,
         "ci_high": ci_high,
-        "p_value": p_value,
+        "pvalue": pvalue,
         "informative_genes": len(tables),
     }
 

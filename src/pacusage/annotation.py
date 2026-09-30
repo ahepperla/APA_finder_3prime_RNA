@@ -21,15 +21,15 @@ ATLAS_COLUMNS = [
     "coordinate_precision",
     "resolution_nt",
     "merged_candidate_coordinates",
-    "assignment_class",
-    "last_exon",
+    "gene_region",
+    "last_exon_locus",
     "ambiguous_gene_assignment",
     "proximal_distal_rank",
     "proximal_distal_label",
     "total_count",
     "supporting_samples",
     "total_supporting_samples",
-    "supporting_condition",
+    "best_supporting_condition",
     "candidate_status",
     "confidence",
     "known_pac",
@@ -157,7 +157,7 @@ def annotate_candidates(
                 candidate.coordinate,
                 maximum_downstream_distance,
             )
-            assignment_class = assignments[0][0] if assignments else "intergenic"
+            gene_region = assignments[0][0] if assignments else "intergenic"
             gene_ids = sorted({item[1].gene_id for item in assignments})
             # Names line up with the IDs, one per gene.
             gene_names = [names.get(gene_id, gene_id) for gene_id in gene_ids]
@@ -228,7 +228,7 @@ def annotate_candidates(
                     "total_count": candidate.total_count,
                     "supporting_samples": candidate.supporting_samples,
                     "total_supporting_samples": candidate.total_supporting_samples,
-                    "supporting_condition": candidate.supporting_condition,
+                    "best_supporting_condition": candidate.best_supporting_condition,
                     "fraction_within_2nt": round(candidate.fraction_within_2nt, 6),
                     "width_90": candidate.width_90,
                     "local_strand_enrichment": round(candidate.local_enrichment, 6),
@@ -241,8 +241,8 @@ def annotate_candidates(
                     "known_rescue_only": candidate.status == "known_rescue_only",
                     "gene_id": ",".join(gene_ids),
                     "gene_name": ",".join(gene_names),
-                    "assignment_class": assignment_class,
-                    "last_exon": last_exon,
+                    "gene_region": gene_region,
+                    "last_exon_locus": last_exon,
                     "ambiguous_gene_assignment": ambiguous,
                     # Ranked below for PACs of a single gene; blank otherwise.
                     "proximal_distal_rank": "",
@@ -378,14 +378,14 @@ class FeatureIndex:
         if not assignments:
             return ""
         label = assignments[0][0]
-        if label == "terminal_exon":
+        if label == "last_exon":
             loci = {
                 self.last_exon_of[
                     (exon.contig, exon.strand, exon.start, exon.end, exon.gene_id)
                 ]
                 for _, exon in assignments
             }
-        elif label == "downstream":
+        elif label == "downstream_of_gene":
             loci = {
                 self.three_prime_last_exon.get((gene.contig, gene.strand, gene.gene_id), "")
                 for _, gene in assignments
@@ -405,12 +405,12 @@ class FeatureIndex:
             in self.terminal_exons
         ]
         if terminal:
-            return [("terminal_exon", exon) for exon in terminal]
+            return [("last_exon", exon) for exon in terminal]
         if exons:
-            return [("other_exon", exon) for exon in exons]
+            return [("internal_exon", exon) for exon in exons]
         intronic = self._containing(self.gene_bins, contig, strand, coordinate)
         if intronic:
-            return [("intronic", gene) for gene in intronic]
+            return [("intron", gene) for gene in intronic]
         # Downstream: the nearest same-strand gene(s) ending upstream of the
         # PAC in transcript orientation, within maximum_downstream. No other
         # same-strand gene can lie between them: it would either contain the
@@ -421,13 +421,15 @@ class FeatureIndex:
             upper = bisect_left(ends, coordinate)
             if upper and coordinate - ends[upper - 1] <= maximum_downstream:
                 lower = bisect_left(ends, ends[upper - 1])
-                return [("downstream", gene) for gene in self.genes_by_end[key][lower:upper]]
+                genes = self.genes_by_end[key][lower:upper]
+                return [("downstream_of_gene", gene) for gene in genes]
         else:
             starts = self.gene_starts.get(key, [])
             lower = bisect_right(starts, coordinate)
             if lower < len(starts) and starts[lower] - coordinate <= maximum_downstream:
                 upper = bisect_right(starts, starts[lower])
-                return [("downstream", gene) for gene in self.genes_by_start[key][lower:upper]]
+                genes = self.genes_by_start[key][lower:upper]
+                return [("downstream_of_gene", gene) for gene in genes]
         return []
 
 

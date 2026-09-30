@@ -119,11 +119,11 @@ def test_ensembl_genes_are_assigned_and_indexed(tmp_path: Path) -> None:
             for label, feature in index.assign("chr1", strand, coordinate, 5000)
         ]
 
-    assert assigned("+", 800) == [("terminal_exon", "ENSG01")]
-    assert assigned("+", 250) == [("intronic", "ENSG01")]
-    assert assigned("-", 2100) == [("terminal_exon", "ENSG02")]
+    assert assigned("+", 800) == [("last_exon", "ENSG01")]
+    assert assigned("+", 250) == [("intron", "ENSG01")]
+    assert assigned("-", 2100) == [("last_exon", "ENSG02")]
     # The lncRNA's intron is inside its ncRNA_gene record.
-    assert assigned("-", 2400) == [("intronic", "ENSG02")]
+    assert assigned("-", 2400) == [("intron", "ENSG02")]
     exons = ExonBinIndex(features).query("chr1", 150, 160)
     assert [feature.gene_id for feature in exons] == ["ENSG01"]
 

@@ -71,7 +71,11 @@ coverage before making broad or negative structural claims.
   `FAMILY.statistical_filtering.tsv.gz`.
 - Calls belong to `fit_usage_model.R` too, including each gene's
   `apa_pattern`. PLOT_FIGURES draws the calls in the `.pacs` and `.genes`
-  tables and never makes its own.
+  tables and never makes its own. A PAC's `event_type` holds only PAC calls;
+  gene-level events are in the `.genes` tables.
+- `docs/output_columns.md` documents every published column. The integration
+  verifiers fail when a table gains, loses, or renames a column the guide
+  doesn't match, so update the guide with the table.
 
 ## Input And Data Invariants
 
@@ -93,7 +97,9 @@ coverage before making broad or negative structural claims.
 - A transcript's final exon is a terminal exon unless it overlaps an internal
   exon of another transcript of the gene, or is a single-exon model apart
   from the gene's multi-exon transcripts. A gene's overlapping terminal exons
-  form one last exon, the atlas's `last_exon`.
+  form one last exon, the atlas's `last_exon_locus`. A PAC's `gene_region` is
+  `last_exon`, `internal_exon`, `intron`, `downstream_of_gene`, or
+  `intergenic`.
 - Keep exact-boundary and proximal-tag discovery semantics distinct. Do not
   represent a proximal-tag estimate as nucleotide-resolution cleavage evidence.
 - Counts are raw assigned fragment counts. PAU is each PAC count divided by

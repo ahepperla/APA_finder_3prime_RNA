@@ -78,6 +78,6 @@ class PacCandidate:
     region_end: int | None = None
     resolution_nt: int = 0
     total_supporting_samples: int = 0
-    supporting_condition: str = ""
+    best_supporting_condition: str = ""
     # Every condition whose replicates support the candidate, in sorted order.
     supporting_conditions: tuple[str, ...] = ()

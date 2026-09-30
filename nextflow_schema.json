@@ -498,7 +498,14 @@
           "minimum": 0,
           "maximum": 1,
           "default": 0.05,
-          "description": "Fitted PAU a PAC needs in the gaining group for a gained or lost call."
+          "description": "Fitted PAU a PAC needs in the gaining group for a gained or lost call. A gene's main last exon needs as much in both groups for delta_utr_distal_share."
+        },
+        "active_pac_min_pau": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Fitted PAU a PAC needs in a group to count as one of its gene's active PACs, for active_pacs_change."
         },
         "event_max_control_pau": {
           "type": "number",

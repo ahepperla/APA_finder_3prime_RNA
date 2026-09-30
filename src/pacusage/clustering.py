@@ -160,7 +160,7 @@ def cluster_exact_boundaries(
                 region_end=max(members) + 1,
                 resolution_nt=1,
                 total_supporting_samples=total_supporting,
-                supporting_condition=supporting_condition,
+                best_supporting_condition=supporting_condition,
                 supporting_conditions=passing,
             )
             (accepted if status != "rejected" else rejected).append(candidate)
@@ -660,7 +660,7 @@ def _discover_proximal_group(
             region_end=coordinate + right_width,
             resolution_nt=resolution,
             total_supporting_samples=int(total_supporting[index]),
-            supporting_condition=str(supporting_conditions[index]),
+            best_supporting_condition=str(supporting_conditions[index]),
             supporting_conditions=passing[index],
         )
         (accepted if status == "primary" else rejected).append(candidate)

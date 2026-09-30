@@ -29,7 +29,7 @@ test -s results-test/report/index.html
 test -s results-test/atlas/pacs.v1.metadata.tsv.gz
 test -s results-test/counts/pac_counts.tsv.gz
 test -s results-test/statistics/TreatmentA_vs_DMSO.pacs.tsv.gz
-test -s results-test/statistics/TreatmentA_vs_DMSO.events.tsv.gz
+test -s results-test/statistics/TreatmentA_vs_DMSO.calls.tsv.gz
 test -s results-test/statistics/TreatmentB_vs_Vehicle.pacs.tsv.gz
 test -s results-test/statistics/Rescue_vs_TreatmentA.pacs.tsv.gz
 test -s results-test/statistics/gene_precision.tsv.gz
@@ -79,7 +79,8 @@ fi
 test "$(fixture_state)" = "${fixtures_before}"
 
 # The Plasmidsaurus-like fixture runs the proximal-tag path end to end, with
-# its own reference and annotation.
+# its own reference and annotation. It also publishes the per-sample count
+# tables, so the column guide's section for them is checked.
 plasmidsaurus_fixture="${project_dir}/tests/fixtures/plasmidsaurus"
 plasmidsaurus_root="${scratch_root}/plasmidsaurus"
 mkdir -p "${plasmidsaurus_root}"
@@ -88,6 +89,7 @@ mkdir -p "${plasmidsaurus_root}"
   --fasta "${plasmidsaurus_fixture}/genome.fa" \
   --gtf "${plasmidsaurus_fixture}/genes.gtf" \
   --endpoint_model auto \
+  --save_intermediates true \
   --outdir "${plasmidsaurus_root}/results" \
   -work-dir "${plasmidsaurus_root}/work")
 python tests/pipeline/verify_plasmidsaurus.py "${plasmidsaurus_root}/results"

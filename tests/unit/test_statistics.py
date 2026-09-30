@@ -85,7 +85,7 @@ def test_cmh_kmer_test_against_r_mantelhaen_test() -> None:
     assert np.isclose(result["common_odds_ratio"], 5.5)
     assert np.isclose(result["ci_low"], 0.7254731846, rtol=1e-6)
     assert np.isclose(result["ci_high"], 41.69692366, rtol=1e-6)
-    assert np.isclose(result["p_value"], 0.1041180298, rtol=1e-6)
+    assert np.isclose(result["pvalue"], 0.1041180298, rtol=1e-6)
     assert result["informative_genes"] == 2
 
 
@@ -99,7 +99,7 @@ def test_cmh_kmer_test_with_twenty_identical_strata() -> None:
     assert np.isclose(result["common_odds_ratio"], 6.0)
     assert np.isclose(result["ci_low"], 3.187330757, rtol=1e-6)
     assert np.isclose(result["ci_high"], 11.29471735, rtol=1e-6)
-    assert np.isclose(result["p_value"], 4.320463058e-08, rtol=1e-6)
+    assert np.isclose(result["pvalue"], 4.320463058e-08, rtol=1e-6)
 
 
 def test_motif_scores_use_only_genes_covered_in_every_sample() -> None:

@@ -18,34 +18,34 @@
 PACS_REQUIRED <- c(
   "pac_id", "gene_id", "gene_name", "strand", "locus", "condition",
   "control_condition", "event_type", "fitted_control_pau", "fitted_treatment_pau",
-  "delta_pau", "pac_fdr", "gene_fdr", "pvalue_pac", "assignment_class",
+  "delta_pau", "pac_fdr", "gene_fdr", "pac_pvalue", "gene_region",
   "control_gene_total", "treatment_gene_total", "exploratory_insufficient_replicates"
 )
 PACS_NUMERIC <- c(
   "fitted_control_pau", "fitted_treatment_pau", "delta_pau", "pac_fdr", "gene_fdr",
-  "pvalue_pac", "control_gene_total", "treatment_gene_total"
+  "pac_pvalue", "control_gene_total", "treatment_gene_total"
 )
 GENES_REQUIRED <- c(
   "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-  "complexity_change", "apa_pattern", "gene_fdr", "exploratory_insufficient_replicates"
+  "active_pacs_change", "apa_pattern", "gene_fdr", "exploratory_insufficient_replicates"
 )
 DISTAL_COLUMNS <- c(
   "gene_id", "gene_name", "condition", "control_condition", "direction", "apa_pattern",
-  "distal_pac_id", "distal_locus", "distal_assignment_class",
+  "distal_pac_id", "distal_locus", "distal_gene_region",
   "fitted_control_distal_pau", "fitted_treatment_distal_pau", "delta_distal_pau",
   "distal_event_type", "gene_fdr", "distal_pac_fdr", "tested_pacs"
 )
 
-# Assignment classes of tested PACs, in display order. Intergenic PACs have no
-# gene and are never tested.
-SITE_CLASSES <- c(
-  terminal_exon = "Terminal exon",
-  other_exon = "Other exon",
-  intronic = "Intron",
-  downstream = "Downstream of gene end"
+# Gene regions of tested PACs, in display order. Intergenic PACs have no gene
+# and are never tested.
+GENE_REGIONS <- c(
+  last_exon = "Last exon",
+  internal_exon = "Internal exon",
+  intron = "Intron",
+  downstream_of_gene = "Downstream of gene end"
 )
-# A gene's distal PAC is its most 3' tested PAC in one of these classes.
-DISTAL_CLASSES <- c("terminal_exon", "downstream")
+# A gene's distal PAC is its most 3' tested PAC in one of these regions.
+DISTAL_REGIONS <- c("last_exon", "downstream_of_gene")
 
 # ---- Calls ------------------------------------------------------------------
 
@@ -65,19 +65,20 @@ POTENTIAL_INTERNAL_PRIMING <- "_potential_internal_priming"
 APA_CLASSES <- c(
   intronic_gain = "Intronic gain", intronic_loss = "Intronic loss",
   alternative_last_exon = "Alternative last exon", utr_shortening = "UTR shortening",
-  utr_lengthening = "UTR lengthening", other = "Other change", none = "No pattern"
+  utr_lengthening = "UTR lengthening", unclassified_change = "Unclassified change",
+  none = "No pattern"
 )
 PAC_EVENTS <- c(
   "gained", "increased_usage", "decreased_usage", "lost", "gained_candidate",
   "lost_candidate"
 )
-GENE_EVENTS <- c("dominant_switch", "complexity_gain", "complexity_loss")
+GENE_EVENTS <- c("dominant_switch", "more_active_pacs", "fewer_active_pacs")
 EVENT_LABELS <- c(
   gained = "Gained", increased_usage = "Increased usage",
   decreased_usage = "Decreased usage", lost = "Lost",
   gained_candidate = "Gained (candidate)", lost_candidate = "Lost (candidate)",
-  dominant_switch = "Dominant switch", complexity_gain = "Complexity gain",
-  complexity_loss = "Complexity loss"
+  dominant_switch = "Dominant switch", more_active_pacs = "More active PACs",
+  fewer_active_pacs = "Fewer active PACs"
 )
 
 # ---- Drawing ----------------------------------------------------------------
@@ -106,12 +107,13 @@ COLOR_NONE <- "grey70"
 EVENT_COLORS <- c(
   gained = "#D55E00", increased_usage = "#E69F00", decreased_usage = "#56B4E9",
   lost = "#0072B2", gained_candidate = "#EEBF99", lost_candidate = "#99C7E0",
-  dominant_switch = "#CC79A7", complexity_gain = "#009E73", complexity_loss = "#80CEB9"
+  dominant_switch = "#CC79A7", more_active_pacs = "#009E73", fewer_active_pacs = "#80CEB9"
 )
 DIRECTION_COLORS <- c(up = COLOR_UP, down = COLOR_DOWN)
 APA_COLORS <- c(
   intronic_gain = "#8C510A", intronic_loss = "#D8B365", alternative_last_exon = "#762A83",
-  utr_shortening = "#0072B2", utr_lengthening = "#D55E00", other = "#555555", none = "grey75"
+  utr_shortening = "#0072B2", utr_lengthening = "#D55E00", unclassified_change = "#555555",
+  none = "grey75"
 )
 CALL_DIRECTION_LABELS <- c(up = "Increased or gained", down = "Decreased or lost")
 MARK_SHAPES <- c(
@@ -259,11 +261,11 @@ pac_calls <- function(event_type) {
 }
 
 # One row per tested gene with a distal PAC: its most 3' tested PAC in the
-# terminal exon or downstream of the gene. The direction is that PAC's own
+# last exon or downstream of the gene. The direction is that PAC's own
 # call, so a change among upstream PACs alone leaves the gene at "none"; the
 # gene's APA pattern comes from the genes table.
 distal_usage_table <- function(pacs, coordinates, genes) {
-  eligible <- pacs[pacs$assignment_class %in% DISTAL_CLASSES, , drop = FALSE]
+  eligible <- pacs[pacs$gene_region %in% DISTAL_REGIONS, , drop = FALSE]
   coordinate <- coordinates$coordinate[match(eligible$pac_id, coordinates$pac_id)]
   if (anyNA(coordinate)) {
     stop("The atlas lacks coordinates for PACs: ",
@@ -284,7 +286,7 @@ distal_usage_table <- function(pacs, coordinates, genes) {
     apa_pattern = genes$apa_pattern[match(distal$gene_id, genes$gene_id)],
     distal_pac_id = distal$pac_id,
     distal_locus = distal$locus,
-    distal_assignment_class = distal$assignment_class,
+    distal_gene_region = distal$gene_region,
     fitted_control_distal_pau = distal$fitted_control_pau,
     fitted_treatment_distal_pau = distal$fitted_treatment_pau,
     delta_distal_pau = distal$delta_pau,
@@ -302,28 +304,27 @@ distal_usage_table <- function(pacs, coordinates, genes) {
   list(table = table, without_distal = length(unique(pacs$gene_id)) - nrow(table))
 }
 
-# Confirmed up and down calls by assignment class, with every class and both
-# directions present. Candidates and the gene-level labels are not counted.
+# Confirmed up and down calls by gene region, with every region and both
+# directions present. Candidates are not counted.
 site_class_counts <- function(pacs) {
-  unknown <- setdiff(pacs$assignment_class, names(SITE_CLASSES))
+  unknown <- setdiff(pacs$gene_region, names(GENE_REGIONS))
   if (length(unknown)) {
-    stop("Unexpected assignment_class values: ",
+    stop("Unexpected gene_region values: ",
       paste(sort(unknown, method = "radix"), collapse = ", "), ".")
   }
-  classes <- factor(pacs$assignment_class, levels = names(SITE_CLASSES))
+  classes <- factor(pacs$gene_region, levels = names(GENE_REGIONS))
   call <- pac_calls(pacs$event_type)
-  bins <- length(SITE_CLASSES)
+  bins <- length(GENE_REGIONS)
   data.frame(
-    assignment_class = factor(rep(names(SITE_CLASSES), 2), levels = names(SITE_CLASSES)),
+    gene_region = factor(rep(names(GENE_REGIONS), 2), levels = names(GENE_REGIONS)),
     direction = factor(rep(c("down", "up"), each = bins), levels = c("down", "up")),
     count = c(tabulate(classes[call == "down"], bins), tabulate(classes[call == "up"], bins)),
     tested = rep(tabulate(classes, bins), 2)
   )
 }
 
-# PAC events count rows of .pacs. Gene events count genes flagged in .genes:
-# the .pacs labels for them go only on PACs without a call of their own, so
-# they would undercount.
+# PAC events count rows of .pacs, and gene events count genes flagged in
+# .genes.
 event_count_table <- function(comparisons, pacs_tables, genes_tables) {
   rows <- lapply(comparisons$stem, function(stem) {
     pacs <- pacs_tables[[stem]]
@@ -332,8 +333,8 @@ event_count_table <- function(comparisons, pacs_tables, genes_tables) {
     counts <- c(
       vapply(PAC_EVENTS, function(event) sum(pacs$event_type == event), integer(1)),
       dominant_switch = sum(genes$dominant_switch),
-      complexity_gain = sum(genes$complexity_change == "gain"),
-      complexity_loss = sum(genes$complexity_change == "loss")
+      more_active_pacs = sum(genes$active_pacs_change == "more"),
+      fewer_active_pacs = sum(genes$active_pacs_change == "fewer")
     )
     data.frame(comparison = stem, event = names(counts), count = unname(counts))
   })
@@ -351,10 +352,12 @@ event_count_table <- function(comparisons, pacs_tables, genes_tables) {
 
 # Genes per APA pattern in each comparison, with zeros, apart for patterns
 # that only flagged PACs support; a gene with two patterns counts in both.
-# "other" is not a pattern, so it counts with the supported ones.
+# "unclassified_change" is not a pattern, so it counts with the supported ones.
 pattern_count_table <- function(comparisons, genes_tables) {
   classes <- setdiff(names(APA_CLASSES), "none")
-  labels <- c(classes, paste0(setdiff(classes, "other"), POTENTIAL_INTERNAL_PRIMING))
+  labels <- c(
+    classes, paste0(setdiff(classes, "unclassified_change"), POTENTIAL_INTERNAL_PRIMING)
+  )
   rows <- lapply(comparisons$stem, function(stem) {
     genes <- genes_tables[[stem]]
     genes <- genes[!duplicated(genes$gene_id), , drop = FALSE]
@@ -405,13 +408,13 @@ first_pattern_flagged <- function(apa_pattern) {
 # confirmed PAC, for at most LABEL_LIMIT genes in each direction.
 volcano_data <- function(pacs) {
   call <- pac_calls(pacs$event_type)
-  kept <- is.finite(pacs$delta_pau) & !is.na(pacs$pvalue_pac)
+  kept <- is.finite(pacs$delta_pau) & !is.na(pacs$pac_pvalue)
   points <- data.frame(
     pac_id = pacs$pac_id[kept],
     gene_id = pacs$gene_id[kept],
     gene_name = ascii_text(pacs$gene_name[kept]),
     delta_pau = pacs$delta_pau[kept],
-    pvalue = pacs$pvalue_pac[kept],
+    pvalue = pacs$pac_pvalue[kept],
     call = call[kept],
     stringsAsFactors = FALSE
   )
@@ -830,9 +833,9 @@ plot_distal_usage <- function(result, comparison, params) {
 plot_site_classes <- function(counts, comparison) {
   tested <- counts$tested[counts$direction == "down"]
   if (!sum(tested)) return(placeholder_plot(comparison$title, "No tested PACs"))
-  labels <- sprintf("%s (n = %d)", SITE_CLASSES, tested)
-  # Terminal exon at the top.
-  counts$label <- factor(labels[as.integer(counts$assignment_class)], levels = rev(labels))
+  labels <- sprintf("%s (n = %d)", GENE_REGIONS, tested)
+  # Last exon at the top.
+  counts$label <- factor(labels[as.integer(counts$gene_region)], levels = rev(labels))
   counts$signed <- ifelse(counts$direction == "down", -counts$count, counts$count)
   limit <- max(1, abs(counts$signed)) * 1.25
   shown <- counts[counts$count > 0, , drop = FALSE]
@@ -854,7 +857,7 @@ plot_site_classes <- function(counts, comparison) {
       labels = function(breaks) format(abs(breaks), trim = TRUE)) +
     labs(
       title = comparison$title,
-      subtitle = "Confirmed PAC calls by site class: lost usage left of zero, gained right",
+      subtitle = "Confirmed PAC calls by gene region: lost usage left of zero, gained right",
       x = "PACs", y = NULL
     ) +
     figure_theme()
