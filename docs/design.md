@@ -1135,9 +1135,9 @@ or `lost_candidate`. The other requirements are significance (the gene and PAC
 FDRs), coverage, stability, confidence (neither low confidence nor an
 internal-priming flag), and replication (a comparison that is not
 exploratory). A `zero_boundary_unstable` PAC has no PAC-level p-value, so it
-fails both significance and stability.
-These labels are detection-supported but not statistically confirmed and must
-never be merged with significant gained/lost counts.
+fails both significance and stability. These labels are detection-supported
+but not statistically confirmed and must never be merged with significant
+gained/lost counts.
 
 Default gained-PAC requirements:
 
