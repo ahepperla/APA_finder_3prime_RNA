@@ -213,7 +213,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
     <h1>PACusage methods and rationale</h1>
     <p class="lede">PACusage finds polyadenylation site clusters (PACs) in 3′-end RNA-seq alignments, counts the reads at each one, and tests every treatment against its declared control for changes in how a gene's reads are shared among its PACs. This document goes through the pipeline in the order it runs. For each step it says what the step does, which defaults it uses, and why, with the statistical result, biological observation, or community standard behind the choice. Limitations and open questions for reviewers are collected at the end.</p>
     <div class="meta">
-      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA, commit <code>b8a3126</code></span>
+      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA, commit <code>941a66a</code></span>
       <span><strong>Date</strong> 29 September 2026</span>
       <span><strong>Statistics</strong> DRIMSeq 1.38.0 (pinned), stageR, limma</span>
       <span><strong>Execution</strong> Nextflow DSL2, Apptainer, Slurm</span>
@@ -1076,7 +1076,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <li id="ref-wickham2016">Wickham H (2016). <em>ggplot2: Elegant Graphics for Data Analysis</em>. Springer-Verlag New York.</li>
           <li id="ref-xia2014">Xia Z, Donehower LA, Cooper TA, Neilson JR, Wheeler DA, Wagner EJ, Li W (2014). Dynamic analyses of alternative polyadenylation from RNA-seq reveal a 3′-UTR landscape across seven tumour types. <em>Nature Communications</em> 5:5274.</li>
         </ol>
-        <p class="footer-note">This document describes the pipeline at commit b8a3126. Design details are in <code>docs/design.md</code>, the meaning of every output column in <code>docs/output_columns.md</code>, and the decision history in <code>docs/decisions.md</code> of the repository.</p>
+        <p class="footer-note">This document describes the pipeline at commit 941a66a. Design details are in <code>docs/design.md</code>, the meaning of every output column in <code>docs/output_columns.md</code>, and the decision history in <code>docs/decisions.md</code> of the repository.</p>
       </section>
 
     </article>
