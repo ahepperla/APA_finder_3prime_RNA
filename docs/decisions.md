@@ -65,7 +65,7 @@ internal-priming-flagged site made the gene `other`.
 
 The atlas changes for proximal-tag runs, which reseeds their statistics.
 Parameters are not checked against a list of names, so the removed
-parameter, if still set, is ignored.
+parameter, if still set, is ignored. The version rises to 0.3.0.
 
 ## 2026-09-29: Figures across comparisons and the PAU PCA figure
 

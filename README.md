@@ -638,14 +638,21 @@ finished steps from it.
   `-profile apptainer`.
   - **Python package:** Nextflow does not track most of it, so start a fresh
     run: use a new work directory, or leave out `-resume`.
-  - **Annotation:** the one exception. Its step stages `annotation.py` and
-    `reference.py`, so `-resume` reruns annotation and every step after it
-    when they change.
+  - **Discovery and annotation:** the exceptions. Discovery stages
+    `clustering.py`, `annotation.py`, and `reference.py`, and annotation
+    stages the last two. So `-resume` reruns discovery or annotation, and
+    every step after it, when they change.
   - **R scripts:** tracked. Changes to the statistics script rerun the
     statistics, and changes to the figure script redraw the figures.
   - **Version 0.2.0** changes the atlas (the `last_exon` column and refined
     terminal exons). The atlas checksum seeds the statistics, so a rerun
     moves stabilized genes' p-values and bootstrap intervals slightly.
+  - **Version 0.3.0** changes proximal-tag atlases. Two discovery filters
+    now reject peaks at internal exon ends and pooled readthrough, which
+    also reseeds the statistics.
+    - `constitutive_readthrough_min_replicate_support` is gone, and is
+      ignored if still set.
+    - The `.genes` tables gain the `_potential_internal_priming` patterns.
 
 ## Troubleshooting
 
