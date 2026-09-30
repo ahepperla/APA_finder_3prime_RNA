@@ -171,14 +171,14 @@ test_case("F-04", "gene regions count confirmed calls only, with every region pr
     pac_row("i2", "g3", event_type = "none", gene_region = "intron"),
     pac_row("o1", "g4", event_type = "lost_candidate", gene_region = "internal_exon")
   )
-  counts <- figures$site_class_counts(pacs)
+  counts <- figures$gene_region_counts(pacs)
   check(nrow(counts) == 8L, "rows: ", nrow(counts))
   check(identical(as.character(counts$gene_region), rep(names(figures$GENE_REGIONS), 2)), "regions.")
   check(identical(as.character(counts$direction), rep(c("down", "up"), each = 4)), "directions.")
   check(identical(counts$count, c(1L, 0L, 0L, 0L, 1L, 0L, 1L, 0L)), "counts: ", paste(counts$count, collapse = ", "))
   check(identical(counts$tested, rep(c(3L, 1L, 2L, 0L), 2)), "tested: ", paste(counts$tested, collapse = ", "))
   unexpected <- tryCatch(
-    figures$site_class_counts(pac_table(pac_row("x", "g", gene_region = "intergenic"))),
+    figures$gene_region_counts(pac_table(pac_row("x", "g", gene_region = "intergenic"))),
     error = function(error) conditionMessage(error)
   )
   check(grepl("Unexpected gene_region values: intergenic", unexpected, fixed = TRUE), unexpected)
@@ -778,7 +778,7 @@ write_inputs <- function(directory, filled) {
 expected_files <- sort(c(
   as.vector(outer(c("T1_vs_C", "T2_vs_C"), c(
     ".volcano.pdf", ".volcano.png", ".distal_usage.pdf", ".distal_usage.png",
-    ".distal_usage.tsv.gz", ".site_classes.pdf", ".site_classes.png"
+    ".distal_usage.tsv.gz", ".calls_by_gene_region.pdf", ".calls_by_gene_region.png"
   ), paste0)),
   "event_counts.pdf", "event_counts.png", "effect_vs_coverage.pdf", "effect_vs_coverage.png",
   "apa_pattern_grid.pdf", "apa_pattern_grid.png", "apa_patterns_by_comparison.tsv.gz",

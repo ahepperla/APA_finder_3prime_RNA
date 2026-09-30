@@ -33,7 +33,7 @@ COMPARISON_FIGURES = (
         "distal PAC fell, the largest changes, are labeled.",
     ),
     (
-        "site_classes",
+        "calls_by_gene_region",
         "PAC calls by gene region",
         "Confirmed PAC calls by the part of the gene the PAC lies in (gene_region). Left "
         "of zero, PACs that lost usage (lost or decreased); right of zero, PACs that "

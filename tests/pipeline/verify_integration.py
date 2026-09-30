@@ -23,7 +23,7 @@ ROOT = REPOSITORY / "results-test"
 FIXTURES = REPOSITORY / "tests" / "fixtures"
 COMPARISONS = ("TreatmentA_vs_DMSO", "TreatmentB_vs_Vehicle", "Rescue_vs_TreatmentA")
 FAMILIES = ("DMSO", "Vehicle", "TreatmentA")
-COMPARISON_FIGURES = ("volcano", "distal_usage", "site_classes")
+COMPARISON_FIGURES = ("volcano", "distal_usage", "calls_by_gene_region")
 SUMMARY_FIGURES = (
     "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",
     "effect_vs_coverage", "pau_pca",
@@ -35,7 +35,7 @@ FIGURE_TABLES = ("apa_patterns_by_comparison.tsv.gz", "concordance.tsv.gz", "pau
 FIGURE_PIXELS = {
     "volcano": (1300, 1000),
     "distal_usage": (1100, 1100),
-    "site_classes": (1300, 700),
+    "calls_by_gene_region": (1300, 700),
     "event_counts": (1500, 1150),
     "effect_vs_coverage": (1500, 650),
     "concordance": (1500, 700),

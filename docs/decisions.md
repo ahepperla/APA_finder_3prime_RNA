@@ -52,8 +52,13 @@ change too.
 - `apa_pattern` `other` becomes `unclassified_change`.
 - `model_status` `drimseq` becomes `fitted`, and `drimseq_add_uniform`
   becomes `fitted_with_zero_count_stabilization`.
-- Figure file names stay; the `site_classes` figure is titled "PAC calls by
-  gene region".
+- The `site_classes` figures become `calls_by_gene_region`, titled "PAC calls
+  by gene region". The lead chose to rename them in this release rather than
+  break scripts a second time later; the other figure names stay.
+- Yes/no text stays as each writer prints it: `True`/`False` in the tables
+  Python writes, `TRUE`/`FALSE` in the statistics tables, and `true`/`false`
+  in the sample check. The guide says which is which, and every reader in the
+  pipeline compares them case-insensitively. The lead chose to keep the mix.
 
 **The guide and the report**
 - `docs/output_columns.md` explains every published table and column: a

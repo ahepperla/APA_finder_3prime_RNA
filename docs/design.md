@@ -280,9 +280,13 @@ range, default, and description. `VALIDATE_INPUTS` resolves the parameters
 against it once, and every later step reads the resolved file.
 
 `insufficient_replicates_policy` accepts `error` or `warn`. The default
-`error` stops before modeling. `warn` permits an explicitly exploratory run,
-marks every affected comparison in all statistical outputs, and suppresses
-claims of confirmed gained or lost PACs.
+`error` stops before modeling. `warn` permits an explicitly exploratory run.
+A condition with fewer than `min_replicates_per_condition` samples then makes
+every comparison of each family that includes it exploratory, not only the
+comparisons that use it. `exploratory_insufficient_replicates` marks these
+comparisons in their `.genes`, `.pacs`, and `.calls` tables and in the
+family's `gene_omnibus` table, and their gained and lost PACs are reported
+only as candidates.
 
 For Plasmidsaurus data, the user explicitly overrides the generic default:
 
@@ -736,8 +740,8 @@ Also store:
 - merged candidate coordinates;
 - calibration profile and version;
 - resolved evidence source;
-- primary evidence type, such as exact boundary, endpoint peak, coverage edge,
-  or known-site match.
+- primary evidence type (`primary_evidence_type`): `exact_boundary` for an
+  exact PAC and `endpoint_peak` for a proximal-tag PAC.
 
 Freeze and checksum the atlas before quantification and testing. Rebuilding
 with new samples or parameters creates a new atlas version.
@@ -754,11 +758,15 @@ For each PAC, record:
 - one primary PAS motif selected by catalog priority and expected position;
 - downstream A fraction and longest A run;
 - same-strand known-PAC matches;
-- gene and transcript assignments;
+- gene assignment (`gene_id`, `gene_name`), with `ambiguous_gene_assignment`
+  marking a PAC assigned to several genes, but no transcript assignment;
 - gene region (`gene_region`): `last_exon`, `internal_exon`, `intron`,
   `downstream_of_gene`, or `intergenic`;
 - proximal-to-distal rank;
-- confidence tier and explicit reasons.
+- confidence tier (`confidence`), recorded without reasons: `low` for a PAC
+  assigned to several genes or flagged for internal priming; otherwise `high`
+  for a PAC that matches a known PAC, has at least two supporting samples,
+  and is not `known_rescue_only`; and `moderate` for the rest.
 
 Internal-priming evidence is a flag by default, not an automatic exclusion.
 Strict filtering may be exposed as an optional parameter.
@@ -954,7 +962,8 @@ For every treatment-control result, report:
 - delta PAU, defined as treatment minus control;
 - a 95 percent parametric-bootstrap confidence interval when the gene is
   bootstrap-eligible;
-- raw replicate counts and observed PAU;
+- raw replicate counts, and observed PAU over the gene's PACs tested in the
+  comparison's family, so it can differ from `counts/observed_pau.tsv.gz`;
 - gene-level precision;
 - reconstructed alpha values
   `alpha = fitted_probability * precision`;
@@ -1039,10 +1048,10 @@ Classify PACs using both statistical evidence and detection evidence:
 - **gained:** not detectably used in adequately covered controls, reproducibly
   detected in treatment, positive delta PAU, and significant PAC-level FDR;
 - **lost:** the reverse of gained;
-- **increased usage:** detected in both groups with significant positive delta
-  PAU;
-- **decreased usage:** detected in both groups with significant negative delta
-  PAU;
+- **increased usage:** detected in both groups, with a significant delta PAU
+  of at least `min_abs_delta_pau`;
+- **decreased usage:** detected in both groups, with a significant delta PAU
+  of at most minus `min_abs_delta_pau`;
 - **dominant switch:** in a gene that passes the contrast-specific gene test,
   the highest fitted-usage PAC differs between treatment and control;
 - **more or fewer active PACs:** in a gene that passes the contrast-specific
@@ -1120,23 +1129,30 @@ usage, and has a confirmed call or a counted withheld one.
   `unclassified_change` for a classified gene with no pattern, and `none` for
   every other gene.
 
-When detection and effect-size requirements for `gained` or `lost` pass but a
-stable PAC-level p-value cannot be obtained, report `gained_candidate` or
-`lost_candidate`. These labels are detection-supported but not statistically
-confirmed and must never be merged with significant gained/lost counts.
+When the detection, fitted-PAU, and effect-size requirements for `gained` or
+`lost` pass but any other requirement below fails, report `gained_candidate`
+or `lost_candidate`. The other requirements are significance (the gene and PAC
+FDRs), coverage, stability, confidence (neither low confidence nor an
+internal-priming flag), and replication (a comparison that is not
+exploratory). A `zero_boundary_unstable` PAC has no PAC-level p-value, so it
+fails both significance and stability.
+These labels are detection-supported but not statistically confirmed and must
+never be merged with significant gained/lost counts.
 
 Default gained-PAC requirements:
 
 - the parent gene passes the relevant contrast-specific gene test;
 - the control samples together have at least `min_gene_total` reads at the
-  gene (for lost calls, the treatment samples);
+  gene's PACs tested in the family (`control_gene_total`; for lost calls, the
+  treatment samples' `treatment_gene_total`);
 - fitted control PAU is at most `event_max_control_pau`;
 - fitted treatment PAU is at least `event_min_treatment_pau`;
 - treatment support meets `event_min_supporting_samples`;
 - delta PAU is at least `min_abs_delta_pau`;
 - PAC-level FDR passes `site_fdr`;
 - the PAC is not low confidence, `zero_boundary_unstable`, or flagged as likely
-  internal priming.
+  internal priming;
+- the comparison is not exploratory.
 
 Use the label `gained` or `not detected in control`, not `de novo`, unless
 independent evidence establishes biological absence in the control.
@@ -1176,7 +1192,8 @@ Use DNA alphabet in output and provide the strand-oriented sequence so it reads
 window and separately flag whether a match lies in the expected core window.
 Retain all matches even though one primary class is selected for summaries.
 
-For every treatment-control comparison:
+Steps 1-5 score every sample once for the run; steps 6-7 test every
+treatment-control comparison:
 
 1. Select before looking at condition effects a fixed set of adequately covered
    genes with at least two primary-discovery PACs: genes with at least
@@ -1185,9 +1202,13 @@ For every treatment-control comparison:
    across the remaining PACs within each sample and gene. Exclude a gene when
    fewer than two primary PACs remain or their retained total is zero.
 3. For each sample and gene, sum the renormalized PAU for PACs belonging to each
-   motif class.
-4. Give every gene equal weight when averaging motif-class usage within a
-   sample.
+   motif class, and separately for PACs with each primary hexamer.
+4. Average each sum within a sample over the genes that have a PAC in that
+   class, or with that hexamer, giving every gene equal weight. This mean is
+   the sample's `motif_usage` in `motif_class_scores.tsv` or
+   `motif_scores.tsv`. A gene without such a PAC is left out of the mean, not
+   counted as zero, so each class and hexamer has its own informative genes
+   (`informative_genes`) within the fixed set.
 5. Transform each sample-level score with
    `asin(sqrt(score))`, which accepts exact zero and one without pseudocounts.
 6. Fit a `limma` linear model using the same condition and covariate design as
@@ -1267,8 +1288,8 @@ make no calls of their own. For each comparison:
   the pattern. Up to 20 genes whose distal PAC rose and 20 whose
   distal PAC fell, the largest changes, are labeled by gene name.
   `CONDITION_vs_CONTROL.distal_usage.tsv.gz` lists the genes.
-- **site classes:** confirmed gains and losses by gene region, titled "PAC
-  calls by gene region", so intronic polyadenylation shows as intron gains.
+- **calls by gene region:** confirmed gains and losses by gene region, so
+  intronic polyadenylation shows as intron gains.
 
 Across comparisons:
 
@@ -1277,7 +1298,7 @@ Across comparisons:
   a panel of their own. These keep their pattern's color: a lighter tint of
   intronic gain would match intronic loss.
 - **effect against coverage:** `effect_vs_coverage` shows each PAC's change in
-  PAU against the reads at its gene in the less-covered group.
+  PAU against the reads at its gene's tested PACs in the less-covered group.
 - **shared APA patterns:** `apa_pattern_grid` draws genes with an APA pattern
   in at least two comparisons against the comparisons. A `*` marks a cell
   whose pattern only flagged PACs support.
@@ -1372,7 +1393,7 @@ results/
     CONDITION_vs_CONTROL.volcano.pdf/.png
     CONDITION_vs_CONTROL.distal_usage.pdf/.png
     CONDITION_vs_CONTROL.distal_usage.tsv.gz
-    CONDITION_vs_CONTROL.site_classes.pdf/.png
+    CONDITION_vs_CONTROL.calls_by_gene_region.pdf/.png
     event_counts.pdf/.png
     effect_vs_coverage.pdf/.png
     apa_pattern_grid.pdf/.png
@@ -1528,7 +1549,7 @@ Cover:
   transcript ends, and the kernel shift to a candidate's read pile; the
   readthrough rule pooled over each supporting condition, and inclusive at
   the donor on both strands;
-- figure data: the distal PAC on both strands, site-class and event counts,
+- figure data: the distal PAC on both strands, gene-region and event counts,
   and dropped p-values and coverage rows;
 - figures across comparisons: the shared-pattern grid's order and 50-gene
   cap, related pairs and the 15-panel cap, concordance calls and Pearson r,

@@ -306,7 +306,7 @@ distal_usage_table <- function(pacs, coordinates, genes) {
 
 # Confirmed up and down calls by gene region, with every region and both
 # directions present. Candidates are not counted.
-site_class_counts <- function(pacs) {
+gene_region_counts <- function(pacs) {
   unknown <- setdiff(pacs$gene_region, names(GENE_REGIONS))
   if (length(unknown)) {
     stop("Unexpected gene_region values: ",
@@ -830,7 +830,7 @@ plot_distal_usage <- function(result, comparison, params) {
     )
 }
 
-plot_site_classes <- function(counts, comparison) {
+plot_calls_by_gene_region <- function(counts, comparison) {
   tested <- counts$tested[counts$direction == "down"]
   if (!sum(tested)) return(placeholder_plot(comparison$title, "No tested PACs"))
   labels <- sprintf("%s (n = %d)", GENE_REGIONS, tested)
@@ -1234,8 +1234,8 @@ run_figures_mode <- function(arguments) {
     write_gzip_tsv(distal$table[, DISTAL_COLUMNS], paste0(output, ".distal_usage.tsv.gz"))
     save_figure(plot_distal_usage(distal, comparison, params), paste0(output, ".distal_usage"),
       5.5, 5.5)
-    save_figure(plot_site_classes(site_class_counts(pacs), comparison),
-      paste0(output, ".site_classes"), 6.5, 3.5)
+    save_figure(plot_calls_by_gene_region(gene_region_counts(pacs), comparison),
+      paste0(output, ".calls_by_gene_region"), 6.5, 3.5)
   }
   counts <- event_count_table(comparisons, pacs_tables, genes_tables)
   patterns <- pattern_count_table(comparisons, genes_tables)

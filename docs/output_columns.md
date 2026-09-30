@@ -935,8 +935,8 @@ which says how closely replicates agree.
   PAU against its PAC-level p-value, with confirmed calls colored and candidates open.
 - `figures/CONDITION_vs_CONTROL.distal_usage.pdf` and `.png`: each tested gene's distal PAC
   usage, control against treatment, colored by the gene's APA pattern.
-- `figures/CONDITION_vs_CONTROL.site_classes.pdf` and `.png`, titled "PAC calls by gene
-  region": confirmed calls by gene_region, losses left of zero and gains right.
+- `figures/CONDITION_vs_CONTROL.calls_by_gene_region.pdf` and `.png`: confirmed calls by
+  gene_region, losses left of zero and gains right.
 - `figures/event_counts.pdf` and `.png`: PAC calls and gene events per comparison, and the
   genes per APA pattern.
 - `figures/apa_pattern_grid.pdf` and `.png`: up to 50 genes with an APA pattern in two or

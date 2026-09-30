@@ -469,7 +469,7 @@ treatments.
     into an intron; the color tells which.
   - Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, those
     with the largest changes, are labeled with their gene names.
-- **`CONDITION_vs_CONTROL.site_classes`**: confirmed PAC calls by the part
+- **`CONDITION_vs_CONTROL.calls_by_gene_region`**: confirmed PAC calls by the part
   of the gene the PAC lies in, its `gene_region` (last exon, internal exon,
   intron, downstream of the gene), with losses to the left of zero and gains
   to the right. A shift to intronic polyadenylation shows as intron gains.
@@ -508,9 +508,9 @@ treatments.
       signs, so they correlate negatively. A rescue that reverses a treatment
       gives a strongly negative r partly for that reason.
 - **`effect_vs_coverage`**: each PAC's change in fitted PAU against the reads
-  at its gene in the less-covered group, one panel per comparison, with
-  `min_gene_total` marked. Calls driven by low coverage would cluster on the
-  left.
+  at its gene's tested PACs in the less-covered group, one panel per
+  comparison, with `min_gene_total` marked. Calls driven by low coverage would
+  cluster on the left.
 - **`pau_pca`**: samples on the first two principal components of observed
   PAU, colored by condition.
   - It uses the genes with at least `min_gene_total` reads in every sample,
@@ -690,6 +690,8 @@ finished steps from it.
     updating. The atlas columns change, which reseeds the statistics.
     - `CONDITION_vs_CONTROL.events.tsv.gz` is now `.calls.tsv.gz`, and
       `event_type` holds only PAC calls.
+    - The `CONDITION_vs_CONTROL.site_classes` figures are now
+      `CONDITION_vs_CONTROL.calls_by_gene_region`.
     - In the atlas and `.pacs`: `assignment_class` is `gene_region`, with
       values `last_exon`, `internal_exon`, `intron`, `downstream_of_gene`,
       and `intergenic`; `last_exon` is `last_exon_locus`;
