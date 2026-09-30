@@ -213,7 +213,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
     <h1>PACusage methods and rationale</h1>
     <p class="lede">PACusage finds polyadenylation site clusters (PACs) in 3′-end RNA-seq alignments, counts the reads at each one, and tests every treatment against its declared control for changes in how a gene's reads are shared among its PACs. This document goes through the pipeline in the order it runs. For each step it says what the step does, which defaults it uses, and why, with the statistical result, biological observation, or community standard behind the choice. Limitations and open questions for reviewers are collected at the end.</p>
     <div class="meta">
-      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA, commit <code>fc5ce0c</code></span>
+      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA, commit <code>c712d33</code></span>
       <span><strong>Date</strong> 29 September 2026</span>
       <span><strong>Statistics</strong> DRIMSeq 1.38.0 (pinned), stageR, limma</span>
       <span><strong>Execution</strong> Nextflow DSL2, Apptainer, Slurm</span>
@@ -535,10 +535,14 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
           </div>
         </div>
         <div class="block">
-          <p class="label">Constitutive-readthrough filter (proximal-tag runs only)</p>
+          <p class="label">Reads that end inside a spliced transcript (proximal-tag runs only)</p>
           <div class="prose">
-            <p>A candidate inside an exon block from which reads splice directly onward is rejected when, in <em>every</em> condition, the required number of replicates each have at least 2 such splice reads. By default every replicate is required (<code>constitutive_readthrough_min_replicate_support: all</code>); a fraction between 0 and 1 is rounded up per condition.</p>
-            <p><strong>Why.</strong> Oligo(dT) primes internally at A-rich sequence inside transcripts <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. If reads consistently splice out of an exon into the next one in every condition, that exon is not a transcript end in any condition, and a tag cluster inside it is more likely internal priming than a PAC. Requiring this in every condition protects sites that are ends in some condition: one condition without consistent continuation keeps the candidate. Intronic sites are not inside spliced exon blocks, so the filter leaves them alone.</p>
+            <p>Both filters look at a candidate's read pile, which lies upstream of the candidate by the kernel's peak offset: a sharp pile of read ends peaks that many bins downstream of it.</p>
+            <ul>
+              <li><strong>Internal exon ends.</strong> A candidate within one bin of where a pile at an annotated internal exon's 3′ end would peak is rejected. The donors are the 3′ ends of exons that a transcript splices onward from, except those within two bins of any transcript's end, so a real end there is never rejected.</li>
+              <li><strong>Readthrough.</strong> A candidate whose pile lies in an exon block that reads splice directly onward from is rejected when, in every condition whose replicates support the candidate, those splice reads pooled over the condition's samples number at least 2.</li>
+            </ul>
+            <p><strong>Why.</strong> A read that crosses a splice junction, but whose short overhang into the next exon is not aligned, ends at the donor, so internal exon ends collect sharp artifact peaks, and in 3′ tag data these are near the transcript's 3′ end. Oligo(dT) also primes internally at A-rich sequence inside transcripts <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. If reads splice out of an exon into the next one in every condition that has the candidate, that exon is not a transcript end there, and a tag cluster inside it is more likely an artifact than a PAC. A supporting condition without splice reads keeps the candidate, since the exon may end there. Conditions that lack the candidate are not consulted: at low coverage they would otherwise protect every artifact. Intronic sites away from exon edges are not inside spliced exon blocks, so neither filter touches them.</p>
           </div>
         </div>
         <div class="table-wrap">
@@ -553,7 +557,8 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
               <tr><td><code>proximal_bin_size</code></td><td class="num">25 nt</td><td>Largest bin width for peak discovery; bins are never wider than δ*</td></tr>
               <tr><td><code>proximal_kernel_overlap_threshold</code></td><td class="num">0.5</td><td>Overlap defining δ*</td></tr>
               <tr><td><code>proximal_assignment_likelihood_ratio</code></td><td class="num">3</td><td>Best-to-next likelihood ratio for assigning a read</td></tr>
-              <tr><td><code>constitutive_readthrough_min_junction_count</code></td><td class="num">2</td><td>Splice reads per qualifying sample</td></tr>
+              <tr><td><code>internal_exon_end_filter</code></td><td class="num">true</td><td>Reject candidates at internal exon ends</td></tr>
+              <tr><td><code>constitutive_readthrough_min_junction_count</code></td><td class="num">2</td><td>Splice reads, pooled over a supporting condition's samples</td></tr>
             </tbody>
           </table>
         </div>
@@ -840,7 +845,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
         <div class="block">
           <p class="label">Gene-level APA patterns</p>
           <div class="prose">
-            <p>Each gene in a comparison also gets an <code>apa_pattern</code> in the <code>.genes</code> table, from where its usage moved. PACs in introns or internal exons form the gene's upstream region. PACs in a last exon, or downstream of the gene, form its 3′ region, grouped by last exon (Step 6). A gene is classified only when it passes the gene screen and has a confirmed call. Each pattern needs a confirmed call (gained, increased, lost, or decreased) on a PAC that is not low confidence. The threshold is <code>min_abs_delta_pau</code>, 0.1.</p>
+            <p>Each gene in a comparison also gets an <code>apa_pattern</code> in the <code>.genes</code> table, from where its usage moved. PACs in introns or internal exons form the gene's upstream region. PACs in a last exon, or downstream of the gene, form its 3′ region, grouped by last exon (Step 6). A gene is classified only when it passes the gene screen and has a confirmed call. Each pattern needs a confirmed call (gained, increased, lost, or decreased) on a PAC that is not low confidence. A pattern that holds only once calls on PACs flagged for possible internal priming count is reported with the suffix <code>_potential_internal_priming</code>. By default (<code>potential_internal_priming_withheld_calls</code>) those calls include a flagged PAC's gain or loss that only the flag withheld. The threshold is <code>min_abs_delta_pau</code>, 0.1.</p>
           </div>
         </div>
         <div class="table-wrap">
@@ -850,6 +855,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
               <tr><td><code>intronic_gain</code>, <code>intronic_loss</code></td><td>The upstream region's share of the gene's fitted usage (<code>delta_intronic_share</code>) rises or falls by at least 0.1, with a confirmed increase or decrease at an upstream-region PAC.</td></tr>
               <tr><td><code>alternative_last_exon</code></td><td>One last exon gains and another loses at least 0.1 of the gene's usage (<code>last_exon_switch</code> is the smaller of the two), each with a confirmed call in that direction.</td></tr>
               <tr><td><code>utr_shortening</code>, <code>utr_lengthening</code></td><td>The distal PAC's share of the main last exon, the one with the most usage (<code>delta_utr_distal_share</code>), falls or rises by at least 0.1, with a call pointing the same way. For shortening, that is an increase at a more proximal PAC of that exon or a decrease at its distal PAC. When usage also moves into or out of the exon, only calls against that movement count.</td></tr>
+              <tr><td><code>..._potential_internal_priming</code></td><td>A pattern above that holds only once flagged PACs' calls count. It follows every pattern without the suffix, and a gene has at most one form of each.</td></tr>
               <tr><td><code>other</code>, <code>none</code></td><td><code>other</code> for a classified gene with no pattern, <code>none</code> otherwise. A gene can carry several patterns, joined by <code>;</code>.</td></tr>
             </tbody>
           </table>
@@ -861,7 +867,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
               <li>The split between 3′ UTR APA, among tandem sites of a last exon, and upstream-region APA, at intronic and internal-exon sites, is the standard classification <a class="cite" href="#ref-tian2017">(Tian and Manley, 2017)</a>. Upstream-region APA can change the coding sequence, while tandem 3′ UTR APA changes only the UTR, so the two are kept apart. Loss of CDK12, for example, raises intronic polyadenylation <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>.</li>
               <li>Region shares measure how much of a gene's usage moved, on the same scale as the change in PAU, so one threshold serves every pattern. The distal share within the last exon is the 3′-end counterpart of the PDUI of DaPars <a class="cite" href="#ref-xia2014">(Xia et al., 2014)</a>. It is renormalized within the exon, so that a shift into an intron does not read as UTR shortening.</li>
               <li>Each pattern rests on a confirmed PAC call, so its direction carries stageR's error control. A shift into or out of the last exon moves all of its PACs together. Requiring the call to point against that shift stops the shift alone from creating a UTR pattern.</li>
-              <li>Low-confidence PACs cannot make a pattern, because oligo(dT) priming on intronic pre-mRNA is the classic false intronic site <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>.</li>
+              <li>Low-confidence PACs cannot make a pattern, because oligo(dT) priming on intronic pre-mRNA is the classic false intronic site <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. A change at a flagged PAC is still reported, with the <code>_potential_internal_priming</code> suffix: it is real either way, but more RNA over a genomic A-run and a new cleavage site give the same 3′ tags. Internal priming rises and falls with the RNA that covers the A-run, so it does not appear at a constant level in every sample. Gains are counted even when only the flag withheld them, because a new intronic site starts from zero reads.</li>
             </ul>
           </div>
         </div>
@@ -872,6 +878,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
               <tr><td><code>min_abs_delta_pau</code></td><td class="num">0.1</td><td>Minimum change in PAU</td></tr>
               <tr><td><code>event_min_treatment_pau</code> / <code>event_max_control_pau</code></td><td class="num">0.05 / 0.01</td><td>Fitted usage for gained or lost</td></tr>
               <tr><td><code>event_min_supporting_samples</code></td><td class="num">2</td><td>Samples with reads to count as detected</td></tr>
+              <tr><td><code>potential_internal_priming_withheld_calls</code></td><td class="num">true</td><td>Count flagged gains and losses that only the flag withheld</td></tr>
             </tbody>
           </table>
         </div>
@@ -962,8 +969,8 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
         </div>
         <div class="prose">
           <ul>
-            <li><strong>Unit tests</strong> (228 pytest tests, 32 R model tests, and 29 R figure tests) cover coordinates on both strands, CIGAR handling, every read filter, calibration and kernel diagnostics, deterministic clustering, gene assignment, count invariants, the use of stageR, zero-count stabilization, bootstrap reproducibility, gene-level events, terminal and last exons, APA patterns, and the figures: the distal PAC on both strands, event and site-class counts, the shared-pattern grid, concordance pairs and their correlations, the PAU principal components against a direct computation, and PDFs and PNGs that are byte-identical across processes.</li>
-            <li><strong>End-to-end runs</strong> on synthetic fixtures check an exact-boundary data set, a Plasmidsaurus-like proximal-tag data set with its own reference, a mixed-protocol sample sheet that must stop before discovery, and exact-boundary reads run under the Plasmidsaurus profile, which must warn at calibration. They also check that a fresh rerun reproduces all 186 compared published files byte for byte, the figures included.</li>
+            <li><strong>Unit tests</strong> (236 pytest tests, 32 R model tests, and 30 R figure tests) cover coordinates on both strands, CIGAR handling, every read filter, calibration and kernel diagnostics, deterministic clustering, gene assignment, count invariants, the use of stageR, zero-count stabilization, bootstrap reproducibility, gene-level events, terminal and last exons, the internal-exon-end and readthrough filters, APA patterns and their potential-internal-priming forms, and the figures: the distal PAC on both strands, event and site-class counts, the shared-pattern grid, concordance pairs and their correlations, the PAU principal components against a direct computation, and PDFs and PNGs that are byte-identical across processes.</li>
+            <li><strong>End-to-end runs</strong> on synthetic fixtures check an exact-boundary data set; a Plasmidsaurus-like proximal-tag data set with its own reference, in which exactly its designed exon-end and readthrough artifacts must be rejected; a mixed-protocol sample sheet that must stop before discovery; and exact-boundary reads run under the Plasmidsaurus profile, which must warn at calibration. They also check that a fresh rerun reproduces all 186 compared published files byte for byte, the figures included.</li>
             <li><strong>A statistical simulation</strong> fits five simulated comparison families, all with 3 PACs per gene. It starts from count tables, so it tests the statistics, not discovery.
                 <ul>
                   <li>Checks S1 to S4 use a 162-gene family with a control of 4 replicates and treatments of 4 and 3. Null and shifted genes have 40 or 400 reads per sample and precision 20 or 200; gained and lost genes have 60 or 300 reads and precision 100. This family is fitted without the bootstrap.</li>
@@ -1007,6 +1014,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
             <li><strong>Stabilized genes.</strong> Their p-values are seed-sensitive (Step 9). Results rest on DRIMSeq's documented <code>add_uniform</code> remedy, applied five times.</li>
             <li><strong>APA patterns rest on the annotation.</strong> A final exon that another transcript of the gene splices through counts as internal. That treats a composite terminal exon correctly, as intronic polyadenylation, but it also demotes a canonical last exon that a minor isoform continues past. In such genes a tandem 3′ UTR change reads as an intronic pattern. A single-exon model lying 3′ of a gene's spliced transcripts is excluded, so a PAC in it counts as upstream region. An intronic single-exon model that overlaps a retained-intron transcript's final exon is kept, and can form a false last exon. Switches to unannotated last exons read as intronic changes, and genes annotated without transcript IDs cannot show alternative last exons. When usage moves into or out of the main last exon, a within-exon change in the same direction cannot be confirmed by a call, so it appears only in <code>delta_utr_distal_share</code>.</li>
             <li><strong>Interval coverage.</strong> The bootstrap is conditional on precision. It keeps its default of 200 replicates for this release, a lead decision to be revisited. Coverage was 85% at a nominal 95% in the current simulation, which used 100 replicates in a 60-gene family, and 80% to 93% across earlier seeds.</li>
+            <li><strong>Readthrough filter.</strong> A real site whose reads end inside an exon that every supporting condition splices onward from, within about one read length of the donor, is rejected with the artifacts. This mostly affects internal-exon sites used by a minority of transcripts. Sites further into the intron are not affected.</li>
             <li><strong>Proximal-tag resolution.</strong> Sites closer than δ* are merged. Reads that fall between two resolvable PACs without a 3-fold likelihood margin are discarded. That biases the absolute PAU of closely spaced PACs, equally in every condition. The PAS scan and internal-priming windows are measured from an estimated coordinate whose uncertainty is on the order of δ*.</li>
             <li><strong>Calibration weighting.</strong> The kernel is read-weighted and depends on the annotation's single-end genes. Unannotated alternative ends near annotated ones broaden it, and the diagnostics warn but never stop a run. Mitochondrial contigs are excluded by default only under their common names (Step 4).</li>
             <li><strong>PAS catalog.</strong> The built-in catalog has ten hexamers. Other reported variants, such as ACTAAA, AAAAAG, and AATGAA, are not included by default, but can be supplied with <code>pas_motif_catalog</code>.</li>
@@ -1067,7 +1075,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <li id="ref-wickham2016">Wickham H (2016). <em>ggplot2: Elegant Graphics for Data Analysis</em>. Springer-Verlag New York.</li>
           <li id="ref-xia2014">Xia Z, Donehower LA, Cooper TA, Neilson JR, Wheeler DA, Wagner EJ, Li W (2014). Dynamic analyses of alternative polyadenylation from RNA-seq reveal a 3′-UTR landscape across seven tumour types. <em>Nature Communications</em> 5:5274.</li>
         </ol>
-        <p class="footer-note">This document describes the pipeline at commit fc5ce0c. Design details are in <code>docs/design.md</code> and the decision history in <code>docs/decisions.md</code> of the repository.</p>
+        <p class="footer-note">This document describes the pipeline at commit c712d33. Design details are in <code>docs/design.md</code> and the decision history in <code>docs/decisions.md</code> of the repository.</p>
       </section>
 
     </article>
