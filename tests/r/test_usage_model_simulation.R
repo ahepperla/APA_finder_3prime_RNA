@@ -1,17 +1,15 @@
 # Statistical simulation checks for scripts/fit_usage_model.R (design section
 # "Statistical Simulation"): null calibration, effect direction and size,
 # recovery of gained and lost PACs, stage-wise error, count-scaling
-# invariance, bootstrap interval coverage, and the error cost of the
-# within-condition usage filter.
+# invariance, bootstrap interval coverage, and calibration after the usage
+# filter.
 #
 # Usage: Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R [seed]
 #
 # Thresholds sit at about 2-3x nominal error rates because DRIMSeq is liberal
 # for overdispersed genes at 3-4 replicates (docs/decisions.md, 2026-09-27). Interval
 # coverage is about 88% at a nominal 95%, which the project lead accepted; S6
-# guards the coverage pooled over all 60 PACs at 0.75. S7's ceilings on the
-# PACs the usage filter admits are an accepted cost, not a calibration claim
-# (docs/decisions.md, 2026-10-01).
+# guards the coverage pooled over all 60 PACs at 0.75.
 
 arguments <- commandArgs(trailingOnly = TRUE)
 if (!length(arguments) %in% c(1L, 2L)) {
@@ -289,16 +287,17 @@ test_case("S6", "bootstrap intervals cover the true change in usage", {
   check(pooled_coverage >= 0.75, "pooled coverage is ", format(pooled_coverage), ".")
 })
 
-# ---- Within-condition usage filter -----------------------------------------
+# ---- Usage filter -----------------------------------------------------------
 
 # Null genes, alike in every condition, with a borderline PAC at 8% between a
 # dominant one and a minor one, beside genes whose usage shifts in T1, so the
 # false discovery rate has real discoveries to work with. With min_site_usage
 # at 0.10, the borderline PAC is tested only when chance lifts it to 10% in
-# enough replicates of one condition, so its condition's labels choose which
-# PACs are tested. S7 measures what that costs, at the lead's planned
-# settings: a PAC-call threshold of 0.05, and calls at 0.10 taken as those
-# with a change of at least 0.10.
+# as many samples as the smallest condition has (3 here), from any
+# conditions. The filter never sees which samples belong to which condition,
+# so the PACs it admits should stay calibrated. S7 checks that at the lead's
+# planned settings: a PAC-call threshold of 0.05, and calls at 0.10 taken as
+# those with a change of at least 0.10.
 set.seed(seed + 3L)
 filter_layout <- design_samples(c(C = 4L, T1 = 4L, T2 = 3L))
 borderline <- c(0.60, 0.08, 0.32)
@@ -322,15 +321,14 @@ for (depth in c(40, 400)) for (precision in c(20, 200)) {
   }
 }
 filter_params <- utils::modifyList(statistics_params(0L), list(
-  min_site_usage = 0.10, min_site_usage_replicates = 0.75, min_site_usage_gene_reads = 10L,
-  min_abs_delta_pau = 0.05
+  min_site_usage = 0.10, min_site_usage_gene_reads = 10L, min_abs_delta_pau = 0.05
 ))
 filter_run <- tryCatch(
   run_family(filter_genes, filter_layout, "C", "filter", params = filter_params),
   error = function(error) error
 )
 
-test_case("S7", "the usage filter stays within its accepted cost, and its calls within S4's bounds", {
+test_case("S7", "PACs the usage filter admits near its threshold stay calibrated", {
   if (inherits(filter_run, "error")) stop("Filter run failed: ", conditionMessage(filter_run))
   directory <- filter_run$run$final_directory
   filtering <- read_result(directory, "C.statistical_filtering.tsv.gz")
@@ -339,7 +337,7 @@ test_case("S7", "the usage filter stays within its accepted cost, and its calls 
   check(all(as_flag(filtering$tested[filtering$position != 2L])), "a dominant or minor PAC was filtered.")
   border <- filtering[filtering$position == 2L, , drop = FALSE]
   kept <- as_flag(border$tested)
-  check(all(border$reason[!kept] == "replicate_usage<0.1"), "borderline PACs filtered for another reason: ",
+  check(all(border$reason[!kept] == "sample_usage<0.1"), "borderline PACs filtered for another reason: ",
     paste(unique(border$reason[!kept]), collapse = ", "))
   nulls <- names(filter_classes)[filter_classes == "null"]
   keeping <- intersect(border$gene_id[kept], nulls)
@@ -376,13 +374,12 @@ test_case("S7", "the usage filter stays within its accepted cost, and its calls 
   for (comparison in names(rates)) {
     rate <- rates[[comparison]]
     check(rate$null_05 <= 27L, comparison, ": ", rate$null_05, " null genes called.")
-    # The accepted cost: PACs admitted near the threshold have optimistic
-    # p-values. The ceilings, six times nominal, are there to catch a change
-    # to the filter that makes the selection worse.
-    check(rate$border <= 0.30, comparison, ": ", format(rate$border),
-      " of admitted borderline PACs have p <= 0.05, above the accepted 0.30.")
-    check(rate$gene_with <= 0.30, comparison, ": ", format(rate$gene_with),
-      " of null genes keeping a borderline PAC have p <= 0.05, above the accepted 0.30.")
+    # As S1 for unfiltered nulls: at most 0.12 of PAC tests, and 0.15 of
+    # genes, with p <= 0.05.
+    check(rate$border <= 0.12, comparison, ": ", format(rate$border),
+      " of admitted borderline PACs have p <= 0.05.")
+    check(rate$gene_with <= 0.15, comparison, ": ", format(rate$gene_with),
+      " of null genes keeping a borderline PAC have p <= 0.05.")
   }
 })
 

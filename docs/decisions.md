@@ -8,6 +8,54 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-01: The usage filter counts samples across the family
+
+Status: accepted (project lead)
+
+This supersedes "The usage filter asks for consistent usage within a
+condition", below. After 0.5.0 shipped that rule, the lead returned to the
+option first recommended: the DRIMSeq workflow's rule (Love et al., 2018),
+which asks for a 10% share in at least as many samples as the smallest group.
+
+**Rule** (version 0.6.0)
+- A sample qualifies when the gene has `min_site_usage_gene_reads` reads in
+  it (default 10) and the PAC has `min_site_usage` of them.
+- A PAC is tested when `min_site_usage_samples` of the family's samples
+  qualify, from any of its conditions. By default (empty) that is the size of
+  the family's smallest condition. It is never more than the family's
+  samples, and there is no floor of 2.
+- `min_site_usage_replicates` is gone, and is ignored if still set. The
+  filtering reason is `sample_usage<F`.
+- The read-count, supporting-sample, and gene-total filters are unchanged,
+  and so is `apa_pattern_min_change`.
+
+**Why.** The rule uses the condition sizes but not which sample belongs to
+which condition, so the filter is blind to the comparisons. That keeps the
+independence argument for filtering (Bourgon et al., 2010) while still
+keeping a site used throughout one condition, however many conditions share
+the control. At the lead's 0.10, the two false Tacc2 PACs go:
+130338300's best sample is 0.036, and only one sample of 130353825 reaches
+0.10. The PHA alternative last exon stays, at 0.35 or more in all four PHA
+samples.
+
+**S7** now checks calibration, guarded at S1's tolerances (0.12 of PAC tests
+and 0.15 of genes with p <= 0.05), with S4's call-level guards. The
+accepted-cost ceiling rule below still stands, but it has no cost to cap
+here. At `min_site_usage` 0.10 and `min_abs_delta_pau` 0.05, over five seeds:
+- 60-65% of the borderline null PACs at 8% were admitted;
+- 5-8% of those admitted had p <= 0.05;
+- the genes keeping one had gene p <= 0.05 in 4-9% of cases, against 1-6% for
+  genes that dropped it, in line with S1's 7.5% for unfiltered null genes.
+  The gap is composition: the filter keeps fewer of the deep, precise genes,
+  whose null p-values are rarely small. Within each depth and precision
+  stratum the two groups agree (Mantel-Haenszel common odds ratio 0.75-1.60,
+  p 0.55-0.97, seeds 11-13);
+- 2-9% of T1's gene calls were false;
+- null genes keeping a borderline PAC were called in 12 of 1,236 cases
+  (1.0%), and other null genes in 6 of 764 (0.8%);
+- calls at a change of 0.10 had at most one null gene fewer than calls at
+  0.05.
+
 ## 2026-10-01: The usage filter asks for consistent usage within a condition
 
 Status: accepted (project lead)

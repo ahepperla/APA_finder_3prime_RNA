@@ -809,7 +809,7 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
   # The usage rule passes every PAC here; M-26 tests it.
   params <- list(
     min_site_count = 5L, min_test_supporting_samples = 2L, min_site_usage = 0,
-    min_site_usage_replicates = 0.75, min_site_usage_gene_reads = 0L, min_gene_total = 20L
+    min_site_usage_gene_reads = 0L, min_gene_total = 20L
   )
   result <- model$family_filter(counts, c("s1", "s2"), list(C = c("s1", "s2")), params, "F")
   expected_reasons <- c(
@@ -840,18 +840,17 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
   check(setequal(written$pac_id[written$tested == "TRUE"], tested), "tested flags differ from the tested PACs.")
 })
 
-test_case("M-26", "a PAC is tested when enough replicates of one condition use it", {
-  sizes <- c(1, 2, 3, 4, 5, 6)
-  expectations <- list(
-    list(0.75, c(1, 2, 3, 3, 4, 5)), list(0.66, c(1, 2, 2, 3, 4, 4)),
-    list(4, c(1, 2, 3, 4, 4, 4)), list(0.2, c(1, 2, 2, 2, 2, 2))
+test_case("M-26", "a PAC is tested when enough samples of the family use it", {
+  # By default as many samples as the smallest condition has; a setting
+  # replaces that, and neither can exceed the family's samples.
+  cases <- list(
+    list(c(4, 4, 3), NULL, 3L), list(c(4, 4, 3), 2L, 2L), list(c(2, 2), 20L, 4L),
+    list(c(1, 3), NULL, 1L)
   )
-  for (expectation in expectations) {
-    observed <- model$required_replicates(sizes, expectation[[1]])
-    check(
-      identical(observed, as.integer(expectation[[2]])),
-      "setting ", expectation[[1]], " gave ", paste(observed, collapse = ", ")
-    )
+  for (case in cases) {
+    observed <- model$required_samples(case[[1]], case[[2]])
+    check(identical(observed, case[[3]]), "sizes ", paste(case[[1]], collapse = "/"), ", setting ",
+      if (is.null(case[[2]])) "empty" else case[[2]], " gave ", observed)
   }
 
   groups <- list(C = sprintf("c%d", 1:4), T = sprintf("t%d", 1:4), U = sprintf("u%d", 1:3))
@@ -881,7 +880,7 @@ test_case("M-26", "a PAC is tested when enough replicates of one condition use i
   )
   params <- list(
     min_site_count = 5L, min_test_supporting_samples = 1L, min_site_usage = 0.1,
-    min_site_usage_replicates = 0.75, min_site_usage_gene_reads = 10L, min_gene_total = 20L
+    min_site_usage_gene_reads = 10L, min_gene_total = 20L
   )
   tested_x <- function(changes, groups = list(C = sprintf("c%d", 1:4), T = sprintf("t%d", 1:4),
                                               U = sprintf("u%d", 1:3)), table = counts) {
@@ -892,10 +891,11 @@ test_case("M-26", "a PAC is tested when enough replicates of one condition use i
     stats::setNames(result$tested[x], sub("_x$", "", result$pac_id[x]))
   }
   describe <- function(tested) paste(names(tested), tested, sep = "=", collapse = ", ")
-  # At 0.75: 3 of 4 replicates of C or T, or all 3 of U.
+  # U, the smallest condition, has 3 samples, so a PAC needs 3 from any
+  # conditions: scattered's 4, spread over three conditions, count.
   default <- tested_x(list())
   check(
-    identical(default, c(specific = TRUE, scattered = FALSE, shallow = FALSE, uneven_all = TRUE,
+    identical(default, c(specific = TRUE, scattered = TRUE, shallow = FALSE, uneven_all = TRUE,
       uneven_two = FALSE, one = FALSE)),
     "default: ", describe(default)
   )
@@ -903,25 +903,26 @@ test_case("M-26", "a PAC is tested when enough replicates of one condition use i
     counts, unlist(groups, use.names = FALSE), groups, params, "F"
   )$reasons
   check(
-    identical(reasons$reason[reasons$pac_id == "scattered_x"], "replicate_usage<0.1"),
-    "scattered reason: ", reasons$reason[reasons$pac_id == "scattered_x"]
+    identical(reasons$reason[reasons$pac_id == "uneven_two_x"], "sample_usage<0.1"),
+    "uneven_two reason: ", reasons$reason[reasons$pac_id == "uneven_two_x"]
   )
-  # At 0.66 a 3-replicate condition needs 2.
-  two_thirds <- tested_x(list(min_site_usage_replicates = 0.66))
-  check(two_thirds[["uneven_two"]] && !two_thirds[["scattered"]], "0.66: ", describe(two_thirds))
-  # A whole number is capped at a condition's size.
-  four <- tested_x(list(min_site_usage_replicates = 4L))
-  check(!four[["specific"]] && four[["uneven_all"]], "4: ", describe(four))
-  # Never fewer than 2 replicates.
-  floor_two <- tested_x(list(min_site_usage_replicates = 0.2))
-  check(floor_two[["scattered"]] && !floor_two[["one"]], "0.2: ", describe(floor_two))
-  # A shallow replicate counts once the depth floor allows it.
+  # A setting replaces the smallest condition's size.
+  two <- tested_x(list(min_site_usage_samples = 2L))
+  check(two[["uneven_two"]] && !two[["one"]], "2: ", describe(two))
+  four <- tested_x(list(min_site_usage_samples = 4L))
+  check(!four[["specific"]] && four[["scattered"]], "4: ", describe(four))
+  # A shallow sample counts once the depth floor allows it.
   no_floor <- tested_x(list(min_site_usage_gene_reads = 0L))
   check(no_floor[["shallow"]], "depth floor 0: ", describe(no_floor))
-  # A single-replicate condition needs its one replicate.
+  # A setting beyond the family's samples asks for all of them.
+  small <- list(C = c("c1", "c2"), E = c("e1", "e2"))
+  everywhere <- gene("everywhere", c(c1 = 20, c2 = 20, e1 = 20, e2 = 20), small)
+  check(tested_x(list(min_site_usage_samples = 20L), groups = small, table = everywhere)[["everywhere"]],
+    "a setting above the family's samples was not capped.")
+  # A family with a single-replicate condition needs one sample.
   single <- list(C = sprintf("c%d", 1:4), E = "e1")
   lone <- gene("lone", c(e1 = 20), single)
-  check(tested_x(list(), groups = single, table = lone)[["lone"]], "a single replicate did not count.")
+  check(tested_x(list(), groups = single, table = lone)[["lone"]], "a single sample did not count.")
 })
 
 test_case("M-27", "the pattern threshold and the PAC-call threshold move independently", {

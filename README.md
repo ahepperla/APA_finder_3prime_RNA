@@ -616,15 +616,15 @@ annotated ones calibration uses.
   - A gene needs `min_gene_total` reads and at least two PACs that pass.
   - A PAC needs `min_site_count` reads and reads in
     `min_test_supporting_samples` samples, over the family's samples.
-  - It also needs consistent usage within one condition: at least
-    `min_site_usage` of its gene's reads in `min_site_usage_replicates` of
-    that condition's replicates. A fraction below 1 is rounded up, and a
-    whole number is capped at the condition's size; either way it is at
-    least 2, unless the condition has one replicate. A replicate counts only
-    when the gene has `min_site_usage_gene_reads` reads in it.
-  - This rule uses condition labels, so a PAC near the usage threshold that
-    it admits has an optimistic p-value. Simulation S7 measures the cost
-    (`docs/decisions.md`, 2026-10-01).
+  - It also needs at least `min_site_usage` of its gene's reads in
+    `min_site_usage_samples` samples of the family, from any of its
+    conditions. By default that is as many samples as the family's smallest
+    condition has, as in the DRIMSeq workflow (Love et al., 2018). A sample
+    counts only when the gene has `min_site_usage_gene_reads` reads in it.
+  - The filters use the condition sizes but never which sample belongs to
+    which condition, so they are blind to the comparisons, and the PACs they
+    admit near a threshold have p-values as calibrated as the unfiltered
+    tests' (simulation S7).
   - `statistics/FAMILY.statistical_filtering.tsv.gz` lists every PAC as
     tested, or with the reasons it was not.
 - **Model.** DRIMSeq fits a Dirichlet-multinomial model per gene with the
@@ -746,6 +746,14 @@ finished steps from it.
     - The figures are redrawn. Labels are placed with ggrepel, a new
       dependency, so rebuild the image or the Conda environment.
       `concordance` is a matrix of panels.
+  - **Version 0.6.0** changes which PACs are tested again. The usage filter
+    counts qualifying samples over the whole family, as in the DRIMSeq
+    workflow, instead of replicates within one condition, so it no longer
+    depends on which sample belongs to which condition.
+    - `min_site_usage_samples` (default empty: the family's smallest
+      condition size) replaces `min_site_usage_replicates`, which is ignored
+      if still set.
+    - The filtering reason `replicate_usage<F` is now `sample_usage<F`.
 
 ## Troubleshooting
 

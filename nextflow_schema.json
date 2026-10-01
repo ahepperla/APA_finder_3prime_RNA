@@ -421,28 +421,19 @@
           "minimum": 0,
           "maximum": 1,
           "default": 0.01,
-          "description": "Share of its gene's reads a PAC needs in a replicate for that replicate to count toward min_site_usage_replicates."
+          "description": "Share of its gene's reads a PAC needs in a sample for that sample to count toward min_site_usage_samples."
         },
-        "min_site_usage_replicates": {
-          "anyOf": [
-            {
-              "type": "number",
-              "exclusiveMinimum": 0,
-              "exclusiveMaximum": 1
-            },
-            {
-              "type": "integer",
-              "minimum": 1
-            }
-          ],
-          "default": 0.75,
-          "description": "Replicates of one condition that must reach min_site_usage for a PAC to be tested. Values in (0, 1) are fractions of that condition's replicates, rounded up; whole numbers are counts, capped at the condition's size. Never fewer than 2, unless the condition has one replicate."
+        "min_site_usage_samples": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "default": null,
+          "description": "Samples of a comparison family, from any of its conditions, in which a PAC needs min_site_usage of its gene's reads to be tested. Empty, the default, uses the size of the family's smallest condition, as in the DRIMSeq workflow; never more than the family's samples."
         },
         "min_site_usage_gene_reads": {
           "type": "integer",
           "minimum": 0,
           "default": 10,
-          "description": "Reads at the gene a replicate needs before it can count toward min_site_usage_replicates."
+          "description": "Reads at the gene a sample needs before it can count toward min_site_usage_samples."
         },
         "min_test_supporting_samples": {
           "type": "integer",

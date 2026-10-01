@@ -266,25 +266,23 @@ chi_square_p <- function(lr, df) {
   result
 }
 
-# Replicates a condition of each size needs at min_site_usage. The setting is
-# a fraction of the condition's replicates, rounded up, or a whole number,
-# capped at the condition's size. Never fewer than two, unless the condition
-# has a single replicate.
-required_replicates <- function(sizes, setting) {
+# Samples a family needs at min_site_usage: min_site_usage_samples, or by
+# default as many as its smallest condition has, as in the DRIMSeq workflow
+# (Love et al., 2018); never more than the family's samples. sizes are the
+# family's condition sizes.
+required_samples <- function(sizes, setting) {
   sizes <- as.integer(sizes)
-  wanted <- if (setting < 1) {
-    as.integer(ceiling(setting * sizes - 1e-9))
-  } else {
-    rep(as.integer(setting), length(sizes))
-  }
-  pmax(pmin(2L, sizes), pmin(sizes, wanted))
+  wanted <- if (is.null(setting)) min(sizes) else as.integer(setting)
+  min(wanted, sum(sizes))
 }
 
 # Statistical filtering within one comparison family (design section 8), on
 # the raw counts of the family's samples only. Returns the tested PACs and one
 # row per PAC of the count table: tested, or the reasons it was not. A PAC
 # without a gene, or assigned to more than one gene, is never tested. groups
-# maps each condition of the family to its sample IDs.
+# maps each condition of the family to its sample IDs. The filters use only
+# the condition sizes, never which samples belong to which condition, so they
+# are blind to the comparisons.
 family_filter <- function(counts, sample_ids, groups, params, family) {
   gene_ids <- counts$gene_id
   reason <- rep("", nrow(counts))
@@ -297,9 +295,9 @@ family_filter <- function(counts, sample_ids, groups, params, family) {
   supporting <- rowSums(values > 0)
   gene_total <- rep(NA_real_, nrow(counts))
   gene_total[assigned] <- ave(site_total[assigned], gene_ids[assigned], FUN = sum)
-  # A replicate qualifies when the gene has enough reads in it to judge usage
-  # and the PAC has at least min_site_usage of them. A PAC needs enough
-  # qualifying replicates within one condition.
+  # A sample qualifies when the gene has enough reads in it to judge usage and
+  # the PAC has at least min_site_usage of them. A PAC needs enough qualifying
+  # samples, from any of the family's conditions.
   sample_totals <- matrix(0, nrow(values), ncol(values), dimnames = dimnames(values))
   if (any(assigned)) {
     sample_totals[assigned, ] <- apply(
@@ -308,19 +306,14 @@ family_filter <- function(counts, sample_ids, groups, params, family) {
   }
   deep <- sample_totals > 0 & sample_totals >= params$min_site_usage_gene_reads
   qualifies <- deep & values >= params$min_site_usage * sample_totals - 1e-12
-  needed <- required_replicates(lengths(groups), params$min_site_usage_replicates)
-  consistent <- rep(FALSE, nrow(counts))
-  for (index in seq_along(groups)) {
-    columns <- match(groups[[index]], sample_ids)
-    consistent <- consistent | rowSums(qualifies[, columns, drop = FALSE]) >= needed[[index]]
-  }
+  needed <- required_samples(lengths(groups), params$min_site_usage_samples)
   reason[assigned] <- joined_reasons(
     site_total < params$min_site_count,
     paste0("site_count<", params$min_site_count),
     supporting < params$min_test_supporting_samples,
     paste0("supporting_samples<", params$min_test_supporting_samples),
-    !consistent,
-    paste0("replicate_usage<", params$min_site_usage)
+    rowSums(qualifies) < needed,
+    paste0("sample_usage<", params$min_site_usage)
   )[assigned]
 
   site_ok <- assigned & reason == ""

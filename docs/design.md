@@ -247,7 +247,7 @@ internal_priming_max_a_fraction: 0.60
 min_gene_total: 20
 min_site_count: 5
 min_site_usage: 0.01
-min_site_usage_replicates: 0.75
+min_site_usage_samples: null
 min_site_usage_gene_reads: 10
 min_test_supporting_samples: 2
 
@@ -873,38 +873,46 @@ at least 2 PACs per gene
 gene total >= 20
 PAC count >= 5
 support in >= 2 samples
-PAC usage >= 1 percent in >= 75 percent of one condition's replicates,
-  and in at least 2 of them, counting replicates with >= 10 gene reads
+PAC usage >= 1 percent in as many samples as the smallest condition has,
+  counting samples with >= 10 gene reads
 ```
 
-The gene total, PAC count, and support filters pool the family's samples,
-without regard to condition. The usage filter works within conditions: a PAC
-passes when, in at least one condition of the family, at least
-`min_site_usage_replicates` of the replicates have `min_site_usage` of the
-gene's reads.
-- `min_site_usage_replicates` is a fraction of the condition's replicates,
-  rounded up, or a whole number, capped at the condition's size. It is never
-  below 2, unless the condition has one replicate.
-- A replicate counts only when the gene has `min_site_usage_gene_reads`
-  reads in it.
+Every filter uses the family's samples without regard to condition. The usage
+filter counts the samples in which a PAC has `min_site_usage` of the gene's
+reads, from any of the family's conditions, and needs `min_site_usage_samples`
+of them.
+- `min_site_usage_samples` defaults to the size of the family's smallest
+  condition, as in the DRIMSeq workflow (Love et al., 2018), which asks for a
+  10% share in at least as many samples as the smallest group. It is never
+  more than the family's samples.
+- A sample counts only when the gene has `min_site_usage_gene_reads` reads
+  in it.
 - **Why.** A share pooled over the family dilutes a site used in one
-  condition, more so the more conditions share the control. A share in one
-  replicate can be noise. Requiring the share in most replicates of one
-  condition keeps condition-specific sites and drops sites with scattered,
-  inconsistent usage, so the PACs tested are those whose usage is
-  established.
-- **Cost.** The rule uses condition labels, so it is not independent of the
-  test under the null. A PAC near the threshold that it admits was admitted
-  partly because one condition's replicates ran high, and its p-value is
-  optimistic. PACs well above the threshold pass in every condition and are
-  unaffected. Simulation S7 measures the cost at `min_site_usage` 0.10 with
+  condition, more so the more conditions share the control, and a share in
+  one sample can be noise. Every condition has at least as many samples as
+  the smallest, so a site used throughout any one condition passes, however
+  many conditions share the control. A site that reaches the share in fewer
+  samples, such as one noisy sample, does not.
+- **Independence.** The filter uses the condition sizes, never which sample
+  belongs to which condition, so permuting the labels leaves it unchanged.
+  Under a null with exchangeable labels it is then independent of
+  label-permutation statistics, and approximately of the
+  Dirichlet-multinomial test: the condition under which filtering leaves
+  type I error control intact (Bourgon et al., 2010). Simulation S7 checks
+  this at `min_site_usage` 0.10 with
   `min_abs_delta_pau` 0.05, for null PACs at 8% usage:
-  - the rule admitted 14% to 19% of them;
-  - 10% to 21% of those admitted had p <= 0.05, against a nominal 5%;
-  - with 100 shifted genes among 500, 4% to 9% of the treatment's gene calls
+  - the filter admitted 60% to 65% of them;
+  - 5% to 8% of those admitted had p <= 0.05, against a nominal 5%;
+  - with 100 shifted genes among 500, 2% to 9% of the treatment's gene calls
     were false;
-  - null genes with an admitted borderline PAC were called about three times
-    as often as other null genes, 2.4% against 0.8%.
+  - null genes keeping a borderline PAC were called about as often as other
+    null genes, 1.0% against 0.8%.
+
+  Null genes that kept the borderline PAC had p <= 0.05 a little more often
+  than those that dropped it, about 6.5% against 3.7%. That is composition,
+  not selection: the filter keeps fewer of the deep, precise genes, whose
+  null p-values are rarely small. Within each depth and precision stratum
+  the two groups' rates agree.
 
 Record, for every PAC and family, whether it was tested and why not, in
 `statistics/FAMILY.statistical_filtering.tsv.gz`; PACs without a gene or with
@@ -1649,9 +1657,9 @@ Verify:
 - reproducible handling and explicit instability flags for all-zero group PACs;
 - recovery of simulated motif-preference shifts without sensitivity to
   proportional gene-expression changes;
-- the error cost of the within-condition usage filter: how often it admits a
-  null PAC near the usage threshold, how optimistic those PACs' p-values are,
-  and the false share of calls in a family with real changes (S7).
+- calibration after the usage filter: how often it admits a null PAC near
+  the usage threshold, whether those PACs' p-values stay calibrated, and the
+  false share of calls in a family with real changes (S7).
 
 ## Definition of Done
 
