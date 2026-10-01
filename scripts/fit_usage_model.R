@@ -266,11 +266,26 @@ chi_square_p <- function(lr, df) {
   result
 }
 
+# Replicates a condition of each size needs at min_site_usage. The setting is
+# a fraction of the condition's replicates, rounded up, or a whole number,
+# capped at the condition's size. Never fewer than two, unless the condition
+# has a single replicate.
+required_replicates <- function(sizes, setting) {
+  sizes <- as.integer(sizes)
+  wanted <- if (setting < 1) {
+    as.integer(ceiling(setting * sizes - 1e-9))
+  } else {
+    rep(as.integer(setting), length(sizes))
+  }
+  pmax(pmin(2L, sizes), pmin(sizes, wanted))
+}
+
 # Statistical filtering within one comparison family (design section 8), on
 # the raw counts of the family's samples only. Returns the tested PACs and one
 # row per PAC of the count table: tested, or the reasons it was not. A PAC
-# without a gene, or assigned to more than one gene, is never tested.
-family_filter <- function(counts, sample_ids, params, family) {
+# without a gene, or assigned to more than one gene, is never tested. groups
+# maps each condition of the family to its sample IDs.
+family_filter <- function(counts, sample_ids, groups, params, family) {
   gene_ids <- counts$gene_id
   reason <- rep("", nrow(counts))
   reason[is.na(gene_ids) | gene_ids == ""] <- "no_gene_assignment"
@@ -282,14 +297,30 @@ family_filter <- function(counts, sample_ids, params, family) {
   supporting <- rowSums(values > 0)
   gene_total <- rep(NA_real_, nrow(counts))
   gene_total[assigned] <- ave(site_total[assigned], gene_ids[assigned], FUN = sum)
-  site_usage <- ifelse(assigned & gene_total > 0, site_total / gene_total, 0)
+  # A replicate qualifies when the gene has enough reads in it to judge usage
+  # and the PAC has at least min_site_usage of them. A PAC needs enough
+  # qualifying replicates within one condition.
+  sample_totals <- matrix(0, nrow(values), ncol(values), dimnames = dimnames(values))
+  if (any(assigned)) {
+    sample_totals[assigned, ] <- apply(
+      values[assigned, , drop = FALSE], 2, function(column) ave(column, gene_ids[assigned], FUN = sum)
+    )
+  }
+  deep <- sample_totals > 0 & sample_totals >= params$min_site_usage_gene_reads
+  qualifies <- deep & values >= params$min_site_usage * sample_totals - 1e-12
+  needed <- required_replicates(lengths(groups), params$min_site_usage_replicates)
+  consistent <- rep(FALSE, nrow(counts))
+  for (index in seq_along(groups)) {
+    columns <- match(groups[[index]], sample_ids)
+    consistent <- consistent | rowSums(qualifies[, columns, drop = FALSE]) >= needed[[index]]
+  }
   reason[assigned] <- joined_reasons(
     site_total < params$min_site_count,
     paste0("site_count<", params$min_site_count),
     supporting < params$min_test_supporting_samples,
     paste0("supporting_samples<", params$min_test_supporting_samples),
-    site_usage < params$min_site_usage,
-    paste0("site_usage<", params$min_site_usage)
+    !consistent,
+    paste0("replicate_usage<", params$min_site_usage)
   )[assigned]
 
   site_ok <- assigned & reason == ""
@@ -1310,6 +1341,10 @@ gene_level_events <- function(pacs, params) {
 # losses that the flag alone withheld. A pattern needs a gene that passes the
 # gene-level screen; the numbers are given for every gene with fitted usage.
 apa_patterns <- function(pacs, coordinate, params) {
+  change <- params$apa_pattern_min_change
+  if (!is.numeric(change) || length(change) != 1L || !is.finite(change)) {
+    stop("apa_pattern_min_change must be a number.")
+  }
   up <- pacs$event_type %in% c("gained", "increased_usage")
   down <- pacs$event_type %in% c("lost", "decreased_usage")
   gating <- is.na(pacs$confidence) | pacs$confidence != "low"
@@ -1375,7 +1410,7 @@ gene_apa_pattern <- function(rows, coordinate, gate, flagged, called, params) {
   control <- rows$fitted_control_pau
   treatment <- rows$fitted_treatment_pau
   if (!all(is.finite(control)) || !all(is.finite(treatment))) return(result)
-  threshold <- params$min_abs_delta_pau - APA_TOLERANCE
+  threshold <- params$apa_pattern_min_change - APA_TOLERANCE
   upstream <- rows$gene_region %in% UPSTREAM_CLASSES
   three_prime <- which(rows$gene_region %in% THREE_PRIME_CLASSES)
   # Positions in transcript orientation, so larger is more 3'.
@@ -1671,7 +1706,7 @@ fit_family <- function(
     batches = list()
   )
   gene_names <- atlas_gene_names(atlas)
-  filtering <- family_filter(counts, layout$sample_ids, params, family)
+  filtering <- family_filter(counts, layout$sample_ids, layout$groups, params, family)
   write_gzip_tsv(
     select_columns(filtering$reasons, FILTERING_COLUMNS, "The filtering table"),
     file.path(output_dir, paste0(family, ".statistical_filtering.tsv.gz"))

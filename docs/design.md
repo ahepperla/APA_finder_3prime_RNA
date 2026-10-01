@@ -247,12 +247,15 @@ internal_priming_max_a_fraction: 0.60
 min_gene_total: 20
 min_site_count: 5
 min_site_usage: 0.01
+min_site_usage_replicates: 0.75
+min_site_usage_gene_reads: 10
 min_test_supporting_samples: 2
 
 model_covariates: []
 gene_fdr: 0.05
 site_fdr: 0.05
 min_abs_delta_pau: 0.10
+apa_pattern_min_change: 0.10
 dm_bootstrap_replicates: 200
 dm_bootstrap_min_success_fraction: 0.80
 dm_zero_sensitivity_repeats: 5
@@ -869,14 +872,43 @@ Suggested defaults:
 at least 2 PACs per gene
 gene total >= 20
 PAC count >= 5
-PAC usage >= 1 percent
 support in >= 2 samples
+PAC usage >= 1 percent in >= 75 percent of one condition's replicates,
+  and in at least 2 of them, counting replicates with >= 10 gene reads
 ```
 
-Apply filters across all samples in a comparison family without requiring
-support in a particular condition. Record, for every PAC and family, whether it
-was tested and why not, in `statistics/FAMILY.statistical_filtering.tsv.gz`;
-PACs without a gene or with an ambiguous gene assignment are never tested.
+The gene total, PAC count, and support filters pool the family's samples,
+without regard to condition. The usage filter works within conditions: a PAC
+passes when, in at least one condition of the family, at least
+`min_site_usage_replicates` of the replicates have `min_site_usage` of the
+gene's reads.
+- `min_site_usage_replicates` is a fraction of the condition's replicates,
+  rounded up, or a whole number, capped at the condition's size. It is never
+  below 2, unless the condition has one replicate.
+- A replicate counts only when the gene has `min_site_usage_gene_reads`
+  reads in it.
+- **Why.** A share pooled over the family dilutes a site used in one
+  condition, more so the more conditions share the control. A share in one
+  replicate can be noise. Requiring the share in most replicates of one
+  condition keeps condition-specific sites and drops sites with scattered,
+  inconsistent usage, so the PACs tested are those whose usage is
+  established.
+- **Cost.** The rule uses condition labels, so it is not independent of the
+  test under the null. A PAC near the threshold that it admits was admitted
+  partly because one condition's replicates ran high, and its p-value is
+  optimistic. PACs well above the threshold pass in every condition and are
+  unaffected. Simulation S7 measures the cost at `min_site_usage` 0.10 with
+  `min_abs_delta_pau` 0.05, for null PACs at 8% usage:
+  - the rule admitted 14% to 19% of them;
+  - 10% to 21% of those admitted had p <= 0.05, against a nominal 5%;
+  - with 100 shifted genes among 500, 4% to 9% of the treatment's gene calls
+    were false;
+  - null genes with an admitted borderline PAC were called about three times
+    as often as other null genes, 2.4% against 0.8%.
+
+Record, for every PAC and family, whether it was tested and why not, in
+`statistics/FAMILY.statistical_filtering.tsv.gz`; PACs without a gene or with
+an ambiguous gene assignment are never tested.
 
 ### 9. Model Differential PAC Usage
 
@@ -1090,8 +1122,9 @@ at sites in introns or internal exons (Tian and Manley, 2017).
   the flag lifted makes it `gained` or `lost`: the flag alone withheld it.
 - Ambiguous PACs are never tested, so tested low-confidence PACs are exactly
   the flagged ones.
-- The threshold is `min_abs_delta_pau`, with 1e-9 of slack for sums of
-  fitted proportions.
+- The threshold is `apa_pattern_min_change`, with 1e-9 of slack for sums
+  of fitted proportions. It is set apart from `min_abs_delta_pau`, so PAC
+  calls can take a smaller change than patterns.
 
 **Numbers,** reported for every gene with fitted usage:
 - `delta_intronic_share`: the change in the upstream region's share of the
@@ -1277,8 +1310,9 @@ make no calls of their own. For each comparison:
 - **volcano:** each tested PAC's change in fitted PAU against its PAC-level
   p-value, with confirmed gains and losses colored and candidates open.
   `pac_fdr` is missing outside screened genes, so the raw p-value is the
-  axis. Up to 20 genes in each direction are labeled by gene name, at their
-  most significant PACs.
+  axis. Up to 20 genes in each direction are labeled by gene name, each at
+  its most significant PAC in that direction, the larger change first among
+  equal p-values.
 - **distal usage:** each tested gene's distal PAC, its most 3' tested PAC in
   a last exon or downstream, with its fitted usage in the control against
   the treatment. `direction` is that PAC's own confirmed call (`distal_up`,
@@ -1306,9 +1340,11 @@ Across comparisons:
   - `apa_patterns_by_comparison.tsv.gz` has every tested gene.
 - **concordance:** `concordance` plots, for each pair of comparisons, each
   shared PAC's change in PAU in one against the other.
+  - The panels form a matrix: a pair's earlier comparison names its column
+    and the later one its row, so the pairs fill the lower triangle.
   - It has at most 15 panels; beyond that, only pairs that share a control or
     a condition are drawn.
-  - `concordance_matrix` shows Pearson r for every pair.
+  - `concordance_matrix` shows Pearson r for every pair, in the same cells.
   - `concordance.tsv.gz` gives each pair's relation (`shared_control`,
     `chained`, or `unrelated`), shared PACs, PACs called in both, and r.
   - Comparisons that share a control correlate positively through its
@@ -1321,6 +1357,8 @@ Across comparisons:
     and their PACs observed in every sample, with no zero-filling.
   - Each PAC is centered across samples. Each component's sign makes its
     largest loading positive, the first PAC by ID breaking ties.
+  - Samples are labeled by ID. When every ID starts with its condition's
+    name and a separator, the labels leave the name out.
   - `pau_pca.tsv` has the coordinates.
 
 These figures set each comparison's own results side by side. They make no
@@ -1328,8 +1366,10 @@ treatment-versus-treatment test, so every call remains a comparison with the
 direct control.
 
 PDFs are written without dates or a producer, so reruns reproduce them byte
-for byte. Uncalled PACs are drawn as a density above 5,000 per panel, which
-keeps real-data figures small.
+for byte. ggrepel places the labels: its search starts from a fixed seed and
+has no time limit, which would otherwise make the layout depend on the
+machine's speed. Uncalled PACs are drawn as a density above 5,000 per panel,
+on a log scale, which keeps real-data figures small.
 
 ## Outputs
 
@@ -1608,7 +1648,10 @@ Verify:
 - controlled null error after contrast-specific stage-wise adjustment;
 - reproducible handling and explicit instability flags for all-zero group PACs;
 - recovery of simulated motif-preference shifts without sensitivity to
-  proportional gene-expression changes.
+  proportional gene-expression changes;
+- the error cost of the within-condition usage filter: how often it admits a
+  null PAC near the usage threshold, how optimistic those PACs' p-values are,
+  and the false share of calls in a family with real changes (S7).
 
 ## Definition of Done
 

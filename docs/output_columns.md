@@ -402,7 +402,7 @@ One row per program or package the run used.
 
 | Column | Meaning |
 |---|---|
-| `software` | The program: `pacusage`, `python`, `pysam`, `samtools (in pysam)`, `htslib (in pysam)`, `R`, `DRIMSeq`, `stageR`, `limma`, `BiocParallel`, or `ggplot2`. |
+| `software` | The program: `pacusage`, `python`, `pysam`, `samtools (in pysam)`, `htslib (in pysam)`, `R`, `DRIMSeq`, `stageR`, `limma`, `BiocParallel`, `ggplot2`, or `ggrepel`. |
 | `version` | Its version. |
 
 ### `manifest/calibration_kernel.tsv`
@@ -835,7 +835,7 @@ APA pattern with the numbers behind it.
 | `stabilization_successes` | For a stabilized gene, how many refits gave a usable gene-level test; `0` otherwise. |
 | `exploratory_insufficient_replicates` | `TRUE` when the comparison is exploratory, as in the `.pacs` table. |
 
-How `apa_pattern` is decided, with T the min_abs_delta_pau (default 0.1):
+How `apa_pattern` is decided, with T the apa_pattern_min_change (default 0.1):
 - A gene can have a pattern only when it passes gene_fdr, has fitted usage in both groups,
   and has at least one confirmed call, or a withheld call as described below; other genes
   are `none`. A call supports a pattern when it is confirmed and its PAC is not low
@@ -883,13 +883,14 @@ once. It is descriptive only; calls use each comparison's own gene test.
 ### `statistics/FAMILY.statistical_filtering.tsv.gz`
 
 One row per atlas PAC for each comparison family: whether it was tested there, and if not,
-why. The filters use the family's samples pooled, without regard to condition.
+why. The read and support filters pool the family's samples, without regard to condition;
+the usage filter looks within each condition.
 
 | Column | Meaning |
 |---|---|
 | `family` | The comparison family, named after its control condition. |
 | `tested` | `TRUE` when the PAC entered the family's model, so it appears in each of the family's `.pacs` tables; `FALSE` otherwise. |
-| `reason` | Why not, joined by `;`: `no_gene_assignment` (intergenic), `ambiguous_gene_assignment` (several genes), `site_count<N` (fewer than min_site_count reads, default 5), `supporting_samples<N` (reads in fewer than min_test_supporting_samples samples, default 2), or `site_usage<F` (less than min_site_usage of its gene's reads, default 0.01). A PAC that passes these can still fail with its gene, as `gene_total<N` (fewer than min_gene_total reads at the gene, default 20) or `fewer_than_2_testable_pacs`; empty when tested. |
+| `reason` | Why not, joined by `;`: `no_gene_assignment` (intergenic), `ambiguous_gene_assignment` (several genes), `site_count<N` (fewer than min_site_count reads, default 5), `supporting_samples<N` (reads in fewer than min_test_supporting_samples samples, default 2), or `replicate_usage<F` (no condition where enough replicates give it at least min_site_usage of the gene's reads, default 0.01; enough is min_site_usage_replicates of the condition's replicates, default 0.75, rounded up and at least 2, counting only replicates with min_site_usage_gene_reads reads at the gene, default 10). A PAC that passes these can still fail with its gene, as `gene_total<N` (fewer than min_gene_total reads at the gene, default 20) or `fewer_than_2_testable_pacs`; empty when tested. |
 
 ### `statistics/fitted_pau.tsv.gz`
 

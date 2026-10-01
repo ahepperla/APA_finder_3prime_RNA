@@ -353,7 +353,8 @@ upstream-region APA, at sites in introns or internal exons (Tian and Manley,
 2017). A gene gets a pattern only when it passes `gene_fdr`, and each pattern
 needs a confirmed PAC call (`gained`, `increased_usage`, `lost`, or
 `decreased_usage`) on a PAC that is not low confidence. The threshold is
-`min_abs_delta_pau`.
+`apa_pattern_min_change` (default 0.10). It is set apart from the PAC-call
+threshold, `min_abs_delta_pau`, so PAC calls can take a smaller change.
 
 | `apa_pattern` | When |
 |---|---|
@@ -451,11 +452,14 @@ treatments.
   against its PAC-level p-value. Confirmed gains (`gained`,
   `increased_usage`) and losses (`lost`, `decreased_usage`) are colored,
   candidates are open circles, and PACs without a PAC call are grey (a grey
-  density above 5,000 PACs). Up to 20 genes in each direction are labeled
-  with their gene names, each at its most significant PAC. The y-axis uses the raw p-value because
-  `pac_fdr` is missing outside screened genes. PACs without a p-value, such
-  as unstable zero-boundary fits, are counted in the subtitle, and p-values
-  of 0 are drawn as triangles at the top.
+  density above 5,000 PACs, on a log scale). Up to 20 genes in each
+  direction are labeled with their gene names, each at its most significant
+  PAC in that direction, so a gene whose usage moves between its PACs can be
+  labeled twice. Among equal p-values, such as several of 0, the larger
+  changes come first. The y-axis uses the raw p-value because `pac_fdr` is
+  missing outside screened genes. PACs without a p-value, such as unstable
+  zero-boundary fits, are counted in the subtitle, and p-values of 0 are
+  drawn as triangles at the top. Dashed lines mark `min_abs_delta_pau`.
 - **`CONDITION_vs_CONTROL.distal_usage`**: for each tested gene, the fitted
   usage of its distal PAC in the control against the treatment.
   - The distal PAC is the gene's most 3′ tested PAC in a last exon or
@@ -468,7 +472,8 @@ treatments.
     `none`. A distal PAC can fall because usage moved to a tandem site or
     into an intron; the color tells which.
   - Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, those
-    with the largest changes, are labeled with their gene names.
+    with the largest changes, are labeled with their gene names. Dashed
+    lines mark a change of `min_abs_delta_pau`.
 - **`CONDITION_vs_CONTROL.calls_by_gene_region`**: confirmed PAC calls by the part
   of the gene the PAC lies in, its `gene_region` (last exon, internal exon,
   intron, downstream of the gene), with losses to the left of zero and gains
@@ -493,10 +498,12 @@ treatments.
   - Each panel of `concordance` takes two comparisons and plots every PAC
     tested in both: its change in PAU in one against the other. The panel
     gives Pearson r and the number of PACs.
+  - The panels form a matrix, one comparison naming the column and the
+    other the row, so each pair appears once, below the diagonal.
   - PACs with a confirmed call in both comparisons, or in one, are colored.
   - Beyond 15 pairs (more than six comparisons), only pairs that share a
     control or a condition get a panel.
-  - `concordance_matrix` shows r for every pair.
+  - `concordance_matrix` shows r for every pair, laid out the same way.
   - `concordance.tsv.gz` has one row per pair: its relation (`shared_control`,
     `chained`, or `unrelated`), the shared PACs, the PACs called in both, and
     `pearson_r`, which is empty with fewer than three shared PACs.
@@ -512,7 +519,9 @@ treatments.
   comparison, with `min_gene_total` marked. Calls driven by low coverage would
   cluster on the left.
 - **`pau_pca`**: samples on the first two principal components of observed
-  PAU, colored by condition.
+  PAU, colored by condition. Each sample is labeled with its ID. When every
+  ID starts with its condition's name, the labels leave the name out (`rep1`
+  for `AS_NT_DMSO_rep1`).
   - It uses the genes with at least `min_gene_total` reads in every sample,
     and those genes' PACs observed in every sample. There is no zero-filling
     and no pseudocount.
@@ -522,6 +531,12 @@ treatments.
   - Replicates should sit together. The report shows this figure beside the
     PAU sample correlation table, and `pau_pca.tsv` has the coordinates and
     the variance each component explains.
+
+Labels are placed with ggrepel. Each starts a little off its point, so a line
+joins the two, and labels are kept clear of each other. On the distal-usage
+plot they start toward the open middle of their half of the plot. The search
+starts from a fixed seed and has no time limit, so reruns place the labels the
+same way.
 
 The PDFs use the standard Helvetica font, which is not embedded, and carry no
 dates, so reruns reproduce them byte for byte. PNG rendering depends on the
@@ -599,8 +614,17 @@ annotated ones calibration uses.
 
 - **Filtering.** Each comparison family filters its own samples' counts.
   - A gene needs `min_gene_total` reads and at least two PACs that pass.
-  - A PAC needs `min_site_count` reads, `min_site_usage` of its gene's reads,
-    and reads in `min_test_supporting_samples` samples.
+  - A PAC needs `min_site_count` reads and reads in
+    `min_test_supporting_samples` samples, over the family's samples.
+  - It also needs consistent usage within one condition: at least
+    `min_site_usage` of its gene's reads in `min_site_usage_replicates` of
+    that condition's replicates. A fraction below 1 is rounded up, and a
+    whole number is capped at the condition's size; either way it is at
+    least 2, unless the condition has one replicate. A replicate counts only
+    when the gene has `min_site_usage_gene_reads` reads in it.
+  - This rule uses condition labels, so a PAC near the usage threshold that
+    it admits has an optimistic p-value. Simulation S7 measures the cost
+    (`docs/decisions.md`, 2026-10-01).
   - `statistics/FAMILY.statistical_filtering.tsv.gz` lists every PAC as
     tested, or with the reasons it was not.
 - **Model.** DRIMSeq fits a Dirichlet-multinomial model per gene with the
@@ -709,6 +733,19 @@ finished steps from it.
       `drimseq` is `fitted`, and `drimseq_add_uniform` is
       `fitted_with_zero_count_stabilization`; the motif tables' `p_value` is
       `pvalue`.
+  - **Version 0.5.0** changes which PACs are tested. `min_site_usage` now
+    applies per replicate within a condition, not to the family's pooled
+    reads, so results change even with the same settings. The atlas is
+    unchanged.
+    - New parameters: `min_site_usage_replicates` (default 0.75) and
+      `min_site_usage_gene_reads` (default 10).
+    - The filtering reason `site_usage<F` is now `replicate_usage<F`.
+    - APA patterns take their threshold from the new
+      `apa_pattern_min_change` (default 0.10), not from
+      `min_abs_delta_pau`. With both at 0.10, patterns are unchanged.
+    - The figures are redrawn. Labels are placed with ggrepel, a new
+      dependency, so rebuild the image or the Conda environment.
+      `concordance` is a matrix of panels.
 
 ## Troubleshooting
 
@@ -754,7 +791,7 @@ python -m venv .venv
 ```
 
 The R tests need R 4.5 or newer, with DRIMSeq, stageR, limma, BiocParallel,
-ggplot2, and yaml. Set `R_LIBS` to a library that has them:
+ggplot2, ggrepel, and yaml. Set `R_LIBS` to a library that has them:
 
 ```bash
 Rscript tests/r/test_usage_model.R scripts/fit_usage_model.R

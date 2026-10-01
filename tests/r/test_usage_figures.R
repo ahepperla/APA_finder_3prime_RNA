@@ -350,8 +350,8 @@ test_case("F-20", "the coverage figure counts the PACs it leaves out", {
   subtitle <- function(dropped) {
     figures$plot_effect_vs_coverage(data, comparisons, params, dropped)$labels$subtitle
   }
-  check(grepl("\n3 PACs without reads in both groups, not shown$", subtitle(3)), subtitle(3))
-  check(grepl("\n1 PAC without reads in both groups", subtitle(1), fixed = TRUE), subtitle(1))
+  check(grepl("\nNot shown: 3 PACs without reads in both groups$", subtitle(3)), subtitle(3))
+  check(grepl("\nNot shown: 1 PAC without reads in both groups", subtitle(1), fixed = TRUE), subtitle(1))
   check(!grepl("\n", subtitle(0), fixed = TRUE), subtitle(0))
 })
 
@@ -476,7 +476,10 @@ test_case("F-24", "the grid draws at most 50 genes, with untested and multi-patt
   check(nrow(shown) == 50L, "grid genes: ", nrow(shown))
   check(identical(shown$gene_id, ids[-2][1:50]), "the grid genes are not the table's first 50.")
   plot <- figures$plot_pattern_grid(table, comparisons)
-  check(grepl("59 genes with a pattern in 2 or more comparisons\nThe first 50 are shown", plot$labels$subtitle, fixed = TRUE), "subtitle: ", plot$labels$subtitle)
+  check(identical(plot$labels$subtitle, "59 genes with a pattern in two or more comparisons; the 50 shared by the most are shown"), "subtitle: ", plot$labels$subtitle)
+  # The caption explains only the marks the grid draws: g01's +, and no *.
+  caption <- strsplit(plot$labels$caption, "\n", fixed = TRUE)[[1]]
+  check(identical(caption, c("+ Two or more patterns in the comparison; the cell shows the first.", "apa_patterns_by_comparison.tsv.gz has every tested gene's patterns.")), "caption: ", plot$labels$caption)
   check(identical(levels(plot$data$gene_id), rev(shown$gene_id)), "rows are not the grid genes, top first.")
   check(nrow(plot$data) == 100L, "cells: ", nrow(plot$data))
   marks <- plot$layers[[2]]$data
@@ -633,12 +636,14 @@ test_case("F-29", "the concordance figure says which pairs it leaves out", {
   pairs <- figures$concordance_pairs(seven)
   data <- figures$concordance_data(pairs, stats::setNames(rep(list(pac_table(pac_row("p1", "g1"))), 7), seven$stem))
   summary <- figures$concordance_summary(pairs, data)
-  plot <- figures$plot_concordance(data, figures$shown_pairs(pairs), summary, nrow(pairs))
+  plot <- figures$plot_concordance(data, figures$shown_pairs(pairs), summary, nrow(pairs), seven)
   check(grepl("\n2 of 21 pairs shown", plot$labels$subtitle, fixed = TRUE), "subtitle: ", plot$labels$subtitle)
   check(identical(levels(plot$data$pair), c("A_vs_C|B_vs_C", "A_vs_C|D_vs_A")), "panels.")
+  # Both drawn pairs start with A_vs_C, so the matrix has one column.
+  check(identical(levels(plot$data$column), "A_vs_C") && identical(levels(plot$data$row), c("B_vs_C", "D_vs_A")), "matrix: ", paste(levels(plot$data$column), collapse = ", "), " by ", paste(levels(plot$data$row), collapse = ", "))
   unrelated <- figures$concordance_pairs(comparisons_of(c("A_vs_B", "C_vs_D", "E_vs_F", "G_vs_H", "I_vs_J", "K_vs_L", "M_vs_N")))
-  check(identical(placeholder_message(figures$plot_concordance(data[0, ], figures$shown_pairs(unrelated), summary, 21L)), "No pair shares a control or a condition"), "no related pairs.")
-  check(identical(placeholder_message(figures$plot_concordance(data[0, ], pairs[0, ], summary[0, ], 0L)), "Only one comparison"), "one comparison.")
+  check(identical(placeholder_message(figures$plot_concordance(data[0, ], figures$shown_pairs(unrelated), summary, 21L, seven)), "No pair shares a control or a condition"), "no related pairs.")
+  check(identical(placeholder_message(figures$plot_concordance(data[0, ], pairs[0, ], summary[0, ], 0L, seven[1, , drop = FALSE])), "Only one comparison"), "one comparison.")
 })
 
 test_case("F-30", "flagged patterns are marked on the grid and the distal plot", {
@@ -662,7 +667,114 @@ test_case("F-30", "flagged patterns are marked on the grid and the distal plot",
     genes_of(pacs, c(g1 = potential)))
   shapes <- figures$plot_distal_usage(distal, comparison, params)
   check(identical(as.character(shapes$data$call), "Confirmed *"), "distal mark: ", as.character(shapes$data$call))
-  check(grepl("Diamonds: pattern only from PACs flagged for internal priming", shapes$labels$subtitle, fixed = TRUE), "distal subtitle.")
+  check(grepl("\n* The gene's APA pattern comes only from PACs flagged for possible internal priming.", shapes$labels$caption, fixed = TRUE), "distal caption: ", shapes$labels$caption)
+  check(grepl("* The pattern comes only from PACs flagged for possible internal priming.", plot$labels$caption, fixed = TRUE), "grid caption: ", plot$labels$caption)
+})
+
+test_case("F-31", "counts carry thousands separators", {
+  text <- figures$count_text(c(0, 999, 1000, 12345, 60610, 3e9, NA))
+  check(identical(text, c("0", "999", "1,000", "12,345", "60,610", "3,000,000,000", NA)), "counts: ", paste(text, collapse = " "))
+  check(identical(figures$plural(1, "PAC"), "1 PAC") && identical(figures$plural(12000, "gene"), "12,000 genes"), "plurals.")
+})
+
+test_case("F-32", "the density scale breaks at powers of ten, or finer steps in a narrow range", {
+  breaks <- function(low, high) figures$density_breaks(c(low, high))
+  check(identical(breaks(1, 2500), c(1, 10, 100, 1000)), "1 to 2,500: ", paste(breaks(1, 2500), collapse = ", "))
+  check(identical(breaks(1, 60), c(1, 3, 10, 30)), "1 to 60: ", paste(breaks(1, 60), collapse = ", "))
+  check(identical(breaks(1, 5), c(1, 2, 5)), "1 to 5: ", paste(breaks(1, 5), collapse = ", "))
+  check(identical(breaks(2, 2), 2), "one count: ", paste(breaks(2, 2), collapse = ", "))
+})
+
+test_case("F-33", "the volcano subtitle and caption say what is left out and what marks mean", {
+  pacs <- pac_table(
+    pac_row("up", "g1", event_type = "increased_usage", control = 0.2, treatment = 0.5, pvalue = 1e-8),
+    pac_row("down", "g2", event_type = "decreased_usage", control = 0.5, treatment = 0.2, pvalue = 0),
+    pac_row("flat", "g2", pvalue = 0.4),
+    pac_row("no_p", "g3", pvalue = NA_real_),
+    pac_row("no_p_candidate", "g3", event_type = "gained_candidate", control = 0, treatment = 0.3, pvalue = NA_real_)
+  )
+  plot <- figures$plot_volcano(pacs, comparison, params, exploratory = FALSE)
+  check(identical(plot$labels$subtitle, paste0(
+    "5 PACs tested in 3 genes; confirmed calls: 1 up, 1 down\n",
+    "Not shown: 2 PACs without a p-value, including 1 candidate call"
+  )), "subtitle: ", plot$labels$subtitle)
+  check(grepl("^Dashed lines: a change of 0.1 either way", plot$labels$caption), "caption: ", plot$labels$caption)
+  check(grepl("\nTriangles: p-values of 0", plot$labels$caption, fixed = TRUE), "no triangle note: ", plot$labels$caption)
+  # Without missing candidates or p-values of 0, neither note appears.
+  plain <- figures$plot_volcano(pacs[pacs$pac_id != "no_p_candidate", , drop = FALSE], comparison, params, FALSE)
+  check(grepl("without a p-value$", plain$labels$subtitle), "subtitle: ", plain$labels$subtitle)
+  finite <- pacs[!pacs$pac_id %in% c("down", "no_p_candidate"), , drop = FALSE]
+  check(!grepl("Triangles", figures$plot_volcano(finite, comparison, params, FALSE)$labels$caption, fixed = TRUE), "triangle note without p-values of 0.")
+})
+
+test_case("F-34", "PCA labels drop the condition's name only when every sample ID starts with it", {
+  labels <- figures$sample_labels(c("AS_NT_DMSO_rep1", "C-2", "C.3"), c("AS_NT_DMSO", "C", "C"))
+  check(identical(labels, c("rep1", "2", "3")), "every ID shortened: ", paste(labels, collapse = ", "))
+  # One ID that does not start with its condition's name and a separator
+  # keeps every label whole: S1, Cx_1 (no separator), C_ (nothing after it).
+  for (odd in c("S1", "Cx_1", "C_", "C")) {
+    ids <- c("C_1", "C_2", odd)
+    labels <- figures$sample_labels(ids, c("C", "C", "C"))
+    check(identical(labels, ids), odd, ": ", paste(labels, collapse = ", "))
+  }
+  check(identical(figures$sample_labels(character(), character()), character()), "no samples.")
+})
+
+test_case("F-35", "the concordance figure places each pair by its two comparisons, below the diagonal", {
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C", "D_vs_A"))
+  pairs <- figures$concordance_pairs(comparisons)
+  tables <- stats::setNames(rep(list(pac_table(
+    pac_row("p1", "g1", control = 0.2, treatment = 0.4), pac_row("p2", "g1", control = 0.5, treatment = 0.3),
+    pac_row("p3", "g2", control = 0.1, treatment = 0.6)
+  )), 3), comparisons$stem)
+  data <- figures$concordance_data(pairs, tables)
+  summary <- figures$concordance_summary(pairs, data)
+  plot <- figures$plot_concordance(data, pairs, summary, nrow(pairs), comparisons)
+  # The first layer is each drawn panel's background: one per pair, at the
+  # pair's first comparison's column and second's row; B_vs_C's own cell
+  # (column B_vs_C, row B_vs_C) stays empty.
+  cells <- plot$layers[[1]]$data
+  placed <- paste(cells$column, cells$row)
+  check(identical(placed, c("A_vs_C B_vs_C", "A_vs_C D_vs_A", "B_vs_C D_vs_A")), "cells: ", paste(placed, collapse = "; "))
+  check(identical(levels(cells$column), c("A_vs_C", "B_vs_C")) && identical(levels(cells$row), c("B_vs_C", "D_vs_A")), "matrix levels.")
+  check(identical(paste(plot$data$column, plot$data$row)[plot$data$pair == "A_vs_C|D_vs_A"], rep("A_vs_C D_vs_A", 3)), "points are not in their pair's panel.")
+  size <- figures$concordance_size(pairs, comparisons)
+  check(identical(size, c(width = 5.5, height = 5.25)), "size: ", paste(size, collapse = " x "))
+  # The correlation matrix draws each pair once, in the same cells.
+  matrix <- figures$plot_concordance_matrix(summary, comparisons)$data
+  check(identical(paste(matrix$a, matrix$b), c("A_vs_C B_vs_C", "A_vs_C D_vs_A", "B_vs_C D_vs_A")), "matrix cells: ", paste(matrix$a, matrix$b, collapse = "; "))
+})
+
+test_case("F-38", "label placement has a fixed seed and no time limit", {
+  # F-10 compares bytes, but its few labels settle long before ggrepel's
+  # default half-second limit, so it would not notice the limit coming back.
+  layer <- figures$repel_text(data.frame(x = 1, y = 1, label = "a"),
+    aes(x = x, y = y, label = label), point_size = 1, nudge_y = 0)
+  settings <- layer$geom_params[c("max.time", "max.iter", "max.overlaps", "seed")]
+  check(identical(settings, list(max.time = Inf, max.iter = 10000L, max.overlaps = Inf, seed = 1L)),
+    "settings: ", paste(names(settings), unlist(settings), collapse = ", "))
+  check(inherits(layer$position, "PositionNudgeRepel"), "labels are not nudged off their points.")
+})
+
+test_case("F-37", "a gene with confirmed calls in both directions is labelled in each", {
+  pacs <- pac_table(
+    pac_row("switch_up", "switch", event_type = "increased_usage", control = 0.3, treatment = 0.7, pvalue = 1e-30),
+    pac_row("switch_down", "switch", event_type = "decreased_usage", control = 0.7, treatment = 0.3, pvalue = 1e-30),
+    pac_row("switch_down2", "switch", event_type = "lost", control = 0.2, treatment = 0, pvalue = 1e-10),
+    pac_row("other_up", "other", event_type = "gained", control = 0, treatment = 0.4, pvalue = 1e-5)
+  )
+  labels <- figures$volcano_data(pacs)$labels
+  observed <- paste(labels$pac_id, labels$call)
+  check(identical(sort(observed), c("other_up up", "switch_down down", "switch_up up")), "labels: ", paste(observed, collapse = ", "))
+})
+
+test_case("F-36", "among volcano PACs with equal p-values, the larger changes are labelled", {
+  zeros <- lapply(1:25, function(index) {
+    pac_row(sprintf("z%02d", index), sprintf("zero%02d", index), event_type = "increased_usage",
+      control = 0.1, treatment = 0.1 + (index + 10) / 100, pvalue = 0)
+  })
+  labels <- figures$volcano_data(do.call(pac_table, zeros))$labels
+  check(identical(labels$pac_id, sprintf("z%02d", 25:6)), "labels: ", paste(labels$pac_id, collapse = ", "))
 })
 
 # ---- Saving -------------------------------------------------------------------
@@ -687,7 +799,7 @@ test_case("F-10", "separate processes write byte-identical PDFs and PNGs", {
     "figures$load_figure_packages()",
     "points <- data.frame(x = 1:20, y = (1:20)^2, label = paste0('gene', 1:20))",
     "plot <- ggplot2::ggplot(points, ggplot2::aes(x, y)) + ggplot2::geom_point() +",
-    "  ggplot2::geom_text(ggplot2::aes(label = label), check_overlap = TRUE) +",
+    "  figures$repel_text(points, ggplot2::aes(label = label), point_size = 1.5, nudge_y = 10) +",
     "  ggplot2::labs(title = 'Rendering test') + figures$figure_theme()",
     "figures$save_figure(plot, arguments[[2]], 4, 3)",
     "stack <- figures$figure_stack(list(plot, plot), heights = c(2, 1))",
@@ -810,8 +922,8 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
     check(file.size(file.path(directory, "figures", name)) > 1000, name, " is nearly empty.")
   }
   check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1000)), "event_counts size.")
-  check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 650)), "coverage size.")
-  sizes <- list(apa_pattern_grid = c(900, 525), concordance = c(1500, 700),
+  check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 800)), "coverage size.")
+  sizes <- list(apa_pattern_grid = c(900, 525), concordance = c(1100, 750),
     concordance_matrix = c(950, 950), pau_pca = c(1100, 1000))
   for (name in names(sizes)) {
     size <- png_size(file.path(directory, "figures", paste0(name, ".png")))
@@ -845,17 +957,21 @@ test_case("F-13", "every comparison empty still writes the same files", {
   check(identical(pca, "sample_id\tcondition\tPC1\tPC2\tpc1_variance_fraction\tpc2_variance_fraction"), "empty PCA table: ", paste(pca, collapse = " | "))
 })
 
-test_case("F-14", "versions mode appends ggplot2, or starts the table", {
+test_case("F-14", "versions mode appends ggplot2 and ggrepel, or starts the table", {
   path <- file.path(work, "versions.tsv")
   writeLines(c("software\tversion", "R\t4.5.3", "DRIMSeq\t1.38.0"), path)
-  version <- as.character(utils::packageVersion("ggplot2"))
-  figures$run_versions_mode(list(output = path), version)
+  versions <- figures$load_figure_packages()
+  expected <- vapply(c("ggplot2", "ggrepel"), function(package) {
+    as.character(utils::packageVersion(package))
+  }, character(1))
+  check(identical(versions, expected), "loaded versions: ", paste(names(versions), versions, collapse = ", "))
+  figures$run_versions_mode(list(output = path), versions)
   table <- utils::read.delim(path, colClasses = "character")
-  check(identical(table$software, c("R", "DRIMSeq", "ggplot2")), "rows: ", paste(table$software, collapse = ", "))
-  check(identical(table$version[[3]], version), "version: ", table$version[[3]])
+  check(identical(table$software, c("R", "DRIMSeq", "ggplot2", "ggrepel")), "rows: ", paste(table$software, collapse = ", "))
+  check(identical(table$version[3:4], unname(expected)), "versions: ", paste(table$version, collapse = ", "))
   fresh <- file.path(work, "fresh_versions.tsv")
-  figures$run_versions_mode(list(output = fresh), version)
-  check(identical(readLines(fresh), c("software\tversion", paste0("ggplot2\t", version))), "new table: ", paste(readLines(fresh), collapse = " | "))
+  figures$run_versions_mode(list(output = fresh), versions)
+  check(identical(readLines(fresh), c("software\tversion", paste0(names(expected), "\t", expected))), "new table: ", paste(readLines(fresh), collapse = " | "))
 })
 
 test_case("F-15", "the figures read only columns the statistics tables have", {

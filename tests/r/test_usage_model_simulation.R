@@ -1,14 +1,17 @@
 # Statistical simulation checks for scripts/fit_usage_model.R (design section
 # "Statistical Simulation"): null calibration, effect direction and size,
 # recovery of gained and lost PACs, stage-wise error, count-scaling
-# invariance, and bootstrap interval coverage.
+# invariance, bootstrap interval coverage, and the error cost of the
+# within-condition usage filter.
 #
 # Usage: Rscript tests/r/test_usage_model_simulation.R scripts/fit_usage_model.R [seed]
 #
 # Thresholds sit at about 2-3x nominal error rates because DRIMSeq is liberal
 # for overdispersed genes at 3-4 replicates (docs/decisions.md, 2026-09-27). Interval
 # coverage is about 88% at a nominal 95%, which the project lead accepted; S6
-# guards the coverage pooled over all 60 PACs at 0.75.
+# guards the coverage pooled over all 60 PACs at 0.75. S7's ceilings on the
+# PACs the usage filter admits are an accepted cost, not a calibration claim
+# (docs/decisions.md, 2026-10-01).
 
 arguments <- commandArgs(trailingOnly = TRUE)
 if (!length(arguments) %in% c(1L, 2L)) {
@@ -43,9 +46,10 @@ gene_entry <- function(gene_id, index, counts) {
   )
 }
 
-run_family <- function(genes, layout, control, name, replicates = 0L, workers = 2L) {
+run_family <- function(genes, layout, control, name, replicates = 0L, workers = 2L,
+                       params = statistics_params(replicates)) {
   dataset <- assemble_usage_dataset(
-    genes, layout$sample_ids, layout$sample_condition, control, statistics_params(replicates)
+    genes, layout$sample_ids, layout$sample_condition, control, params
   )
   paths <- write_usage_inputs(dataset, file.path(work, name, "inputs"))
   run <- run_statistics_in_process(
@@ -283,6 +287,103 @@ test_case("S6", "bootstrap intervals cover the true change in usage", {
   record("coverage, shifted PACs", mean(covered[!gained]))
   pooled_coverage <- record("coverage, all PACs", mean(covered))
   check(pooled_coverage >= 0.75, "pooled coverage is ", format(pooled_coverage), ".")
+})
+
+# ---- Within-condition usage filter -----------------------------------------
+
+# Null genes, alike in every condition, with a borderline PAC at 8% between a
+# dominant one and a minor one, beside genes whose usage shifts in T1, so the
+# false discovery rate has real discoveries to work with. With min_site_usage
+# at 0.10, the borderline PAC is tested only when chance lifts it to 10% in
+# enough replicates of one condition, so its condition's labels choose which
+# PACs are tested. S7 measures what that costs, at the lead's planned
+# settings: a PAC-call threshold of 0.05, and calls at 0.10 taken as those
+# with a change of at least 0.10.
+set.seed(seed + 3L)
+filter_layout <- design_samples(c(C = 4L, T1 = 4L, T2 = 3L))
+borderline <- c(0.60, 0.08, 0.32)
+moved <- c(0.40, 0.08, 0.52)
+filter_genes <- list()
+filter_classes <- character()
+add_filter_gene <- function(gene_id, class, proportions, precision, depth) {
+  counts <- simulate_dm_counts(proportions, precision, depth, filter_layout$sample_condition)
+  index <- length(filter_genes) + 1L
+  filter_genes[[index]] <<- gene_entry(gene_id, index, counts)
+  filter_classes[[gene_id]] <<- class
+}
+for (depth in c(40, 400)) for (precision in c(20, 200)) {
+  for (index in 1:100) {
+    add_filter_gene(sprintf("null_d%d_p%d_%03d", depth, precision, index), "null",
+      list(C = borderline, T1 = borderline, T2 = borderline), precision, depth)
+  }
+  for (index in 1:25) {
+    add_filter_gene(sprintf("shift_d%d_p%d_%02d", depth, precision, index), "shift_T1",
+      list(C = borderline, T1 = moved, T2 = borderline), precision, depth)
+  }
+}
+filter_params <- utils::modifyList(statistics_params(0L), list(
+  min_site_usage = 0.10, min_site_usage_replicates = 0.75, min_site_usage_gene_reads = 10L,
+  min_abs_delta_pau = 0.05
+))
+filter_run <- tryCatch(
+  run_family(filter_genes, filter_layout, "C", "filter", params = filter_params),
+  error = function(error) error
+)
+
+test_case("S7", "the usage filter stays within its accepted cost, and its calls within S4's bounds", {
+  if (inherits(filter_run, "error")) stop("Filter run failed: ", conditionMessage(filter_run))
+  directory <- filter_run$run$final_directory
+  filtering <- read_result(directory, "C.statistical_filtering.tsv.gz")
+  filtering <- filtering[order(filtering$gene_id, as_number(filtering$start)), , drop = FALSE]
+  filtering$position <- stats::ave(seq_len(nrow(filtering)), filtering$gene_id, FUN = seq_along)
+  check(all(as_flag(filtering$tested[filtering$position != 2L])), "a dominant or minor PAC was filtered.")
+  border <- filtering[filtering$position == 2L, , drop = FALSE]
+  kept <- as_flag(border$tested)
+  check(all(border$reason[!kept] == "replicate_usage<0.1"), "borderline PACs filtered for another reason: ",
+    paste(unique(border$reason[!kept]), collapse = ", "))
+  nulls <- names(filter_classes)[filter_classes == "null"]
+  keeping <- intersect(border$gene_id[kept], nulls)
+  share <- record("S7 null borderline PACs kept", length(keeping) / length(nulls))
+  check(share > 0.1 && share < 0.9, "the filter kept ", format(share), " of borderline PACs; S7 needs both kinds.")
+  # Every metric is recorded before any guard is checked.
+  rates <- list()
+  for (comparison in c("T1_vs_C", "T2_vs_C")) {
+    pacs <- read_result(directory, paste0(comparison, ".pacs.tsv.gz"))
+    label <- function(text) paste("S7", comparison, text)
+    genes <- pacs[!duplicated(pacs$gene_id) & pacs$gene_id %in% nulls, , drop = FALSE]
+    gene_p <- as_number(genes$gene_pvalue)
+    with_border <- genes$gene_id %in% keeping
+    border_p <- as_number(pacs$pac_pvalue[pacs$pac_id %in% border$pac_id[kept] & pacs$gene_id %in% nulls])
+    calls <- pacs$event_type %in% c("gained", "lost", "increased_usage", "decreased_usage")
+    large <- calls & abs(as_number(pacs$delta_pau)) >= 0.10
+    called <- unique(pacs$gene_id[calls])
+    rates[[comparison]] <- list(
+      gene_with = record(label("null gene p<=0.05, borderline kept"), mean(gene_p[with_border] <= 0.05)),
+      gene_without = record(label("null gene p<=0.05, borderline filtered"), mean(gene_p[!with_border] <= 0.05)),
+      border = record(label("kept borderline PAC p<=0.05"), mean(border_p[is.finite(border_p)] <= 0.05)),
+      called = record(label("genes called at 0.05"), length(called)),
+      null_05 = record(label("null genes called at 0.05"), sum(called %in% nulls)),
+      null_10 = record(label("null genes called at 0.10"), length(intersect(unique(pacs$gene_id[large]), nulls))),
+      null_kept = record(label("null genes called at 0.05, borderline kept"), sum(called %in% keeping))
+    )
+  }
+  t1 <- rates[["T1_vs_C"]]
+  false_share <- record("S7 T1_vs_C false share of genes called at 0.05", t1$null_05 / max(1, t1$called))
+  check(t1$called >= 50L, "only ", t1$called, " of 100 shifted genes called in T1_vs_C.")
+  # As S4: a false discovery proportion of at most 0.25, and at most 8 null
+  # genes called per 120.
+  check(false_share <= 0.25, "false share of T1_vs_C gene calls is ", format(false_share), ".")
+  for (comparison in names(rates)) {
+    rate <- rates[[comparison]]
+    check(rate$null_05 <= 27L, comparison, ": ", rate$null_05, " null genes called.")
+    # The accepted cost: PACs admitted near the threshold have optimistic
+    # p-values. The ceilings, six times nominal, are there to catch a change
+    # to the filter that makes the selection worse.
+    check(rate$border <= 0.30, comparison, ": ", format(rate$border),
+      " of admitted borderline PACs have p <= 0.05, above the accepted 0.30.")
+    check(rate$gene_with <= 0.30, comparison, ": ", format(rate$gene_with),
+      " of null genes keeping a borderline PAC have p <= 0.05, above the accepted 0.30.")
+  }
 })
 
 cat("\nMetrics (seed ", seed, "):\n", sep = "")

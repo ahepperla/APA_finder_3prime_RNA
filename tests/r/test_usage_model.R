@@ -806,11 +806,12 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
     outside = rep(99, 13),
     stringsAsFactors = FALSE
   )
+  # The usage rule passes every PAC here; M-26 tests it.
   params <- list(
-    min_site_count = 5L, min_test_supporting_samples = 2L,
-    min_site_usage = 0.01, min_gene_total = 20L
+    min_site_count = 5L, min_test_supporting_samples = 2L, min_site_usage = 0,
+    min_site_usage_replicates = 0.75, min_site_usage_gene_reads = 0L, min_gene_total = 20L
   )
-  result <- model$family_filter(counts, c("s1", "s2"), params, "F")
+  result <- model$family_filter(counts, c("s1", "s2"), list(C = c("s1", "s2")), params, "F")
   expected_reasons <- c(
     "", "", "site_count<5;supporting_samples<2", "gene_total<20", "gene_total<20",
     "no_gene_assignment", "ambiguous_gene_assignment", "", "",
@@ -837,6 +838,128 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
   check(nrow(written) == nrow(dataset$counts), "the family table does not list every PAC once.")
   tested <- unique(read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")$pac_id)
   check(setequal(written$pac_id[written$tested == "TRUE"], tested), "tested flags differ from the tested PACs.")
+})
+
+test_case("M-26", "a PAC is tested when enough replicates of one condition use it", {
+  sizes <- c(1, 2, 3, 4, 5, 6)
+  expectations <- list(
+    list(0.75, c(1, 2, 3, 3, 4, 5)), list(0.66, c(1, 2, 2, 3, 4, 4)),
+    list(4, c(1, 2, 3, 4, 4, 4)), list(0.2, c(1, 2, 2, 2, 2, 2))
+  )
+  for (expectation in expectations) {
+    observed <- model$required_replicates(sizes, expectation[[1]])
+    check(
+      identical(observed, as.integer(expectation[[2]])),
+      "setting ", expectation[[1]], " gave ", paste(observed, collapse = ", ")
+    )
+  }
+
+  groups <- list(C = sprintf("c%d", 1:4), T = sprintf("t%d", 1:4), U = sprintf("u%d", 1:3))
+  # Each gene has two well-used PACs and a third, X, with the given reads.
+  # The gene has 100 reads in each sample, or 9 in a shallow one.
+  gene <- function(gene_id, x, groups, shallow = character()) {
+    samples <- unlist(groups, use.names = FALSE)
+    reads_x <- stats::setNames(rep(0, length(samples)), samples)
+    reads_x[names(x)] <- x
+    total <- ifelse(samples %in% shallow, 9, 100)
+    reads_a <- ifelse(samples %in% shallow, 4, 50)
+    values <- rbind(reads_a, total - reads_a - reads_x, reads_x)
+    colnames(values) <- samples
+    data.frame(
+      gene_id = gene_id, gene_name = toupper(gene_id), pac_id = paste0(gene_id, c("_a", "_b", "_x")),
+      chrom = "chr1", start = 100L, end = 101L, strand = "+", locus = "chr1:101-101",
+      as.data.frame(values), stringsAsFactors = FALSE, check.names = FALSE
+    )
+  }
+  counts <- rbind(
+    gene("specific", c(t1 = 20, t2 = 20, t3 = 20, t4 = 2), groups),
+    gene("scattered", c(c1 = 20, c2 = 20, t1 = 20, u1 = 20), groups),
+    gene("shallow", c(t1 = 20, t2 = 20, t3 = 2), groups, shallow = "t3"),
+    gene("uneven_all", c(u1 = 20, u2 = 20, u3 = 20), groups),
+    gene("uneven_two", c(u1 = 20, u2 = 20), groups),
+    gene("one", c(t1 = 20), groups)
+  )
+  params <- list(
+    min_site_count = 5L, min_test_supporting_samples = 1L, min_site_usage = 0.1,
+    min_site_usage_replicates = 0.75, min_site_usage_gene_reads = 10L, min_gene_total = 20L
+  )
+  tested_x <- function(changes, groups = list(C = sprintf("c%d", 1:4), T = sprintf("t%d", 1:4),
+                                              U = sprintf("u%d", 1:3)), table = counts) {
+    result <- model$family_filter(
+      table, unlist(groups, use.names = FALSE), groups, utils::modifyList(params, changes), "F"
+    )$reasons
+    x <- endsWith(result$pac_id, "_x")
+    stats::setNames(result$tested[x], sub("_x$", "", result$pac_id[x]))
+  }
+  describe <- function(tested) paste(names(tested), tested, sep = "=", collapse = ", ")
+  # At 0.75: 3 of 4 replicates of C or T, or all 3 of U.
+  default <- tested_x(list())
+  check(
+    identical(default, c(specific = TRUE, scattered = FALSE, shallow = FALSE, uneven_all = TRUE,
+      uneven_two = FALSE, one = FALSE)),
+    "default: ", describe(default)
+  )
+  reasons <- model$family_filter(
+    counts, unlist(groups, use.names = FALSE), groups, params, "F"
+  )$reasons
+  check(
+    identical(reasons$reason[reasons$pac_id == "scattered_x"], "replicate_usage<0.1"),
+    "scattered reason: ", reasons$reason[reasons$pac_id == "scattered_x"]
+  )
+  # At 0.66 a 3-replicate condition needs 2.
+  two_thirds <- tested_x(list(min_site_usage_replicates = 0.66))
+  check(two_thirds[["uneven_two"]] && !two_thirds[["scattered"]], "0.66: ", describe(two_thirds))
+  # A whole number is capped at a condition's size.
+  four <- tested_x(list(min_site_usage_replicates = 4L))
+  check(!four[["specific"]] && four[["uneven_all"]], "4: ", describe(four))
+  # Never fewer than 2 replicates.
+  floor_two <- tested_x(list(min_site_usage_replicates = 0.2))
+  check(floor_two[["scattered"]] && !floor_two[["one"]], "0.2: ", describe(floor_two))
+  # A shallow replicate counts once the depth floor allows it.
+  no_floor <- tested_x(list(min_site_usage_gene_reads = 0L))
+  check(no_floor[["shallow"]], "depth floor 0: ", describe(no_floor))
+  # A single-replicate condition needs its one replicate.
+  single <- list(C = sprintf("c%d", 1:4), E = "e1")
+  lone <- gene("lone", c(e1 = 20), single)
+  check(tested_x(list(), groups = single, table = lone)[["lone"]], "a single replicate did not count.")
+})
+
+test_case("M-27", "the pattern threshold and the PAC-call threshold move independently", {
+  base <- list(
+    event_min_supporting_samples = 2, gene_fdr = 0.05, site_fdr = 0.05,
+    event_max_control_pau = 0.01, event_min_treatment_pau = 0.05, min_gene_total = 20,
+    potential_internal_priming_withheld_calls = TRUE
+  )
+  # An intronic PAC rises by 0.07 and the last-exon PAC falls by as much.
+  pacs <- data.frame(
+    gene_id = "g", strand = "+", coordinate = c(100, 500), gene_region = c("intron", "last_exon"),
+    last_exon_locus = c(NA, "chr1:401-500"), fitted_control_pau = c(0.10, 0.90),
+    fitted_treatment_pau = c(0.17, 0.83), delta_pau = c(0.07, -0.07),
+    event_type = c("increased_usage", "decreased_usage"), confidence = "high", gene_fdr = 0.01,
+    pac_fdr = 0.001, internal_priming_flag = FALSE, control_supporting_samples = 2,
+    treatment_supporting_samples = 2, zero_boundary_unstable = FALSE,
+    exploratory_insufficient_replicates = FALSE, control_gene_total = 100,
+    treatment_gene_total = 100, stringsAsFactors = FALSE
+  )
+  pattern <- function(change, delta) {
+    params <- utils::modifyList(base, list(apa_pattern_min_change = change, min_abs_delta_pau = delta))
+    model$apa_patterns(pacs, pacs$coordinate, params)$apa_pattern
+  }
+  call <- function(change, delta) {
+    params <- utils::modifyList(base, list(apa_pattern_min_change = change, min_abs_delta_pau = delta))
+    model$classify_event(as.list(pacs[1, ]), params)
+  }
+  check(identical(pattern(0.05, 0.10), "intronic_gain"), "pattern at 0.05: ", pattern(0.05, 0.10))
+  check(identical(pattern(0.10, 0.05), "unclassified_change"), "pattern at 0.10: ", pattern(0.10, 0.05))
+  check(identical(pattern(0.05, 0.05), pattern(0.05, 0.10)), "min_abs_delta_pau moved the pattern.")
+  check(identical(call(0.10, 0.05), "increased_usage"), "call at 0.05: ", call(0.10, 0.05))
+  check(identical(call(0.05, 0.10), "none"), "call at 0.10: ", call(0.05, 0.10))
+  check(identical(call(0.05, 0.05), call(0.10, 0.05)), "apa_pattern_min_change moved the call.")
+  unset <- tryCatch(
+    model$apa_patterns(pacs, pacs$coordinate, utils::modifyList(base, list(min_abs_delta_pau = 0.1))),
+    error = function(error) conditionMessage(error)
+  )
+  check(identical(unset, "apa_pattern_min_change must be a number."), unset)
 })
 
 test_case("M-22", "motif preference uses the family design, covariates included", {
@@ -1024,7 +1147,8 @@ test_case("M-24", "the genes table records every gene-level event, with or witho
 
 test_case("M-25", "APA patterns follow region shares and direction-matched calls", {
   params <- list(
-    min_abs_delta_pau = 0.10, event_min_treatment_pau = 0.05, gene_fdr = 0.05,
+    min_abs_delta_pau = 0.10, apa_pattern_min_change = 0.10, event_min_treatment_pau = 0.05,
+    gene_fdr = 0.05,
     site_fdr = 0.05, event_max_control_pau = 0.01, event_min_supporting_samples = 2,
     min_gene_total = 20, potential_internal_priming_withheld_calls = TRUE
   )

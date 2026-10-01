@@ -8,6 +8,147 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-01: The usage filter asks for consistent usage within a condition
+
+Status: accepted (project lead)
+
+The lead's Tacc2 review found intronic PACs tested at 2-4% of their gene's
+reads. Raising `min_site_usage` would not have removed them, because the
+share was pooled over the comparison family. Pooling also dilutes a
+treatment-specific site, more so the more conditions share the control.
+
+**Rule**
+- A PAC is tested when, in at least one condition of the family, at least
+  `min_site_usage_replicates` of the replicates give it `min_site_usage` of
+  the gene's reads.
+- The setting is a fraction of the condition's replicates, rounded up, or a
+  whole number capped at the condition's size. It is never below 2 unless the
+  condition has one replicate. The default, 0.75, asks for 2 of 2, 3 of 3,
+  3 of 4, 4 of 5, and 5 of 6.
+- A replicate counts only when the gene has `min_site_usage_gene_reads`
+  reads in it, by default 10, as in the DRIMSeq workflow.
+- The read count, supporting-sample, and gene-total filters stay pooled.
+- The filtering reason is `replicate_usage<F`.
+
+**Pattern threshold.** APA patterns take `apa_pattern_min_change` (default
+0.10). The lead plans 0.10 inclusion with PAC calls at a change of 0.05
+(`min_abs_delta_pau`), and patterns keep the larger change.
+
+**Cost.** The filter now uses condition labels, so a PAC near the threshold
+that it admits has an optimistic p-value. The lead accepted this, the same
+kind of choice as discovery's within-condition support rule, with the cost
+measured first. S7 runs null genes with a borderline PAC at 8% beside 100
+genes shifted in T1, at `min_site_usage` 0.10, replicates 0.75, and
+`min_abs_delta_pau` 0.05. Over five seeds:
+- 14-19% of the borderline null PACs were admitted;
+- 10-21% of those admitted had p <= 0.05, at a nominal 5%;
+- the genes keeping one had gene p <= 0.05 in 6-18% of cases, against 2-6%
+  for genes that dropped it;
+- 4-9% of T1's gene calls were false;
+- null genes keeping a borderline PAC were called in 8 of 332 cases (2.4%),
+  and other null genes in 14 of 1,668 (0.8%);
+- calls at a change of 0.10 had at most one null gene fewer than calls at
+  0.05.
+
+S7 guards the call-level error as S4 does, a false share of gene calls up to
+0.25. It also caps the accepted cost at 0.30, as the next entry describes.
+
+**Confirmation.** The lead confirmed the rule and its defaults from these
+numbers, and accepted S7's measurement at the planned settings without a
+second scenario at the defaults. A scratch run at the defaults
+(`min_site_usage` 0.01 with the borderline PAC at 0.8%, `min_abs_delta_pau`
+0.10, three seeds) found the cost near nominal:
+- 7-9% of the borderline null PACs were admitted;
+- 0-13% of those had p <= 0.05, about 5% on average;
+- 5-9% of T1's gene calls were false;
+- no admitted borderline PAC was called.
+
+**Not chosen.** The lead set aside the alternative of a share in most of the
+family's samples regardless of condition, which is label-blind but admits
+fewer treatment-specific sites.
+
+## 2026-10-01: A measured cost gets an explicit ceiling in the simulation suite
+
+Status: accepted (project lead), with the ceiling at 0.30
+
+S7 was planned to guard the admitted borderline PACs' p <= 0.05 rate at the
+suite's 2-3x nominal tolerances, as S1 guards unselected nulls. Over five
+seeds that rate was 10-21%, so the guard was dropped and the rate recorded
+only. The overseer's view: a 2-3x calibration guard is the wrong instrument
+for a subset selected by construction, but a metric with no guard protects
+nothing. A later change to the filter that worsens the selection effect (the
+floor of 2, the gene-read floor, or the rounding) should trip a test.
+
+**Proposed rule.** When the suite measures an accepted cost rather than a
+calibration claim, it guards the metric at an explicit ceiling, named in the
+test as the accepted cost, not as calibration. For S7: the admitted
+borderline PACs' p <= 0.05 rate, and the gene p <= 0.05 rate of null genes
+keeping one, each at most 0.30 (six times nominal; the five-seed maximum
+was 0.21 on 55-75 PACs, whose binomial 99% upper bound is about 0.27). The
+call-level guards stay as they are. The test's title should name what it
+guards; "keeps calls near nominal error" overstates a 0.25 false-share
+ceiling.
+
+## 2026-10-01: Figure labels placed by ggrepel, and the figures reworked
+
+Status: accepted (project lead)
+
+The lead found the figures unprofessional at a real run's scale: overlapping
+and missing labels, a clipped legend, unformatted numbers, and a colorbar with
+one tick. They were reworked against synthetic tables at that scale: 12,000
+genes, 60,610 PACs, and six comparisons with long condition names.
+
+**Dependency**
+- The lead approved ggrepel, declared in `envs/pacusage.yml`
+  (`r-ggrepel>=0.9.7`). conda-forge has 0.9.6 and 0.9.8, so the pin resolves
+  to 0.9.8, the version tested.
+- ggrepel stops searching for label positions after half a second by
+  default, so the layout would depend on the machine's speed. The figures set
+  no time limit and a fixed seed; the search then ends when no labels overlap
+  or after 10,000 iterations, the same way on every run.
+- `software_versions.tsv` records ggrepel beside ggplot2.
+
+**Changes**
+- Volcano, distal-usage, and PCA labels are repelled from each other and
+  their points. Each starts nudged off its point, so a line always joins the
+  two; one touching its point could sit between two points. On the
+  distal-usage plot, labels start toward the open middle of their half of the
+  plot, since the labeled genes sit on the edges.
+- Volcano labels go on each gene's most significant PAC in each direction,
+  so a gene whose usage moves between its PACs can be labeled twice. Among
+  equal p-values, such as several of 0, the larger changes get the labels.
+- One-panel figures put their legends to the right; faceted figures stack
+  theirs under the panels.
+- The uncalled-PAC density uses a log scale.
+- Counts have thousands separators.
+- Captions explain the dashed lines and marks.
+- `concordance` became a matrix. Each pair's earlier comparison names its
+  column and the later one its row, so the panels fill the lower triangle.
+  Two-line strip titles replace per-panel titles, which were clipped.
+  `concordance_matrix` draws each pair once, in the same cells.
+- PCA labels drop the condition's name from sample IDs when every ID starts
+  with it, and take a darker shade of the condition's color.
+
+## 2026-10-01: Merged donor peaks and internal priming stay as they are
+
+Status: accepted (project lead)
+
+The lead judged two intronic Tacc2 PACs in their Plasmidsaurus data false.
+- PACv1.GRCm39.chr7.+.130353825 merges five read-end peaks. Two of them sit
+  at an internal exon's donor (130353640), but the PAC's representative peak
+  lies 185 nt into the intron. The internal-exon-end filter tests only a PAC's
+  representative coordinate, so the PAC passed.
+- PACv1.GRCm39.chr7.+.130338300 sits on seven A's and is flagged for internal
+  priming.
+
+The lead's decisions:
+- Discovery is unchanged: the exon-end filter keeps testing only the
+  representative coordinate. Testing every merged peak would also reject real
+  last-exon PACs whose region reaches a short last exon's upstream donor. The
+  lead also declined a variant protected by annotated transcript ends.
+- Internal priming stays a flag. Flagged PACs are tested and reported, but
+  never called gained or lost and never support an APA pattern.
+
 ## 2026-09-30: Plain-language output names and a column guide
 
 Status: accepted (project lead)

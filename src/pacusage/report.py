@@ -65,7 +65,8 @@ SUMMARY_FIGURES = (
         "concordance_matrix",
         "Correlation between comparisons",
         "Pearson correlation of the change in PAU at the PACs that two comparisons both "
-        "tested. Comparisons against the same control share its estimate, so they "
+        "tested, each pair once, below the diagonal. Comparisons against the same "
+        "control share its estimate, so they "
         "correlate positively without any shared biology. Chained comparisons, where one's "
         "treatment is the other's control, estimate that condition from the same samples "
         "with opposite signs, so they correlate negatively.",
@@ -73,10 +74,11 @@ SUMMARY_FIGURES = (
     (
         "concordance",
         "Concordance between comparisons",
-        "One panel per pair of comparisons: each PAC tested in both, its change in PAU in "
-        "one against the other. Colored PACs have a confirmed call in both comparisons or "
-        "in one. The solid line is y = x and the dashed line y = -x. With more than six "
-        "comparisons, only pairs that share a control or a condition are drawn.",
+        "A matrix with a panel for each pair of comparisons: each PAC tested in both, its "
+        "change in PAU in the column's comparison against the row's. Colored PACs have a "
+        "confirmed call in both comparisons or in one. Solid lines are y = x and dashed "
+        "lines y = -x. With more than six comparisons, only pairs that share a control or "
+        "a condition are drawn.",
     ),
     (
         "effect_vs_coverage",

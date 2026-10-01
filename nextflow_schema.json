@@ -421,7 +421,28 @@
           "minimum": 0,
           "maximum": 1,
           "default": 0.01,
-          "description": "Share of its gene's reads a PAC needs to be tested."
+          "description": "Share of its gene's reads a PAC needs in a replicate for that replicate to count toward min_site_usage_replicates."
+        },
+        "min_site_usage_replicates": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
+          ],
+          "default": 0.75,
+          "description": "Replicates of one condition that must reach min_site_usage for a PAC to be tested. Values in (0, 1) are fractions of that condition's replicates, rounded up; whole numbers are counts, capped at the condition's size. Never fewer than 2, unless the condition has one replicate."
+        },
+        "min_site_usage_gene_reads": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10,
+          "description": "Reads at the gene a replicate needs before it can count toward min_site_usage_replicates."
         },
         "min_test_supporting_samples": {
           "type": "integer",
@@ -456,7 +477,14 @@
           "minimum": 0,
           "maximum": 1,
           "default": 0.1,
-          "description": "Smallest absolute change in PAU that counts as an effect for event calls."
+          "description": "Smallest absolute change in PAU that counts as an effect for PAC calls."
+        },
+        "apa_pattern_min_change": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.1,
+          "description": "Smallest change in a region's share of its gene's usage (delta_intronic_share, last_exon_switch, delta_utr_distal_share) for an APA pattern."
         },
         "dm_bootstrap_replicates": {
           "type": "integer",

@@ -30,15 +30,16 @@ SUMMARY_FIGURES = (
 )
 FIGURE_TABLES = ("apa_patterns_by_comparison.tsv.gz", "concordance.tsv.gz", "pau_pca.tsv")
 # Figure sizes in pixels at 200 dpi, from scripts/plot_usage_figures.R; the
-# summaries grow with the three comparisons. The grid's height also grows
+# summaries grow with the three comparisons. The concordance matrix has two
+# columns and two rows for their three pairs. The grid's height also grows
 # with its genes, so grid_pixels() computes it.
 FIGURE_PIXELS = {
-    "volcano": (1300, 1000),
-    "distal_usage": (1100, 1100),
+    "volcano": (1500, 1100),
+    "distal_usage": (1400, 1150),
     "calls_by_gene_region": (1300, 700),
     "event_counts": (1500, 1150),
-    "effect_vs_coverage": (1500, 650),
-    "concordance": (1500, 700),
+    "effect_vs_coverage": (1500, 800),
+    "concordance": (1100, 1050),
     "concordance_matrix": (1075, 1075),
     "pau_pca": (1100, 1000),
 }
@@ -307,7 +308,7 @@ def expected_apa_patterns(pacs: pd.DataFrame, coordinates: dict, params: dict) -
     region shares of the fitted usage, gated by confirmed calls on PACs that
     are not low confidence. A pattern that holds only once flagged PACs'
     calls, withheld ones included, count takes the potential suffix."""
-    threshold = params["min_abs_delta_pau"] - APA_TOLERANCE
+    threshold = params["apa_pattern_min_change"] - APA_TOLERANCE
     minimum = params["event_min_treatment_pau"] - APA_TOLERANCE
     results = {}
     for gene_id, rows in pacs.groupby("gene_id", sort=False):
@@ -865,7 +866,7 @@ def main() -> None:
     assert len(list((ROOT / "motifs").glob("*.preference.tsv.gz"))) == len(COMPARISONS)
 
     versions = pd.read_csv(ROOT / "manifest" / "software_versions.tsv", sep="\t")
-    assert {"pacusage", "pysam", "R", "DRIMSeq", "stageR", "limma", "ggplot2"} <= set(
+    assert {"pacusage", "pysam", "R", "DRIMSeq", "stageR", "limma", "ggplot2", "ggrepel"} <= set(
         versions["software"]
     )
 

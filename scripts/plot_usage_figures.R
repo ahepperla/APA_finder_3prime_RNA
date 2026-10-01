@@ -11,7 +11,8 @@
 #   Rscript plot_usage_figures.R --mode versions --output software_versions.tsv
 #
 # Every string in this file is ASCII: pdf() draws text in Latin-1 Helvetica,
-# and the container runs under LC_ALL=C.
+# and the container runs under LC_ALL=C. ggrepel places the labels, with a
+# fixed seed and no time limit, so reruns place them the same way.
 
 # ---- Tables -----------------------------------------------------------------
 
@@ -93,6 +94,14 @@ LABEL_LIMIT <- 20
 # Genes on the shared-genes grid, and panels on the concordance figure.
 GRID_GENE_LIMIT <- 50
 CONCORDANCE_PANEL_LIMIT <- 15
+# ggrepel's search for label positions stops after a time limit by default,
+# which would make the layout depend on the machine's speed. With no time
+# limit, it stops when no label overlaps another or after this many
+# iterations, from this seed.
+LABEL_SEED <- 1L
+LABEL_ITERATIONS <- 10000L
+# Facet strip titles longer than this go on two lines.
+STRIP_TITLE_LIMIT <- 36
 # Okabe-Ito colors for conditions on the PCA, with the pale yellow last;
 # shapes change every eight conditions.
 CONDITION_COLORS <- c(
@@ -150,19 +159,28 @@ require_args <- function(arguments, required) {
 }
 
 # pdf(timestamp = FALSE) needs R 4.5, and the figures use the ggplot2 4 API.
+# The ggrepel minimum is the one envs/pacusage.yml declares. Returns the
+# ggplot2 and ggrepel versions.
 load_figure_packages <- function() {
   remedy <- ". Use the PACusage Conda environment or Apptainer image."
   if (getRversion() < "4.5.0") {
     stop("The figures need R 4.5.0 or later, not ", getRversion(), remedy)
   }
-  missing <- c("ggplot2", "yaml")[!vapply(
-    c("ggplot2", "yaml"), requireNamespace, logical(1), quietly = TRUE
-  )]
+  packages <- c("ggplot2", "ggrepel", "yaml")
+  missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing R packages: ", paste(missing, collapse = ", "), remedy)
-  version <- utils::packageVersion("ggplot2")
-  if (version < "4.0.0") stop("The figures need ggplot2 4.0.0 or later, not ", version, remedy)
+  minimums <- c(ggplot2 = "4.0.0", ggrepel = "0.9.7")
+  versions <- vapply(names(minimums), function(package) {
+    as.character(utils::packageVersion(package))
+  }, character(1))
+  for (package in names(minimums)) {
+    if (package_version(versions[[package]]) < minimums[[package]]) {
+      stop("The figures need ", package, " ", minimums[[package]], " or later, not ",
+        versions[[package]], remedy)
+    }
+  }
   suppressPackageStartupMessages(library(ggplot2))
-  invisible(as.character(version))
+  invisible(versions)
 }
 
 # ---- Reading ----------------------------------------------------------------
@@ -404,8 +422,10 @@ first_pattern_flagged <- function(apa_pattern) {
 
 # PACs with a change and a p-value. A p-value that underflows to 0 is drawn
 # just above the most significant finite one; this happens before binning,
-# which would otherwise drop it. Labels go on each gene's most significant
-# confirmed PAC, for at most LABEL_LIMIT genes in each direction.
+# which would otherwise drop it. In each direction, labels go on each gene's
+# most significant confirmed PAC, for at most LABEL_LIMIT genes; among equal
+# p-values, such as several of 0, the larger change comes first. A gene whose
+# usage moves between its PACs can be labelled in both directions.
 volcano_data <- function(pacs) {
   call <- pac_calls(pacs$event_type)
   kept <- is.finite(pacs$delta_pau) & !is.na(pacs$pac_pvalue)
@@ -425,9 +445,10 @@ volcano_data <- function(pacs) {
   # Uncalled PACs are drawn first, under the calls.
   points <- points[order(points$call != "none", points$pac_id, method = "radix"), , drop = FALSE]
   confirmed <- points[points$call %in% c("up", "down"), , drop = FALSE]
-  confirmed <- confirmed[order(confirmed$pvalue, confirmed$pac_id, method = "radix"), ,
-    drop = FALSE]
-  labels <- limit_labels(confirmed[!duplicated(confirmed$gene_id), , drop = FALSE], "call")
+  confirmed <- confirmed[order(confirmed$pvalue, -abs(confirmed$delta_pau), confirmed$pac_id,
+    method = "radix"), , drop = FALSE]
+  first <- !duplicated(confirmed[, c("gene_id", "call")])
+  labels <- limit_labels(confirmed[first, , drop = FALSE], "call")
   list(
     points = points,
     labels = labels,
@@ -436,8 +457,7 @@ volcano_data <- function(pacs) {
   )
 }
 
-# The first LABEL_LIMIT rows of each direction, keeping the rows' order, which
-# check_overlap also follows: an earlier label wins over a later one it covers.
+# The first LABEL_LIMIT rows of each direction, keeping the rows' order.
 limit_labels <- function(rows, direction) {
   rank <- stats::ave(seq_len(nrow(rows)), as.character(rows[[direction]]), FUN = seq_along)
   rows[rank <= LABEL_LIMIT, , drop = FALSE]
@@ -644,11 +664,76 @@ figure_theme <- function() {
       plot.title = element_text(face = "bold"),
       plot.title.position = "plot",
       plot.subtitle = element_text(colour = "grey25"),
+      plot.caption = element_text(colour = "grey35", hjust = 0, size = rel(0.85)),
+      plot.caption.position = "plot",
       legend.position = "bottom"
     )
 }
 
-plural <- function(count, word) paste(count, if (count == 1) word else paste0(word, "s"))
+# Legends stacked to the right of the panel, for one-panel figures, so any
+# number of keys fits.
+side_legends <- function() {
+  theme(legend.position = "right", legend.justification = "top")
+}
+
+# Legends one above the other under the panels, for figures whose panels
+# need the full width.
+stacked_legends <- function() {
+  theme(
+    legend.box = "vertical", legend.spacing.y = grid::unit(2, "pt"),
+    legend.margin = margin(1, 5.5, 1, 5.5)
+  )
+}
+
+# Whole numbers with thousands separators, as in 12,000.
+count_text <- function(values) {
+  text <- formatC(round(values), format = "f", digits = 0, big.mark = ",")
+  text[is.na(values)] <- NA_character_
+  text
+}
+
+plural <- function(count, word) {
+  paste(count_text(count), if (count == 1) word else paste0(word, "s"))
+}
+
+# Comparison titles for facet strips, each on two lines when it is longer than
+# STRIP_TITLE_LIMIT characters.
+strip_titles <- function(comparisons) {
+  titles <- stats::setNames(comparisons$title, comparisons$stem)
+  long <- nchar(titles) > STRIP_TITLE_LIMIT
+  if (any(long)) titles[long] <- grid_titles(comparisons)[long]
+  titles
+}
+
+# Text labels kept clear of each other and of their own points. Each starts
+# nudged off its point, by nudge_x and nudge_y in axis units (one value, or
+# one per row), so it ends joined to the point by a line instead of touching
+# it, and no label sits ambiguously between two points. A white halo keeps
+# them legible over other points. point_size is the size the points are drawn
+# at; colour is one color, or one for each row.
+repel_text <- function(data, mapping, point_size, nudge_y, nudge_x = 0, size = 2.4,
+                       colour = "grey10") {
+  ggrepel::geom_text_repel(
+    data = data, mapping = mapping, size = size, colour = colour, point.size = point_size,
+    bg.colour = "white", bg.r = 0.12, box.padding = 0.4, point.padding = 0.1, force = 2,
+    min.segment.length = 0, segment.colour = "grey40", segment.size = 0.25,
+    max.overlaps = Inf, max.time = Inf, max.iter = LABEL_ITERATIONS, seed = LABEL_SEED,
+    position = ggrepel::position_nudge_repel(x = nudge_x, y = nudge_y), show.legend = FALSE
+  )
+}
+
+# Breaks for a log count scale: powers of ten, or steps of 1 and 3, or 1, 2,
+# and 5, whichever is first to put three breaks in the range.
+density_breaks <- function(limits) {
+  exponents <- seq(floor(log10(limits[[1]])), ceiling(log10(limits[[2]])))
+  inside <- numeric()
+  for (steps in list(1, c(1, 3), c(1, 2, 5))) {
+    breaks <- sort(as.vector(outer(steps, 10^exponents)))
+    inside <- breaks[breaks >= limits[[1]] * (1 - 1e-9) & breaks <= limits[[2]] * (1 + 1e-9)]
+    if (length(inside) >= 3L) break
+  }
+  inside
+}
 
 placeholder_plot <- function(title, message) {
   ggplot() +
@@ -659,7 +744,9 @@ placeholder_plot <- function(title, message) {
 }
 
 # Uncalled PACs as grey points, or as a grey density in any panel with more
-# than UNCALLED_POINT_LIMIT of them. Capped points are triangles.
+# than UNCALLED_POINT_LIMIT of them. Capped points are triangles. The density
+# is on a log scale: a few bins near no change hold most PACs, and a linear
+# scale would leave the rest nearly white.
 uncalled_layers <- function(data, panel = NULL) {
   uncalled <- data[data$call == "none", , drop = FALSE]
   if (!nrow(uncalled)) return(list())
@@ -686,8 +773,10 @@ uncalled_layers <- function(data, panel = NULL) {
   if (any(crowded)) {
     layers <- c(layers, list(
       geom_bin_2d(data = uncalled[crowded, , drop = FALSE], bins = c(80, 60)),
-      scale_fill_gradient(low = "grey88", high = "grey35", name = "Uncalled PACs",
-        guide = guide_colourbar(order = 3))
+      scale_fill_gradient(
+        low = "grey88", high = "grey25", transform = "log10", breaks = density_breaks,
+        labels = count_text, name = "Uncalled PACs\nper bin", guide = guide_colourbar(order = 3)
+      )
     ))
   }
   layers
@@ -711,9 +800,9 @@ called_points <- function(data) {
 # Legends in a fixed order: direction, then call type, then any density.
 call_scales <- function() {
   list(
-    scale_colour_manual(values = DIRECTION_COLORS, labels = CALL_DIRECTION_LABELS, name = NULL,
-      guide = guide_legend(order = 1)),
-    scale_shape_manual(values = MARK_SHAPES, name = NULL, guide = guide_legend(order = 2))
+    scale_colour_manual(values = DIRECTION_COLORS, labels = CALL_DIRECTION_LABELS,
+      name = "Direction", guide = guide_legend(order = 1)),
+    scale_shape_manual(values = MARK_SHAPES, name = "Call", guide = guide_legend(order = 2))
   )
 }
 
@@ -722,15 +811,15 @@ plot_volcano <- function(pacs, comparison, params, exploratory) {
   data <- volcano_data(pacs)
   calls <- pac_calls(pacs$event_type)
   subtitle <- sprintf(
-    "%s tested in %s, %d with a confirmed call",
+    "%s tested in %s; confirmed calls: %s up, %s down",
     plural(nrow(pacs), "PAC"), plural(length(unique(pacs$gene_id)), "gene"),
-    sum(calls %in% c("up", "down"))
+    count_text(sum(calls == "up")), count_text(sum(calls == "down"))
   )
   if (data$missing) {
-    subtitle <- paste0(subtitle, sprintf(
-      "\n%s without a p-value, not shown (%d of them candidate calls)",
-      plural(data$missing, "PAC"), data$missing_candidates
-    ))
+    subtitle <- paste0(subtitle, "\nNot shown: ", plural(data$missing, "PAC"), " without a p-value")
+    if (data$missing_candidates) {
+      subtitle <- paste0(subtitle, ", including ", plural(data$missing_candidates, "candidate call"))
+    }
   }
   if (exploratory) {
     subtitle <- paste0(subtitle, "\nExploratory comparison: gained and lost calls are candidates only")
@@ -739,26 +828,37 @@ plot_volcano <- function(pacs, comparison, params, exploratory) {
   largest <- max(abs(data$points$delta_pau))
   limit <- min(1, max(0.25, ceiling(round(largest * 10, 6)) / 10))
   threshold <- params$min_abs_delta_pau
+  caption <- sprintf(
+    "Dashed lines: a change of %s either way, the smallest a call can have (min_abs_delta_pau).",
+    format(threshold)
+  )
+  if (any(data$points$capped)) {
+    caption <- paste0(caption, "\nTriangles: p-values of 0, drawn just above the smallest finite one.")
+  }
   ggplot(data$points, aes(x = delta_pau, y = neg_log10_p)) +
     uncalled_layers(data$points) +
     geom_vline(xintercept = c(-threshold, threshold), linetype = "dashed", colour = "grey50",
       linewidth = 0.3) +
     geom_point(data = called_points(data$points), aes(colour = direction, shape = mark),
       size = 1.6) +
-    geom_text(data = data$labels, aes(label = gene_name), size = 2.4, vjust = -0.7,
-      check_overlap = TRUE) +
+    repel_text(data$labels, aes(label = gene_name), point_size = 1.6,
+      nudge_y = 0.04 * max(data$points$neg_log10_p)) +
     call_scales() +
+    # Room above the most significant PACs for their labels.
+    scale_y_continuous(expand = expansion(mult = c(0.03, 0.1))) +
     coord_cartesian(xlim = c(-limit, limit)) +
     expand_limits(y = 0) +
     labs(
       title = comparison$title,
       subtitle = subtitle,
+      caption = caption,
       x = ascii_text(sprintf(
         "Change in PAU (%s - %s)", comparison$condition, comparison$control_condition
       )),
       y = "-log10 PAC p-value"
     ) +
-    figure_theme()
+    figure_theme() +
+    side_legends()
 }
 
 plot_distal_usage <- function(result, comparison, params) {
@@ -777,63 +877,72 @@ plot_distal_usage <- function(result, comparison, params) {
   # Genes without a pattern first, under the others.
   shown <- shown[order(shown$pattern != "none", shown$gene_id, method = "radix"), ,
     drop = FALSE]
-  subtitle <- plural(nrow(table), "gene")
-  if (result$without_distal) {
-    subtitle <- paste0(subtitle, sprintf(", and %d without a distal PAC", result$without_distal))
-  }
-  if (any(!fitted)) {
-    subtitle <- paste0(subtitle, sprintf("; %d without fitted usage, not shown", sum(!fitted)))
-  }
-  subtitle <- paste0(
-    subtitle, "\nDistal PAC: the most 3' tested PAC in a last exon or downstream"
-  )
-  if (any(flagged)) {
-    subtitle <- paste0(subtitle, "\nDiamonds: pattern only from PACs flagged for internal priming")
-  }
-  labels <- distal_labels(shown)
-  labels$gene_name <- ascii_text(labels$gene_name)
-  counts <- sprintf(
-    "Distal PAC up: %d\nDistal PAC down: %d",
-    sum(table$direction == "distal_up"), sum(table$direction == "distal_down")
+  subtitle <- sprintf(
+    "Distal PAC calls in %s: %s up, %s down", plural(nrow(table), "gene"),
+    count_text(sum(table$direction == "distal_up")),
+    count_text(sum(table$direction == "distal_down"))
   )
   candidates <- sum(table$direction %in% c("distal_up_candidate", "distal_down_candidate"))
-  if (candidates) counts <- paste0(counts, sprintf("\nCandidates: %d", candidates))
+  if (candidates) subtitle <- paste0(subtitle, ", ", plural(candidates, "candidate"))
+  subtitle <- paste0(
+    subtitle, "\nDistal PAC: the gene's most 3' tested PAC in a last exon or downstream"
+  )
+  hidden <- c(
+    if (result$without_distal) paste(plural(result$without_distal, "gene"), "without a distal PAC"),
+    if (any(!fitted)) paste(count_text(sum(!fitted)), "without fitted usage")
+  )
+  if (length(hidden)) subtitle <- paste0(subtitle, "\nNot shown: ", paste(hidden, collapse = ", "))
+  labels <- distal_labels(shown)
+  labels$gene_name <- ascii_text(labels$gene_name)
+  # The labelled genes sit on the edges, the largest changes. Each label
+  # starts toward the middle of its own half of the plot, (1/3, 2/3) above
+  # the diagonal for a rise and (2/3, 1/3) below it for a fall, where few
+  # genes lie.
+  rise <- labels$direction == "distal_up"
+  toward_x <- ifelse(rise, 1 / 3, 2 / 3) - labels$fitted_control_distal_pau
+  toward_y <- ifelse(rise, 2 / 3, 1 / 3) - labels$fitted_treatment_distal_pau
+  length <- pmax(sqrt(toward_x^2 + toward_y^2), 1e-9)
   threshold <- params$min_abs_delta_pau
+  caption <- sprintf(
+    "Solid line: no change. Dashed lines: a change of %s either way (min_abs_delta_pau).",
+    format(threshold)
+  )
+  if (any(flagged)) {
+    caption <- paste0(caption,
+      "\n* The gene's APA pattern comes only from PACs flagged for possible internal priming.")
+  }
   ggplot(shown, aes(x = fitted_control_distal_pau, y = fitted_treatment_distal_pau)) +
     geom_abline(slope = 1, intercept = 0, colour = "grey40", linewidth = 0.3) +
     geom_abline(slope = 1, intercept = c(-threshold, threshold), colour = "grey60",
       linetype = "dashed", linewidth = 0.3) +
     geom_point(aes(colour = pattern, shape = call), size = 1.6) +
-    geom_text(data = labels, aes(label = gene_name), size = 2.4, vjust = -0.7,
-      check_overlap = TRUE) +
-    annotate("text", x = 0.02, y = 0.98, hjust = 0, vjust = 1, size = 2.8, label = counts) +
+    repel_text(labels, aes(label = gene_name), point_size = 1.6,
+      nudge_x = 0.05 * toward_x / length, nudge_y = 0.05 * toward_y / length) +
     scale_colour_manual(
       values = APA_COLORS, labels = APA_CLASSES, name = "APA pattern",
-      guide = guide_legend(order = 1, ncol = 2)
+      guide = guide_legend(order = 1)
     ) +
-    scale_shape_manual(
-      values = DISTAL_SHAPES, name = "Distal PAC call", guide = guide_legend(order = 2, ncol = 2)
-    ) +
+    scale_shape_manual(values = DISTAL_SHAPES, name = "Distal PAC call",
+      guide = guide_legend(order = 2)) +
+    # The largest changes sit on the axes, so the margins hold their labels.
+    scale_x_continuous(expand = expansion(mult = 0.08)) +
+    scale_y_continuous(expand = expansion(mult = 0.08)) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
     labs(
       title = comparison$title,
       subtitle = subtitle,
+      caption = caption,
       x = ascii_text(sprintf("Distal PAC usage in %s (fitted PAU)", comparison$control_condition)),
       y = ascii_text(sprintf("Distal PAC usage in %s (fitted PAU)", comparison$condition))
     ) +
     figure_theme() +
-    # Two legends side by side would not fit the square figure; stacked, they
-    # are kept tight so the panel stays large.
-    theme(
-      legend.box = "vertical", legend.spacing.y = grid::unit(2, "pt"),
-      legend.key.spacing.y = grid::unit(0, "pt"), legend.margin = margin(0, 0, 0, 0)
-    )
+    side_legends()
 }
 
 plot_calls_by_gene_region <- function(counts, comparison) {
   tested <- counts$tested[counts$direction == "down"]
   if (!sum(tested)) return(placeholder_plot(comparison$title, "No tested PACs"))
-  labels <- sprintf("%s (n = %d)", GENE_REGIONS, tested)
+  labels <- sprintf("%s (n = %s)", GENE_REGIONS, count_text(tested))
   # Last exon at the top.
   counts$label <- factor(labels[as.integer(counts$gene_region)], levels = rev(labels))
   counts$signed <- ifelse(counts$direction == "down", -counts$count, counts$count)
@@ -846,7 +955,7 @@ plot_calls_by_gene_region <- function(counts, comparison) {
   plot <- ggplot(counts, aes(x = signed, y = label, fill = direction)) +
     geom_col(width = 0.6) +
     geom_vline(xintercept = 0, colour = "grey30", linewidth = 0.3) +
-    geom_text(data = shown, aes(label = count, hjust = ifelse(signed < 0, 1.3, -0.3)),
+    geom_text(data = shown, aes(label = count_text(count), hjust = ifelse(signed < 0, 1.3, -0.3)),
       size = 2.6) +
     scale_fill_manual(
       values = c(down = COLOR_DOWN, up = COLOR_UP),
@@ -854,7 +963,7 @@ plot_calls_by_gene_region <- function(counts, comparison) {
       name = NULL, drop = FALSE
     ) +
     scale_x_continuous(limits = c(-limit, limit), breaks = whole_breaks,
-      labels = function(breaks) format(abs(breaks), trim = TRUE)) +
+      labels = function(breaks) count_text(abs(breaks))) +
     labs(
       title = comparison$title,
       subtitle = "Confirmed PAC calls by gene region: lost usage left of zero, gained right",
@@ -878,6 +987,7 @@ count_axis <- function() {
       # pretty() can miss a whole number by a rounding error.
       round(values[abs(values - round(values)) < 1e-9])
     },
+    labels = count_text,
     expand = expansion(mult = c(0, 0.2))
   )
 }
@@ -901,7 +1011,7 @@ plot_pattern_bars <- function(patterns, comparisons) {
   totals <- stats::aggregate(count ~ comparison + support, data = patterns, FUN = sum)
   ggplot(patterns, aes(x = count, y = comparison, fill = pattern)) +
     geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
-    geom_text(data = totals, aes(x = count, y = comparison, label = count),
+    geom_text(data = totals, aes(x = count, y = comparison, label = count_text(count)),
       inherit.aes = FALSE, hjust = -0.3, size = 2.6) +
     facet_wrap(~support, scales = "free_x", labeller = as_labeller(PATTERN_SUPPORT_LABELS)) +
     scale_fill_manual(values = APA_COLORS, labels = APA_CLASSES, name = NULL, drop = FALSE) +
@@ -914,7 +1024,8 @@ plot_pattern_bars <- function(patterns, comparisons) {
       x = "Genes", y = NULL
     ) +
     figure_theme() +
-    theme(panel.spacing.x = grid::unit(1, "lines"))
+    # Room on the right for the last axis label, which the separator widens.
+    theme(panel.spacing.x = grid::unit(1, "lines"), plot.margin = margin(5.5, 14, 5.5, 5.5))
 }
 
 plot_event_bars <- function(counts, comparisons) {
@@ -922,7 +1033,7 @@ plot_event_bars <- function(counts, comparisons) {
   totals <- stats::aggregate(count ~ comparison + level, data = counts, FUN = sum)
   ggplot(counts, aes(x = count, y = comparison, fill = event)) +
     geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
-    geom_text(data = totals, aes(x = count, y = comparison, label = count),
+    geom_text(data = totals, aes(x = count, y = comparison, label = count_text(count)),
       inherit.aes = FALSE, hjust = -0.3, size = 2.6) +
     facet_wrap(~level, scales = "free_x") +
     scale_fill_manual(values = EVENT_COLORS, labels = EVENT_LABELS, name = NULL, drop = FALSE) +
@@ -935,18 +1046,20 @@ plot_event_bars <- function(counts, comparisons) {
       x = "Count", y = NULL
     ) +
     figure_theme() +
-    theme(panel.spacing.x = grid::unit(1, "lines"))
+    # Room on the right for the last axis label, which the separator widens.
+    theme(panel.spacing.x = grid::unit(1, "lines"), plot.margin = margin(5.5, 14, 5.5, 5.5))
 }
 
 plot_effect_vs_coverage <- function(data, comparisons, params, dropped) {
   title <- "Change in usage against gene coverage"
   if (!nrow(data)) return(placeholder_plot(title, "No tested PAC has reads in both groups"))
-  titles <- stats::setNames(comparisons$title, comparisons$stem)
-  subtitle <- "Dashed line: min_gene_total, the coverage a gained or lost call requires"
+  subtitle <- sprintf(
+    "Dashed line: min_gene_total (%s reads), the coverage a gained or lost call requires",
+    count_text(params$min_gene_total)
+  )
   if (dropped) {
-    subtitle <- paste0(subtitle, sprintf(
-      "\n%s without reads in both groups, not shown", plural(dropped, "PAC")
-    ))
+    subtitle <- paste0(subtitle, "\nNot shown: ", plural(dropped, "PAC"),
+      " without reads in both groups")
   }
   ggplot(data, aes(x = depth, y = delta_pau)) +
     uncalled_layers(data, panel = "comparison") +
@@ -955,15 +1068,16 @@ plot_effect_vs_coverage <- function(data, comparisons, params, dropped) {
       linewidth = 0.3) +
     geom_point(data = called_points(data), aes(colour = direction, shape = mark), size = 1.2) +
     call_scales() +
-    scale_x_log10() +
+    scale_x_log10(labels = count_text) +
     facet_wrap(~comparison, ncol = min(3, nrow(comparisons)), drop = FALSE,
-      labeller = as_labeller(titles)) +
+      labeller = as_labeller(strip_titles(comparisons))) +
     coord_cartesian(ylim = c(-1, 1)) +
     labs(
       title = title, subtitle = subtitle,
       x = "Reads at the gene in the less-covered group", y = "Change in PAU"
     ) +
-    figure_theme()
+    figure_theme() +
+    stacked_legends()
 }
 
 # Inches rounded up to a whole eighth.
@@ -1013,14 +1127,20 @@ plot_pattern_grid <- function(table, comparisons) {
   cells$mark <- paste0(ifelse(several, "+", ""), ifelse(first_pattern_flagged(cells$value), "*", ""))
   marked <- cells[cells$mark != "", , drop = FALSE]
   marked$ink <- ifelse(dark[as.character(marked$fill)], "white", "black")
-  subtitle <- sprintf("%s with a pattern in 2 or more comparisons", plural(shared, "gene"))
+  subtitle <- sprintf("%s with a pattern in two or more comparisons", plural(shared, "gene"))
   if (shared > GRID_GENE_LIMIT) {
-    subtitle <- paste0(subtitle, sprintf("\nThe first %d are shown; the table lists all",
-      GRID_GENE_LIMIT))
+    subtitle <- paste0(subtitle, sprintf(
+      "; the %d shared by the most are shown", GRID_GENE_LIMIT
+    ))
   }
-  subtitle <- paste0(
-    subtitle, "\n+ marks two or more patterns in one comparison",
-    "\n* marks a pattern only from flagged PACs"
+  notes <- c(
+    if (any(grepl("+", marked$mark, fixed = TRUE))) {
+      "+ Two or more patterns in the comparison; the cell shows the first."
+    },
+    if (any(grepl("*", marked$mark, fixed = TRUE))) {
+      "* The pattern comes only from PACs flagged for possible internal priming."
+    },
+    "apa_patterns_by_comparison.tsv.gz has every tested gene's patterns."
   )
   ggplot(cells, aes(x = comparison, y = gene_id)) +
     # show.legend = TRUE draws keys for patterns absent from the drawn genes.
@@ -1033,7 +1153,8 @@ plot_pattern_grid <- function(table, comparisons) {
     scale_y_discrete(labels = stats::setNames(ascii_text(shown$gene_name), shown$gene_id),
       expand = c(0, 0)) +
     guides(fill = guide_legend(nrow = 3)) +
-    labs(title = title, subtitle = subtitle, x = NULL, y = NULL) +
+    labs(title = title, subtitle = subtitle, caption = paste(notes, collapse = "\n"),
+      x = NULL, y = NULL) +
     figure_theme() +
     theme(
       panel.grid = element_blank(),
@@ -1042,54 +1163,116 @@ plot_pattern_grid <- function(table, comparisons) {
     )
 }
 
-plot_concordance <- function(data, pairs, summary, all_pairs) {
+# The concordance figure is a matrix with a panel for each drawn pair: its
+# first comparison names the column, and its second the row. Pairs list the
+# earlier comparison first, so the panels fill the lower triangle.
+concordance_grid <- function(pairs, comparisons) {
+  stems <- comparisons$stem
+  list(
+    columns = stems[stems %in% pairs$comparison_a],
+    rows = stems[stems %in% pairs$comparison_b]
+  )
+}
+
+# Inches for the matrix: each panel square, and wide enough for the longest
+# line of a strip title.
+concordance_size <- function(pairs, comparisons) {
+  if (!nrow(pairs)) return(c(width = 7.5, height = 3.5))
+  grid <- concordance_grid(pairs, comparisons)
+  lines <- unlist(strsplit(grid_titles(comparisons), "\n", fixed = TRUE))
+  side <- max(1.5, 0.06 * max(nchar(lines)) + 0.25)
+  c(
+    width = eighths(max(5.5, 1 + side * length(grid$columns))),
+    height = eighths(2.25 + side * length(grid$rows))
+  )
+}
+
+plot_concordance <- function(data, pairs, summary, all_pairs, comparisons) {
   title <- "Concordance between comparisons"
   if (!all_pairs) return(placeholder_plot(title, "Only one comparison"))
   if (!nrow(pairs)) {
     return(placeholder_plot(title, "No pair shares a control or a condition"))
   }
-  labels <- stats::setNames(paste0("x: ", pairs$title_a, "\ny: ", pairs$title_b), pairs$pair)
+  grid <- concordance_grid(pairs, comparisons)
+  # Each layer's rows carry their panel's column and row, so a layer draws in
+  # the drawn pairs' panels only, and the matrix's other cells stay empty.
+  place <- function(rows, pair) {
+    index <- match(as.character(pair), pairs$pair)
+    rows$column <- factor(pairs$comparison_a[index], levels = grid$columns)
+    rows$row <- factor(pairs$comparison_b[index], levels = grid$rows)
+    rows
+  }
   shown <- data[data$pair %in% pairs$pair, , drop = FALSE]
   shown$pair <- factor(as.character(shown$pair), levels = pairs$pair)
+  shown <- place(shown, shown$pair)
+  cells <- place(data.frame(pair = pairs$pair, low = -Inf, high = Inf, zero = 0, up = 1,
+    down = -1, stringsAsFactors = FALSE), pairs$pair)
   notes <- summary[match(pairs$pair, paste(summary$comparison_a, summary$comparison_b,
     sep = "|")), , drop = FALSE]
-  notes$pair <- factor(pairs$pair, levels = pairs$pair)
-  notes$label <- sprintf("r = %s\nn = %d",
-    ifelse(is.na(notes$pearson_r), "NA", sprintf("%.2f", notes$pearson_r)), notes$shared_pacs)
+  notes <- place(notes, pairs$pair)
+  notes$label <- sprintf("r = %s\nn = %s",
+    ifelse(is.na(notes$pearson_r), "NA", sprintf("%.2f", notes$pearson_r)),
+    count_text(notes$shared_pacs))
   subtitle <- paste0(
-    "Change in PAU at PACs tested in both comparisons. Comparisons that share a\n",
-    "control correlate positively through its estimate alone, and chained ones negatively"
+    "Change in PAU at the PACs both comparisons tested. A shared control makes\n",
+    "a pair correlate positively through its estimate alone, and a chain negatively"
   )
   if (nrow(pairs) < all_pairs) {
     subtitle <- paste0(subtitle, sprintf(
-      "\n%d of %d pairs shown, those sharing a control or a condition; the matrix has all",
+      "\n%d of %d pairs shown, those sharing a control or a condition; the matrix figure has all",
       nrow(pairs), all_pairs
     ))
   }
   called <- shown[shown$call != "none", , drop = FALSE]
   called_layers <- if (nrow(called)) {
     list(
-      geom_point(data = called, aes(colour = call), size = 1.2),
+      geom_point(data = called, aes(colour = call), size = 0.9),
       scale_colour_manual(
         values = CONCORDANCE_COLORS,
         labels = c(both = "Confirmed call in both", one = "Confirmed call in one"),
-        name = NULL, guide = guide_legend(order = 1)
+        name = NULL, guide = guide_legend(order = 1, override.aes = list(size = 1.6))
       )
     )
   }
+  whole_panel <- aes(xmin = low, xmax = high, ymin = low, ymax = high)
+  titles <- grid_titles(comparisons)
   ggplot(shown, aes(x = delta_a, y = delta_b)) +
+    # The panel's background and, last, its border, drawn as layers because
+    # the theme would draw them in the empty cells too.
+    geom_rect(data = cells, mapping = whole_panel, inherit.aes = FALSE, fill = "white") +
+    geom_hline(data = cells, aes(yintercept = zero), colour = "grey88", linewidth = 0.3) +
+    geom_vline(data = cells, aes(xintercept = zero), colour = "grey88", linewidth = 0.3) +
     uncalled_layers(shown, panel = "pair") +
-    geom_abline(slope = 1, intercept = 0, colour = "grey40", linewidth = 0.3) +
-    geom_abline(slope = -1, intercept = 0, colour = "grey60", linetype = "dashed",
+    geom_abline(data = cells, aes(slope = up, intercept = zero), colour = "grey40",
       linewidth = 0.3) +
+    geom_abline(data = cells, aes(slope = down, intercept = zero), colour = "grey60",
+      linetype = "dashed", linewidth = 0.3) +
     called_layers +
-    geom_text(data = notes, aes(x = -0.95, y = 0.95, label = label), inherit.aes = FALSE,
-      hjust = 0, vjust = 1, size = 2.5) +
-    facet_wrap(~pair, ncol = 3, drop = FALSE, labeller = as_labeller(labels)) +
+    geom_label(data = notes, aes(x = -1.05, y = 1.05, label = label), inherit.aes = FALSE,
+      hjust = 0, vjust = 1, size = 2.2, lineheight = 0.95, fill = "white",
+      border.colour = NA, label.padding = grid::unit(1.5, "pt")) +
+    geom_rect(data = cells, mapping = whole_panel, inherit.aes = FALSE, fill = NA,
+      colour = "grey20", linewidth = 0.5) +
+    facet_grid(rows = vars(row), cols = vars(column), switch = "both",
+      labeller = labeller(row = titles, column = titles)) +
+    # Three breaks, so neighbouring panels' tick labels stay apart.
+    scale_x_continuous(breaks = c(-1, 0, 1)) +
+    scale_y_continuous(breaks = c(-1, 0, 1)) +
     coord_equal(xlim = c(-1, 1), ylim = c(-1, 1)) +
-    labs(title = title, subtitle = subtitle, x = "Change in PAU, x comparison",
-      y = "Change in PAU, y comparison") +
-    figure_theme()
+    labs(
+      title = title, subtitle = subtitle,
+      caption = "Solid lines: y = x. Dashed lines: y = -x.",
+      x = "Change in PAU, comparison in the column",
+      y = "Change in PAU, comparison in the row"
+    ) +
+    figure_theme() +
+    stacked_legends() +
+    theme(
+      panel.background = element_blank(), panel.border = element_blank(),
+      panel.grid = element_blank(), panel.spacing = grid::unit(6, "pt"),
+      strip.placement = "outside", strip.text = element_text(size = rel(0.75)),
+      strip.text.y.left = element_text(angle = 90)
+    )
 }
 
 # Pearson r for every ordered pair of comparisons, with 1 on the diagonal.
@@ -1104,17 +1287,24 @@ concordance_matrix <- function(summary, comparisons) {
   grid
 }
 
+# Each pair once, below the diagonal: the earlier comparison names the column
+# and the later the row, as on the concordance figure.
 plot_concordance_matrix <- function(summary, comparisons) {
   title <- "Correlation between comparisons"
   if (nrow(comparisons) < 2) return(placeholder_plot(title, "Only one comparison"))
   grid <- concordance_matrix(summary, comparisons)
+  stems <- comparisons$stem
+  grid <- grid[match(grid$a, stems) < match(grid$b, stems), , drop = FALSE]
   grid$label <- ifelse(is.na(grid$r), "NA", sprintf("%.2f", grid$r))
-  grid$a <- factor(grid$a, levels = comparisons$stem)
-  grid$b <- factor(grid$b, levels = rev(comparisons$stem))
+  # White figures on the darkest cells.
+  grid$ink <- ifelse(!is.na(grid$r) & abs(grid$r) > 0.6, "white", "black")
+  grid$a <- factor(grid$a, levels = stems[-length(stems)])
+  grid$b <- factor(grid$b, levels = rev(stems[-1]))
   titles <- grid_titles(comparisons)
   ggplot(grid, aes(x = a, y = b, fill = r)) +
     geom_tile(colour = "white") +
-    geom_text(aes(label = label), size = 2.8) +
+    geom_text(aes(label = label, colour = ink), size = 2.8) +
+    scale_colour_identity() +
     scale_fill_gradient2(low = COLOR_DOWN, mid = "white", high = COLOR_UP, midpoint = 0,
       limits = c(-1, 1), name = "Pearson r", na.value = "grey88") +
     scale_x_discrete(labels = titles, expand = c(0, 0)) +
@@ -1123,14 +1313,14 @@ plot_concordance_matrix <- function(summary, comparisons) {
     labs(
       title = title,
       subtitle = paste0(
-        "Pearson r of the change in PAU at shared PACs.\n",
+        "Pearson r of the change in PAU at the PACs both comparisons tested.\n",
         "Shared controls and chains correlate by design"
       ),
       x = NULL, y = NULL
     ) +
     figure_theme() +
     theme(
-      panel.grid = element_blank(),
+      panel.grid = element_blank(), panel.border = element_blank(),
       axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
     )
 }
@@ -1149,25 +1339,45 @@ plot_pau_pca <- function(pca, params) {
     conditions
   )
   pca$condition <- factor(pca$condition, levels = conditions)
-  pca$label <- ascii_text(pca$sample_id)
+  pca$label <- ascii_text(sample_labels(pca$sample_id, as.character(pca$condition)))
   subtitle <- sprintf(
     "Observed PAU at %s in %s with at least %s reads in every sample",
     plural(attr(pca, "pacs"), "PAC"), plural(attr(pca, "genes"), "gene"),
-    format(params$min_gene_total)
+    count_text(params$min_gene_total)
   )
+  caption <- if (any(pca$label != ascii_text(pca$sample_id))) {
+    "Labels: sample IDs without their condition's name, which the color gives."
+  }
+  # Each label in a darker shade of its point's color, so the pale colors
+  # stay legible as text.
+  shade <- grDevices::col2rgb(colors[as.character(pca$condition)]) * 0.7
+  ink <- grDevices::rgb(shade[1, ], shade[2, ], shade[3, ], maxColorValue = 255)
   ggplot(pca, aes(x = PC1, y = PC2, colour = condition, shape = condition)) +
     geom_point(size = 2.2) +
-    geom_text(aes(label = label), size = 2.3, vjust = -0.9, show.legend = FALSE) +
+    repel_text(pca, aes(label = label), point_size = 2.2, size = 2.3, colour = ink,
+      nudge_y = 0.04 * max(diff(range(pca$PC2)), 1e-9)) +
     scale_colour_manual(values = colors, labels = ascii_text(conditions), name = NULL) +
     scale_shape_manual(values = shapes, labels = ascii_text(conditions), name = NULL) +
-    scale_x_continuous(expand = expansion(mult = 0.15)) +
-    scale_y_continuous(expand = expansion(mult = 0.15)) +
+    scale_x_continuous(expand = expansion(mult = 0.1)) +
+    scale_y_continuous(expand = expansion(mult = 0.1)) +
     labs(
-      title = title, subtitle = subtitle,
+      title = title, subtitle = subtitle, caption = caption,
       x = sprintf("PC1 (%.1f%% of variance)", 100 * pca$pc1_variance_fraction[[1]]),
       y = sprintf("PC2 (%.1f%% of variance)", 100 * pca$pc2_variance_fraction[[1]])
     ) +
     figure_theme()
+}
+
+# Samples' labels on the PCA: each ID without its condition's name and the
+# separator after it, as rep1 for AS_NT_DMSO_rep1, when every ID starts that
+# way. Otherwise every label is the full ID, so the two forms never mix.
+sample_labels <- function(sample_ids, conditions) {
+  width <- nchar(conditions)
+  separator <- substr(sample_ids, width + 1L, width + 1L)
+  shortened <- startsWith(sample_ids, conditions) & separator %in% c("_", "-", ".") &
+    nchar(sample_ids) > width + 1L
+  if (!length(sample_ids) || !all(shortened)) return(sample_ids)
+  substring(sample_ids, width + 2L)
 }
 
 # Draws a ggplot, or a figure stack with each plot in its own row.
@@ -1229,11 +1439,11 @@ run_figures_mode <- function(arguments) {
       any(genes$exploratory_insufficient_replicates)
     output <- file.path(arguments$output_dir, stem)
     save_figure(plot_volcano(pacs, comparison, params, exploratory), paste0(output, ".volcano"),
-      6.5, 5)
+      7.5, 5.5)
     distal <- distal_usage_table(pacs, coordinates, genes)
     write_gzip_tsv(distal$table[, DISTAL_COLUMNS], paste0(output, ".distal_usage.tsv.gz"))
     save_figure(plot_distal_usage(distal, comparison, params), paste0(output, ".distal_usage"),
-      5.5, 5.5)
+      7, 5.75)
     save_figure(plot_calls_by_gene_region(gene_region_counts(pacs), comparison),
       paste0(output, ".calls_by_gene_region"), 6.5, 3.5)
   }
@@ -1246,7 +1456,7 @@ run_figures_mode <- function(arguments) {
   rows <- ceiling(nrow(comparisons) / min(3, nrow(comparisons)))
   save_figure(
     plot_effect_vs_coverage(coverage, comparisons, params, dropped),
-    file.path(arguments$output_dir, "effect_vs_coverage"), 7.5, 0.75 + 2.5 * rows
+    file.path(arguments$output_dir, "effect_vs_coverage"), 7.5, 1.5 + 2.5 * rows
   )
   run_across_comparisons(arguments, params, samples, comparisons, pacs_tables, genes_tables)
 }
@@ -1266,8 +1476,9 @@ run_across_comparisons <- function(arguments, params, samples, comparisons, pacs
   pair_summary <- concordance_summary(pairs, pair_data)
   write_gzip_tsv(pair_summary, output("concordance.tsv.gz"))
   shown <- shown_pairs(pairs)
-  save_figure(plot_concordance(pair_data, shown, pair_summary, nrow(pairs)),
-    output("concordance"), 7.5, 1 + 2.5 * max(1, ceiling(nrow(shown) / 3)))
+  size <- concordance_size(shown, comparisons)
+  save_figure(plot_concordance(pair_data, shown, pair_summary, nrow(pairs), comparisons),
+    output("concordance"), size[["width"]], size[["height"]])
   side <- max(4.5, 2.5 + 0.5 * nrow(comparisons)) + labels
   save_figure(plot_concordance_matrix(pair_summary, comparisons), output("concordance_matrix"),
     side, side)
@@ -1283,11 +1494,12 @@ run_across_comparisons <- function(arguments, params, samples, comparisons, pacs
   save_figure(plot_pau_pca(pca, params), output("pau_pca"), 5.5, 5)
 }
 
-# Appends the ggplot2 version to a software-versions table, creating it with a
-# header when it does not exist yet.
-run_versions_mode <- function(arguments, version) {
+# Appends the ggplot2 and ggrepel versions to a software-versions table,
+# creating it with a header when it does not exist yet.
+run_versions_mode <- function(arguments, versions) {
   require_args(arguments, "output")
-  rows <- data.frame(software = "ggplot2", version = version, stringsAsFactors = FALSE)
+  rows <- data.frame(software = names(versions), version = unname(versions),
+    stringsAsFactors = FALSE)
   exists <- file.exists(arguments$output)
   utils::write.table(
     rows, arguments$output, sep = "\t", quote = FALSE, row.names = FALSE,
@@ -1297,10 +1509,10 @@ run_versions_mode <- function(arguments, version) {
 
 main <- function(argv) {
   arguments <- parse_args(argv)
-  version <- load_figure_packages()
+  versions <- load_figure_packages()
   switch(
     arguments$mode,
-    versions = run_versions_mode(arguments, version),
+    versions = run_versions_mode(arguments, versions),
     figures = run_figures_mode(arguments),
     stop("Unknown --mode: ", arguments$mode)
   )

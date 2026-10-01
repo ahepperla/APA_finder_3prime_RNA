@@ -19,4 +19,5 @@ dependencies:
   - bioconductor-stager
   - bioconductor-limma
   - r-ggplot2>=4.0
+  - r-ggrepel>=0.9.7
   - r-yaml
