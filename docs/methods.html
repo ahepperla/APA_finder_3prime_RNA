@@ -6,179 +6,367 @@
 <title>PACusage Methods and Rationale</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Schibsted+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 <style>
+/* Layout: a title block with the run details beside it, then a sticky
+   contents rail and the article. On wide screens each section sets its step
+   number and block labels as margin headings in a narrow side column, prose
+   keeps a readable measure, and tables, the figure, and the overview use the
+   main column's full width. Narrower screens stack the labels above their
+   text. The root size grows a little on wide screens, and the layout, set in
+   rem, grows with it. */
 :root {
-  --bg: #f5f7f4;
+  --paper: #fbfcfd;
   --surface: #ffffff;
-  --ink: #16201b;
-  --muted: #56635c;
-  --rule: #d5ddd7;
-  --accent: #1c6a46;
-  --accent-strong: #134f33;
-  --accent-soft: #e1ede6;
+  --ink: #141a24;
+  --muted: #5a6474;
+  --rule: #e1e5ec;
+  --rule-strong: #2b3341;
+  --accent: #1f4a8a;
+  --accent-strong: #15386c;
+  --accent-soft: #edf2fa;
+  --accent-line: #b9c9e3;
   --on-accent: #ffffff;
-  --warn: #875400;
-  --warn-soft: #f4e9d4;
-  --code-bg: #e9eeea;
-  --focus: #1c6a46;
+  --warn: #8a5200;
+  --warn-soft: #fbf4e5;
+  --warn-line: #ecd3a6;
+  --code-bg: #eff2f6;
+  --focus: #1f4a8a;
+  --font-text: "Source Serif 4", "Iowan Old Style", Charter, Georgia, serif;
+  --font-ui: "IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --rail: 15rem;
+  --side: 11rem;
+  --text: 41rem;
+  --column: 37rem;
+  --column-gap: 4rem;
+  --gutter: 24px;
+  --measure: 100%;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0e1311;
-    --surface: #151c19;
-    --ink: #e2e9e5;
-    --muted: #9ca9a2;
-    --rule: #2a352f;
-    --accent: #6cc496;
-    --accent-strong: #93d8b2;
-    --accent-soft: #1a2c22;
-    --on-accent: #0e1311;
-    --warn: #e3b662;
-    --warn-soft: #2a2416;
-    --code-bg: #1c2520;
-    --focus: #93d8b2;
+    --paper: #0f141b;
+    --surface: #141a23;
+    --ink: #e3e8ef;
+    --muted: #9ba6b6;
+    --rule: #263040;
+    --rule-strong: #c3ccd9;
+    --accent: #94b5ec;
+    --accent-strong: #bcd1f6;
+    --accent-soft: #18233a;
+    --accent-line: #3b5683;
+    --on-accent: #0f141b;
+    --warn: #e6b866;
+    --warn-soft: #272116;
+    --warn-line: #5a4626;
+    --code-bg: #1b2330;
+    --focus: #bcd1f6;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0e1311;
-  --surface: #151c19;
-  --ink: #e2e9e5;
-  --muted: #9ca9a2;
-  --rule: #2a352f;
-  --accent: #6cc496;
-  --accent-strong: #93d8b2;
-  --accent-soft: #1a2c22;
-  --on-accent: #0e1311;
-  --warn: #e3b662;
-  --warn-soft: #2a2416;
-  --code-bg: #1c2520;
-  --focus: #93d8b2;
+  --paper: #0f141b;
+  --surface: #141a23;
+  --ink: #e3e8ef;
+  --muted: #9ba6b6;
+  --rule: #263040;
+  --rule-strong: #c3ccd9;
+  --accent: #94b5ec;
+  --accent-strong: #bcd1f6;
+  --accent-soft: #18233a;
+  --accent-line: #3b5683;
+  --on-accent: #0f141b;
+  --warn: #e6b866;
+  --warn-soft: #272116;
+  --warn-line: #5a4626;
+  --code-bg: #1b2330;
+  --focus: #bcd1f6;
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; font-size: clamp(15px, 0.4vw + 11.3px, 18px); }
 body {
-  background: var(--bg);
+  margin: 0;
+  background: var(--paper);
   color: var(--ink);
-  font-family: "Literata", Georgia, "Times New Roman", serif;
-  font-size: 17px;
-  line-height: 1.62;
+  font-family: var(--font-text);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  font-optical-sizing: auto;
   font-variant-numeric: lining-nums;
   -webkit-font-smoothing: antialiased;
 }
 .page {
-  max-width: 1180px;
+  max-width: calc(var(--column) + 2 * var(--gutter));
   margin: 0 auto;
-  padding-inline: 20px;
-  padding-block: 44px 96px;
+  padding-inline: var(--gutter);
+  padding-block: 0 96px;
 }
-h1, h2, h3, h4, .label, .toc, table, figcaption, .meta, .stepper {
-  font-family: "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+h1 {
+  font-family: var(--font-text);
+  font-size: clamp(2.1rem, 4.4vw, 3rem);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.012em;
+  max-width: 22ch;
 }
-h1, h2, h3, h4 { text-wrap: balance; line-height: 1.2; margin: 0; }
-h1 { font-size: clamp(2rem, 4.2vw, 2.75rem); font-weight: 700; letter-spacing: -0.01em; }
-h2 { font-size: 1.55rem; font-weight: 700; }
-h3 { font-size: 1.1rem; font-weight: 600; }
-h4 { font-size: 0.98rem; font-weight: 600; }
+h2 {
+  font-family: var(--font-text);
+  font-size: 1.7rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.004em;
+}
+h3 { font-family: var(--font-ui); font-size: 1.01rem; font-weight: 600; line-height: 1.35; }
+h4 { font-family: var(--font-ui); font-size: 0.94rem; font-weight: 600; line-height: 1.35; }
 p { margin: 0; }
-a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-a:hover { color: var(--accent-strong); }
-a:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+em { font-style: italic; }
+a {
+  color: var(--accent);
+  text-decoration-line: underline;
+  text-decoration-color: var(--accent-line);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+a:hover { color: var(--accent-strong); text-decoration-color: currentColor; }
+a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
 code {
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.84em;
+  font-family: var(--font-mono);
+  font-size: 0.83em;
   background: var(--code-bg);
-  padding: 0.06em 0.32em;
-  border-radius: 3px;
+  padding: 0.08em 0.3em;
+  border-radius: 2px;
   overflow-wrap: anywhere;
 }
-em { font-style: italic; }
-
-/* Header */
-.masthead { display: grid; gap: 18px; padding-block: 0 36px; border-bottom: 1px solid var(--rule); margin-bottom: 40px; }
 .label {
-  font-size: 0.74rem;
+  font-family: var(--font-ui);
+  font-size: 0.73rem;
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--accent);
-}
-.lede { font-size: 1.12rem; max-width: 64ch; color: var(--ink); }
-.meta { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.86rem; color: var(--muted); }
-.meta span strong { color: var(--ink); font-weight: 600; }
-
-/* Layout */
-.layout { display: grid; gap: 40px; }
-.toc { font-size: 0.9rem; }
-.toc h2 { font-size: 0.74rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-bottom: 10px; }
-.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.toc a { display: grid; grid-template-columns: 2.1em 1fr; gap: 4px; padding: 3px 0; color: var(--ink); text-decoration: none; }
-.toc a:hover { color: var(--accent); }
-.toc .n { color: var(--muted); font-variant-numeric: tabular-nums; }
-.toc .group { margin-top: 10px; }
-@media (min-width: 980px) {
-  .layout { grid-template-columns: 220px minmax(0, 1fr); gap: 60px; }
-  .toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; max-height: calc(100vh - 48px); overflow-y: auto; padding-right: 4px; }
-}
-@media (max-width: 979px) {
-  .toc { border: 1px solid var(--rule); border-radius: 8px; padding: 16px 18px; background: var(--surface); }
-  .toc ol { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); column-gap: 18px; }
+  color: var(--muted);
 }
 
-article { min-width: 0; max-width: 72ch; display: grid; gap: 64px; }
-section { display: grid; gap: 16px; scroll-margin-top: 20px; }
-.section-head { display: grid; gap: 6px; }
-.prose { display: grid; gap: 14px; }
-.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: grid; gap: 8px; }
+/* Every grid column may shrink below its content, so a wide table or the
+   figure scrolls inside its own frame instead of widening the page. */
+.masthead, .layout, article > section, .section-head, .prose, .block, .callout,
+.principle, figure, .prose ul, .prose ol, .callout ul, .toc ol, .refs {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Title block */
+.masthead {
+  display: grid;
+  gap: 20px;
+  padding-block: 64px 36px;
+  margin-bottom: 48px;
+  border-bottom: 1px solid var(--rule);
+}
+.masthead .label { color: var(--accent); }
+.lede { font-size: 1.15rem; line-height: 1.55; max-width: 44rem; }
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 36px;
+  margin-top: 6px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-ui);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+.meta span { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.meta strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.meta code { font-size: 0.86em; }
+
+/* Contents rail */
+.layout { display: grid; gap: 36px; }
+.toc { font-family: var(--font-ui); font-size: 0.87rem; }
+.toc h2 {
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.toc a {
+  display: grid;
+  grid-template-columns: 2em minmax(0, 1fr);
+  gap: 6px;
+  padding: 4px 8px 4px 12px;
+  margin-left: -14px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  line-height: 1.35;
+  text-decoration: none;
+}
+.toc a:hover { color: var(--ink); }
+.toc a[aria-current] { color: var(--accent); border-left-color: var(--accent); }
+.toc .n { font-family: var(--font-mono); font-size: 0.78rem; padding-top: 0.12em; font-variant-numeric: tabular-nums; }
+.toc .group { margin-top: 12px; }
+@media (min-width: 1040px) {
+  .page { max-width: calc(var(--rail) + var(--column-gap) + var(--column) + 2 * var(--gutter)); }
+  .layout { grid-template-columns: var(--rail) minmax(0, var(--column)); gap: var(--column-gap); }
+  .toc {
+    position: sticky;
+    top: calc(env(safe-area-inset-top, 0px) + 28px);
+    align-self: start;
+    max-height: calc(100vh - 56px);
+    overflow-y: auto;
+    padding-left: 14px;
+  }
+}
+@media (max-width: 1039px) {
+  .toc { padding-block: 4px 18px; border-bottom: 1px solid var(--rule); }
+  .toc ol { grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); column-gap: 28px; }
+  .toc a { margin-left: 0; padding-left: 0; border-left: 0; }
+}
+
+/* Sections */
+article { min-width: 0; display: grid; }
+article > section {
+  display: grid;
+  gap: 18px;
+  padding-block: 44px;
+  border-top: 1px solid var(--rule);
+  scroll-margin-top: 12px;
+}
+article > section:first-child { border-top: 0; padding-top: 0; }
+.section-head { display: grid; gap: 8px; max-width: var(--measure); }
+.section-head .label { color: var(--accent); font-variant-numeric: tabular-nums; }
+.prose { display: grid; gap: 14px; max-width: var(--measure); }
+.prose ul, .prose ol { margin: 0; padding-left: 1.25em; display: grid; gap: 8px; }
 .prose li::marker { color: var(--muted); }
-
-.block { display: grid; gap: 10px; }
-.block > .label { color: var(--muted); }
+.block { display: grid; gap: 10px; min-width: 0; }
 
 .callout {
-  background: var(--warn-soft);
-  border-radius: 8px;
-  padding: 14px 18px;
+  max-width: var(--measure);
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  padding: 14px 18px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: 3px;
+  font-size: 0.97rem;
 }
 .callout .label { color: var(--warn); }
 .callout ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
-.callout.info { background: var(--accent-soft); }
+.callout.info { background: var(--accent-soft); border-color: var(--accent-line); }
 .callout.info .label { color: var(--accent); }
 
-/* Tables */
-.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; line-height: 1.45; }
-th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
-tr:last-child td { border-bottom: 0; }
-th { font-weight: 600; color: var(--muted); font-size: 0.76rem; letter-spacing: 0.06em; text-transform: uppercase; background: var(--bg); }
+/* Tables, ruled in the journal style */
+.table-wrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border-top: 1.5px solid var(--rule-strong);
+  border-bottom: 1.5px solid var(--rule-strong);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 9px 16px 9px 0;
+  border-bottom: 1px solid var(--rule);
+}
+th:first-child, td:first-child { padding-left: 2px; }
+th:last-child, td:last-child { padding-right: 2px; }
+thead th {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule-strong);
+}
+tbody th[scope="row"] { font-weight: 600; color: var(--ink); width: 11.5rem; }
+tbody tr:last-child > * { border-bottom: 0; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-td code { font-size: 0.82em; }
-caption { caption-side: top; text-align: left; padding: 10px 12px; font-weight: 600; font-size: 0.86rem; color: var(--ink); border-bottom: 1px solid var(--rule); }
+table code { background: none; padding: 0; font-size: 0.88em; color: var(--ink); overflow-wrap: break-word; }
+td:first-child code { white-space: nowrap; }
+caption {
+  caption-side: top;
+  text-align: left;
+  padding: 10px 2px 8px;
+  font-weight: 600;
+  font-size: 0.86rem;
+  border-bottom: 1px solid var(--rule);
+}
 
-/* Stepper */
-.stepper { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: stage; }
-.stepper li { display: grid; grid-template-columns: 2.4rem 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid var(--rule); }
-.stepper li:first-child { border-top: 0; }
-.stepper .num { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 1rem; line-height: 1.5; }
-.stepper .name { font-weight: 600; }
-.stepper .what { color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+/* Pipeline overview */
+.stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  columns: 2 15rem;
+  column-gap: 2.5rem;
+  font-family: var(--font-ui);
+}
+.stepper li {
+  display: grid;
+  grid-template-columns: 2.2rem minmax(0, 1fr);
+  gap: 10px;
+  padding-block: 12px;
+  border-top: 1px solid var(--rule);
+  break-inside: avoid;
+}
+.stepper .num {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--accent);
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
 .stepper a { color: inherit; text-decoration: none; }
+.stepper .name { font-weight: 600; font-size: 0.95rem; }
+.stepper .what { display: inline-block; margin-top: 2px; color: var(--muted); font-size: 0.87rem; line-height: 1.45; }
 .stepper a:hover .name { color: var(--accent); }
 
-.principles { display: grid; gap: 14px; }
-.principle { display: grid; gap: 6px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.principles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+  gap: 26px 2.5rem;
+}
+.principle {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding-top: 14px;
+  border-top: 1.5px solid var(--rule-strong);
+}
+.principle p { font-size: 0.98rem; }
 
 /* Figure */
 figure { margin: 0; display: grid; gap: 10px; }
-.figure-frame { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 10px 8px; }
-.figure-frame svg { display: block; width: 100%; min-width: 560px; height: auto; }
-figcaption { font-size: 0.84rem; color: var(--muted); line-height: 1.5; }
-svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
+.figure-frame {
+  overflow-x: auto;
+  background: var(--surface);
+  border-top: 1.5px solid var(--rule-strong);
+  border-bottom: 1px solid var(--rule);
+  padding: 18px 8px 10px;
+}
+.figure-frame svg { display: block; width: 100%; max-width: 860px; min-width: 560px; height: auto; margin-inline: auto; }
+figcaption { font-family: var(--font-ui); font-size: 0.84rem; line-height: 1.5; color: var(--muted); max-width: var(--measure); }
+figcaption strong { color: var(--ink); font-weight: 600; }
+svg text { font-family: var(--font-ui); }
 .s-ink { fill: var(--ink); }
 .s-muted { fill: var(--muted); }
 .s-line { stroke: var(--ink); }
@@ -191,19 +379,92 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
 .s-warn-stroke { stroke: var(--warn); }
 .s-accent-fill { fill: var(--accent); }
 
-.formula { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; overflow-x: auto; white-space: pre; line-height: 1.7; }
-
-.refs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 0.9rem; line-height: 1.5; }
-.refs li { scroll-margin-top: 20px; padding-left: 1.4em; text-indent: -1.4em; }
-.refs li:target { background: var(--accent-soft); border-radius: 4px; }
-.cite { white-space: nowrap; }
-.footer-note { font-size: 0.86rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 18px; }
-
-@media (max-width: 520px) {
-  body { font-size: 16px; }
-  th, td { padding: 8px 9px; }
+.formula {
+  max-width: var(--measure);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1.7;
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--code-bg);
+  border-radius: 2px;
+  padding: 14px 18px;
 }
-@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+
+.refs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 0.92rem; line-height: 1.5; }
+.refs li { scroll-margin-top: 20px; padding-left: 1.6em; text-indent: -1.6em; }
+.refs li:target { background: var(--accent-soft); }
+.refs a { overflow-wrap: anywhere; }
+.cite { white-space: nowrap; }
+a.cite { text-decoration: none; }
+a.cite:hover { text-decoration: underline; }
+.footer-note {
+  max-width: var(--measure);
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-ui);
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+@media (min-width: 1200px) {
+  :root { --gutter: 40px; --measure: var(--text); }
+  .page { max-width: 1560px; }
+  .layout { grid-template-columns: var(--rail) minmax(0, 1fr); }
+  .masthead { grid-template-columns: minmax(0, 1fr) minmax(0, 24rem); column-gap: 4rem; align-items: end; }
+  .masthead > :not(.meta) { grid-column: 1; }
+  .masthead .meta {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 0;
+    padding: 4px 0 4px 2rem;
+    border-top: 0;
+    border-left: 1px solid var(--rule);
+  }
+  article > section {
+    grid-template-columns: [side] var(--side) [main] minmax(0, 1fr);
+    column-gap: 2rem;
+  }
+  article > section > * { grid-column: main; }
+  article > section > .section-head,
+  article > section > .block { display: contents; }
+  .section-head > :not(.label), .block > :not(.label) { grid-column: main; }
+  .section-head > .label, .block > .label {
+    grid-column: side;
+    align-self: start;
+    text-wrap: balance;
+  }
+  .block > .label { padding-top: 0.42rem; }
+  .section-head > .label { padding-top: 0.78rem; font-size: 0.78rem; }
+}
+@media (max-width: 560px) {
+  :root { --gutter: 16px; }
+  body { font-size: 16px; }
+  .cite { white-space: normal; }
+  .masthead { padding-block: 40px 28px; margin-bottom: 32px; }
+  article > section { padding-block: 34px; }
+  th, td { padding-right: 12px; }
+  tbody th[scope="row"] { width: auto; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+@media print {
+  :root, :root:not([data-theme="light"]), :root[data-theme="dark"] {
+    --paper: #ffffff; --surface: #ffffff; --ink: #000000; --muted: #3a3a3a;
+    --rule: #bdbdbd; --rule-strong: #000000; --accent: #000000; --accent-strong: #000000;
+    --accent-soft: #f0f0f0; --accent-line: #9a9a9a; --warn: #000000; --warn-soft: #f5f5f5;
+    --warn-line: #bdbdbd; --code-bg: #f0f0f0;
+    color-scheme: light;
+  }
+  body { font-size: 10.5pt; }
+  .toc { display: none; }
+  .layout { display: block; }
+  .masthead { padding-block: 0 18px; }
+  article > section { padding-block: 18px; }
+  .table-wrap, figure, .callout, .formula { break-inside: avoid; }
+  a { text-decoration: none; }
+}
 </style>
 </head>
 <body>
@@ -213,8 +474,10 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
     <h1>PACusage methods and rationale</h1>
     <p class="lede">PACusage finds polyadenylation site clusters (PACs) in 3′-end RNA-seq alignments, counts the reads at each one, and tests every treatment against its declared control for changes in how a gene's reads are shared among its PACs. This document goes through the pipeline in the order it runs. For each step it says what the step does, which defaults it uses, and why, with the statistical result, biological observation, or community standard behind the choice. Limitations and open questions for reviewers are collected at the end.</p>
     <div class="meta">
-      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA, commit <code>941a66a</code></span>
-      <span><strong>Date</strong> 29 September 2026</span>
+      <span><strong>Version</strong> PACusage 0.4.0</span>
+      <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA</span>
+      <span><strong>Commit</strong> <code>941a66a</code></span>
+      <span><strong>Date</strong> 30 September 2026</span>
       <span><strong>Statistics</strong> DRIMSeq 1.38.0 (pinned), stageR, limma</span>
       <span><strong>Execution</strong> Nextflow DSL2, Apptainer, Slurm</span>
     </div>
@@ -258,7 +521,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
         <div class="principles">
           <div class="principle">
             <h3>Calibrate the protocol before calling any PAC</h3>
-            <p>3′-end protocols place read ends differently relative to the cleavage site. Assays that keep the transcript–poly(A) junction report the site at nucleotide resolution. Oligo(dT)-primed tag protocols such as QuantSeq <a class="cite" href="#ref-moll2014">(Moll et al., 2014)</a> produce reads that end upstream of the site, with a protocol-specific spread, and PACusage's Plasmidsaurus profile treats that assay the same way. PACusage measures this behavior against annotated transcript ends in each run and uses the measured offset distribution, instead of assuming one.</p>
+            <p>3′-end protocols place read ends differently relative to the cleavage site. Assays that keep the transcript–poly(A) junction report the site at nucleotide resolution. Oligo(dT)-primed tag protocols whose reads run toward the poly(A) tail, such as the forward-reading edition of QuantSeq <a class="cite" href="#ref-moll2014">(Moll et al., 2014)</a>, produce reads that end upstream of the site, with a protocol-specific spread, and PACusage's Plasmidsaurus profile treats that assay the same way. PACusage measures this behavior against annotated transcript ends in each run and uses the measured offset distribution, instead of assuming one.</p>
           </div>
           <div class="principle">
             <h3>Define the features once, freeze them, then count and test</h3>
@@ -344,7 +607,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
           <div class="prose">
             <ul>
               <li>On a cluster, an error found in the first minutes costs minutes. The same error found after the alignment scan costs hours.</li>
-              <li>Two replicates is the minimum for estimating between-replicate variability, which the Dirichlet-multinomial model needs (Step 9). Power and error control improve substantially with more replicates <a class="cite" href="#ref-schurch2016">(Schurch et al., 2016)</a>, so fewer than two is allowed only as a labeled exploratory run.</li>
+              <li>Two replicates is the minimum for estimating between-replicate variability, which the Dirichlet-multinomial model needs (Step 9). In gene-level differential expression, power rises substantially with more replicates <a class="cite" href="#ref-schurch2016">(Schurch et al., 2016)</a>, so fewer than two is allowed only as a labeled exploratory run.</li>
               <li>An acyclic control graph gives every comparison one well-defined baseline.</li>
               <li>Comparing contig names and lengths catches alignments made against a different build or naming scheme, which would otherwise fail silently or misplace reads. Contig name differences can be bridged with <code>chromosome_aliases</code>.</li>
             </ul>
@@ -369,7 +632,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
           <p class="label">Why</p>
           <div class="prose">
             <ul>
-              <li>The <code>@HD SO</code> tag is the SAM specification's declaration of sort order <a class="cite" href="#ref-li2009">(Li et al., 2009)</a>. Coordinate order plus an index gives region access in the samtools/htslib toolchain <a class="cite" href="#ref-danecek2021">(Danecek et al., 2021)</a>.</li>
+              <li>The <code>@HD SO</code> tag is the SAM specification's declaration of sort order <a class="cite" href="#ref-samspec">(SAM/BAM Format Specification Working Group)</a>. A coordinate-sorted BAM file can be indexed for fast retrieval of any region <a class="cite" href="#ref-li2009">(Li et al., 2009)</a>, and samtools and htslib provide that indexing <a class="cite" href="#ref-danecek2021">(Danecek et al., 2021)</a>.</li>
               <li>Sources are often shared, read-only, or archived. htslib writes a missing <code>.fai</code> next to whatever path it is given, so the pipeline indexes a link inside the work directory, which guarantees that nothing is written next to the source.</li>
               <li>Checksums tie every result to exact inputs, and the size and time checks catch a source being replaced mid-run.</li>
               <li><code>--no-PG</code> keeps the task's absolute path out of the sorted file's header, which reruns need in order to be byte-identical.</li>
@@ -378,7 +641,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
         </div>
         <div class="callout info">
           <p class="label">Upstream of the pipeline</p>
-          <p>Trimming, alignment, and duplicate handling happen before PACusage. The pipeline drops only reads already flagged as duplicates (SAM flag 0x400). For 3′ tag libraries, flag duplicates only with UMIs, for example with UMI-tools <a class="cite" href="#ref-smith2017">(Smith et al., 2017)</a>. Many independent molecules end at the same 3′ position in a highly expressed gene, so duplicate marking by position alone removes genuine reads and flattens the signal the pipeline measures.</p>
+          <p>Trimming, alignment, and duplicate handling happen before PACusage. The pipeline drops only reads already flagged as duplicates (SAM flag 0x400). For 3′ tag libraries, remove or flag duplicates only with UMIs, for example by deduplicating with UMI-tools <a class="cite" href="#ref-smith2017">(Smith et al., 2017)</a>. Many independent molecules end at the same 3′ position in a highly expressed gene, so duplicate marking by position alone removes genuine reads and flattens the signal the pipeline measures.</p>
         </div>
       </section>
 
@@ -441,7 +704,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
           <p class="label">Why</p>
           <div class="prose">
             <ul>
-              <li>MAPQ is the phred-scaled probability that a read is misplaced <a class="cite" href="#ref-li2008">(Li, Ruan and Durbin, 2008)</a>, so MAPQ 20 means a misplacement probability of at most 1%. Aligners scale MAPQ differently, so the <code>NH</code> tag, which counts reported alignments, removes multimappers explicitly when the aligner writes it.</li>
+              <li>MAPQ is the phred-scaled probability that a read is misplaced <a class="cite" href="#ref-li2008">(Li, Ruan and Durbin, 2008)</a>, so a MAPQ of 20 or more means an estimated misplacement probability of 1% or less. Aligners scale MAPQ differently, so the <code>NH</code> tag, which counts reported alignments, removes multimappers explicitly when the aligner writes it.</li>
               <li>Counting one fragment per pair is the standard for paired-end counting, as in featureCounts <a class="cite" href="#ref-liao2014">(Liao, Smyth and Shi, 2014)</a>. Counting both mates would double-count molecules.</li>
               <li>Name collation rebuilds pairs in a single streaming pass, which avoids random-access mate lookups in a coordinate-sorted file.</li>
               <li>Soft-clipped bases are not aligned to the genome, so they cannot define a genomic boundary. An untemplated A-rich clip at the read end is direct evidence of the cleavage site, and it is kept as its own evidence source.</li>
@@ -491,7 +754,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
         </div>
         <div class="callout">
           <p class="label">Limit</p>
-          <p>Offsets are weighted by reads, so the most highly expressed calibration genes carry the most weight. Mitochondrial transcripts are single-end genes in standard annotations, extremely abundant, and packed end to end, and their 3′ ends come from tRNA punctuation processing rather than CPSF cleavage <a class="cite" href="#ref-ojala1981">(Ojala, Montoya and Attardi, 1981)</a>. They would therefore distort the kernel, so mitochondrial contigs are excluded by default (<code>chrM</code>, <code>MT</code>, <code>chrMT</code>, matched by alignment name or alias). That also keeps mitochondrial sites out of the atlas and the counts. A mitochondrial contig under another name, such as <code>M</code>, has to be listed or aliased.</p>
+          <p>Offsets are weighted by reads, so the most highly expressed calibration genes carry the most weight. Mitochondrial transcripts are single-end genes in standard annotations, extremely abundant, and packed end to end, and their 3′ ends are set by excising the tRNAs that flank them, the tRNA punctuation model <a class="cite" href="#ref-ojala1981">(Ojala, Montoya and Attardi, 1981)</a>. They would therefore distort the kernel, so mitochondrial contigs are excluded by default (<code>chrM</code>, <code>MT</code>, <code>chrMT</code>, matched by alignment name or alias). That also keeps mitochondrial sites out of the atlas and the counts. A mitochondrial contig under another name, such as <code>M</code>, has to be listed or aliased.</p>
         </div>
       </section>
 
@@ -517,7 +780,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
               <li>The strongest unassigned seed claims every unassigned end within ±12 nt. This repeats until every end is assigned.</li>
               <li>With a known-PAC BED (<code>known_pacs</code>), a candidate within 12 nt of a known site is kept with at least 5 reads, under the same support rule. It is labeled <code>known_rescue_only</code> and kept out of the motif and k-mer analyses.</li>
             </ul>
-            <p><strong>Why.</strong> Cleavage for one poly(A) signal is heterogeneous, mostly within a few nucleotides but with a tail reaching tens of nucleotides <a class="cite" href="#ref-pauws2001">(Pauws et al., 2001</a>; <a class="cite" href="#ref-tian2005">Tian et al., 2005)</a>. A ±12 nt cluster spans 25 nt, in line with the 24-nt window Tian et al. (2005) used to merge heterogeneous cleavage sites into one site. Ranking by the number of supporting samples before depth, and capping each sample's contribution at 3, keeps one deep library or PCR stack from creating a seed. Known sites from an independent atlas such as PolyASite 2.0 <a class="cite" href="#ref-herrmann2020">(Herrmann et al., 2020)</a> justify a lower read threshold. Sites admitted that way are kept out of the motif tests, so prior annotation can't shape the motif results.</p>
+            <p><strong>Why.</strong> Cleavage for one poly(A) signal is heterogeneous, mostly within a few nucleotides but with a tail reaching tens of nucleotides <a class="cite" href="#ref-pauws2001">(Pauws et al., 2001</a>; <a class="cite" href="#ref-tian2005">Tian et al., 2005)</a>. A ±12 nt cluster spans 25 nt, in line with Tian et al. (2005), who merged cleavage sites lying within 24 nt of each other into one site. Ranking by the number of supporting samples before depth, and capping each sample's contribution at 3, keeps one deep library or PCR stack from creating a seed. Known sites from an independent atlas such as PolyASite 2.0 <a class="cite" href="#ref-herrmann2020">(Herrmann et al., 2020)</a> justify a lower read threshold. Sites admitted that way are kept out of the motif tests, so prior annotation can't shape the motif results.</p>
           </div>
         </div>
         <div class="block">
@@ -613,7 +876,7 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
               </g>
             </svg>
           </div>
-          <figcaption>Figure 1. Sequence windows around a PAC, drawn to scale in transcript orientation. Positions are nucleotides relative to the PAC coordinate (dashed line). A proximal-tag PAC also carries a resolution region of width δ*, which comes from each run's calibration and is not drawn.</figcaption>
+          <figcaption><strong>Figure 1.</strong> Sequence windows around a PAC, drawn to scale in transcript orientation. Positions are nucleotides relative to the PAC coordinate (dashed line). A proximal-tag PAC also carries a resolution region of width δ*, which comes from each run's calibration and is not drawn.</figcaption>
         </figure>
         <div class="block">
           <p class="label">What it does</p>
@@ -636,8 +899,8 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
             <ul>
               <li>The assignment order follows where functional PACs usually lie. Tandem 3′ UTR sites in terminal exons are the most common form of APA. Sites in internal exons and introns produce alternative last exons and truncated transcripts <a class="cite" href="#ref-tian2017">(Tian and Manley, 2017)</a>. Intronic polyadenylation is a regulated outcome in its own right, suppressed for example by CDK12 <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>, so intronic PACs are kept as a class instead of being discarded.</li>
               <li>Reference annotations such as GENCODE include retained-intron and 3′-incomplete transcript models, whose final exons are not transcript ends. Counted as terminal exons, they would create false last exons, and an intronic change would read as an alternative-last-exon or UTR change.</li>
-              <li>Annotations often end 3′ UTRs short, and extended 3′ UTRs are widespread, especially in the brain <a class="cite" href="#ref-miura2013">(Miura et al., 2013)</a>. The 5 kb downstream window captures these, and the nearest-gene rule stops a PAC from being assigned past another gene.</li>
-              <li>The canonical hexamer lies about 10 to 30 nt upstream of the cleavage site, most often near 20 nt <a class="cite" href="#ref-proudfoot2011">(Proudfoot, 2011</a>; <a class="cite" href="#ref-tian2005">Tian et al., 2005)</a>. AATAAA and ATTAAA account for most sites in human <a class="cite" href="#ref-beaudoing2000">(Beaudoing et al., 2000)</a> and in human and mouse <a class="cite" href="#ref-tian2005">(Tian et al., 2005)</a>, and single-nucleotide variants account for much of the rest. The windows and priorities follow those observations.</li>
+              <li>Annotations often end 3′ UTRs short, and extended 3′ UTRs are widespread, especially in the brain <a class="cite" href="#ref-miura2013">(Miura et al., 2013)</a>. The 5 kb downstream window captures many of these, and the nearest-gene rule stops a PAC from being assigned past another gene.</li>
+              <li>The canonical hexamer lies 10 to 30 nt upstream of the cleavage site, a median of 21 nt <a class="cite" href="#ref-tian2005">(Tian et al., 2005</a>; see also <a class="cite" href="#ref-proudfoot2011">Proudfoot, 2011)</a>. AATAAA and ATTAAA account for most sites in human <a class="cite" href="#ref-beaudoing2000">(Beaudoing et al., 2000)</a> and in human and mouse <a class="cite" href="#ref-tian2005">(Tian et al., 2005)</a>, and single-nucleotide variants account for much of the rest. The windows and priorities follow those observations.</li>
               <li>Downstream A-rich sequence is the classic signature of internal oligo(dT) priming <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. Flagging instead of removing keeps the decision visible: gained and lost calls require no flag (Step 10), and reviewers can see how many flagged sites take part in other results.</li>
               <li>Freezing and checksumming the atlas before counting fixes the feature set, gives it a version, and makes every downstream result traceable to it.</li>
             </ul>
@@ -709,8 +972,8 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
           <p class="label">Why</p>
           <div class="prose">
             <ul>
-              <li>Removing low-count and low-usage features before a DTU test improves both power and error control for DRIMSeq <a class="cite" href="#ref-soneson2016">(Soneson et al., 2016)</a>. The thresholds are similar in spirit to the <code>dmFilter</code> settings in the DRIMSeq workflow of <a class="cite" href="#ref-love2018">Love, Soneson and Patro (2018)</a>.</li>
-              <li>The filter statistics are totals pooled over the family without condition labels. Under a null where the labels are exchangeable, they are independent of any statistic computed by permuting labels, and approximately independent of the Dirichlet-multinomial test. That is the condition under which independent filtering raises power without inflating type I error <a class="cite" href="#ref-bourgon2010">(Bourgon, Gentleman and Huber, 2010)</a>; their exact result covers simpler cases, such as the overall mean with a t-test.</li>
+              <li>Removing low-abundance features before a DTU test helps. It improved FDR control with little or no loss of power for DEXSeq <a class="cite" href="#ref-soneson2016">(Soneson et al., 2016)</a>, raised DRIMSeq's power without a strong rise in FDR <a class="cite" href="#ref-nowicka2016">(Nowicka and Robinson, 2016)</a>, and, as minimum count and proportion filters, improved FDR and overall FDR (OFDR) control for both <a class="cite" href="#ref-love2018">(Love, Soneson and Patro, 2018)</a>. PACusage filters the same quantities as the <code>dmFilter</code> settings of that workflow, PAC reads, PAC share, and gene reads, but more leniently and on totals pooled over the family. The workflow asks for 10 reads and a 10% share in at least as many samples as the smallest group, and 10 reads at the gene in every sample.</li>
+              <li>The filter statistics are totals pooled over the family without condition labels. Under a null where the labels are exchangeable, they are independent of any statistic computed by permuting labels, and approximately independent of the Dirichlet-multinomial test. That is the condition under which filtering leaves type I error control intact, and it can then raise power <a class="cite" href="#ref-bourgon2010">(Bourgon, Gentleman and Huber, 2010)</a>. Their exact results cover simpler cases: the overall mean or variance with a t-test under normality, and any permutation-invariant filter with the Wilcoxon test.</li>
               <li>Filtering per family means a PAC is judged on the samples in its own test, not on unrelated conditions.</li>
             </ul>
           </div>
@@ -726,14 +989,14 @@ svg text { font-family: "Schibsted Grotesk", system-ui, sans-serif; }
         <div class="block">
           <p class="label">The model</p>
           <div class="prose">
-            <p>For gene <em>g</em> with <em>K<sub>g</sub></em> PACs and sample <em>s</em>, DRIMSeq <a class="cite" href="#ref-nowicka2016">(Nowicka and Robinson, 2016)</a> fits:</p>
+            <p>For gene <em>g</em> with <em>K<sub>g</sub></em> PACs and sample <em>s</em>, DRIMSeq fits the Dirichlet-multinomial model of <a class="cite" href="#ref-nowicka2016">Nowicka and Robinson (2016)</a> in the regression form that the package added in version 1.3.3, after that paper:</p>
           </div>
           <div class="formula">y_gs | p_gs ~ Multinomial(n_gs, p_gs)
 p_gs      ~ Dirichlet(κ_g · π_gs)
 design:     ~ model_covariates + condition   (control = reference level)</div>
           <div class="prose">
             <p>π<sub>gs</sub> is the expected usage and κ<sub>g</sub> is a gene-level precision shared across conditions. Lower precision means more variation between replicates than the multinomial allows. One model is fitted per comparison family, so the control and the precision are estimated from all of the family's samples. Covariates are categorical, and a rank-deficient (confounded) design stops the run with an explanation.</p>
-            <p>Precision uses DRIMSeq's defaults. The profile likelihood is Cox–Reid adjusted <a class="cite" href="#ref-cox1987">(Cox and Reid, 1987</a>; <a class="cite" href="#ref-mccarthy2012">McCarthy, Chen and Smyth, 2012)</a>, and a starting common precision is estimated from a seeded random 10% of genes. Gene-wise estimates are then moderated toward a trend in mean expression, with a prior weight that DRIMSeq estimates from the data. When fewer than about ten genes reach the upper boundary of DRIMSeq's precision grid, no weight can be estimated and DRIMSeq falls back to its default weight of zero, which leaves the gene-wise estimates unmoderated. Families with thousands of genes are normally moderated; the 40- and 60-gene simulated families in section D were not.</p>
+            <p>Precision uses DRIMSeq's defaults. The profile likelihood is Cox–Reid adjusted <a class="cite" href="#ref-cox1987">(Cox and Reid, 1987</a>; <a class="cite" href="#ref-mccarthy2012">McCarthy, Chen and Smyth, 2012)</a>, and a starting common precision is estimated from a seeded random 10% of genes. Gene-wise estimates are then moderated toward a trend in mean expression, with a prior weight that DRIMSeq estimates from the genes whose likelihood peaks at the upper end of its precision grid, as a function of mean expression when more than 100 genes do. When ten or fewer genes peak there, no weight can be estimated and DRIMSeq falls back to its default weight of zero, which leaves the gene-wise estimates unmoderated. Families with thousands of genes are normally moderated; the 40- and 60-gene simulated families in section D were not.</p>
           </div>
         </div>
         <div class="block">
@@ -752,9 +1015,9 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <p class="label">Why</p>
           <div class="prose">
             <ul>
-              <li>The Dirichlet-multinomial is the established model for relative usage of features within a gene when biological replicates are overdispersed <a class="cite" href="#ref-nowicka2016">(Nowicka and Robinson, 2016)</a>. A plain multinomial ignores replicate variability and is anticonservative.</li>
+              <li>The Dirichlet-multinomial models the relative usage of features within a gene while allowing for overdispersion between biological replicates <a class="cite" href="#ref-nowicka2016">(Nowicka and Robinson, 2016)</a>. A plain multinomial has no term for replicate variability, so it understates the variance of overdispersed counts.</li>
               <li>Modeling proportions separates APA from expression: scaling all of a gene's counts leaves the usage test unchanged. The simulations check this (check S5 in section D).</li>
-              <li>Screening genes and then confirming features within them controls the gene-level FDR while still naming the PACs that changed. It respects the constraint that a gene's usage sums to one, which testing each PAC in isolation ignores. This combination of DRIMSeq and stageR is the workflow recommended for differential transcript usage <a class="cite" href="#ref-love2018">(Love, Soneson and Patro, 2018)</a>.</li>
+              <li>Screening genes and then confirming features within them controls the gene-level FDR while still naming the PACs that changed. It respects the constraint that a gene's usage sums to one, which testing each PAC in isolation ignores. The differential transcript usage workflow of <a class="cite" href="#ref-love2018">Love, Soneson and Patro (2018)</a> applies stageR's screening and confirmation after either DRIMSeq or DEXSeq; PACusage uses it after DRIMSeq.</li>
               <li>Each treatment's PAC calls rest on that treatment's own gene-level test, so significance for the family as a whole never carries over to a treatment.</li>
               <li>Moderating precision shares information across genes, the standard remedy for unstable gene-wise dispersion with few replicates. It applies only when DRIMSeq's data-estimated prior weight is positive (see above).</li>
             </ul>
@@ -779,7 +1042,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <p class="label">Bootstrap intervals for the change in PAU</p>
           <div class="prose">
             <p>For genes that pass the screen, and for gained or lost detection candidates (included because <code>dm_bootstrap_include_candidates</code> defaults to true), counts are simulated from the fitted Dirichlet-multinomial at each sample's observed total and design row. Proportions are refitted with each gene's precision fixed at the family estimate, zeros are perturbed as in the family fit, and the change in PAU is recomputed for every comparison of the family from the same draw. There are 200 replicates, seeded per gene and replicate so that results do not depend on batching or worker count. Intervals are the 2.5th and 97.5th percentiles, and are reported only when at least 80% of replicates succeed.</p>
-            <p><strong>Why.</strong> A parametric bootstrap from the fitted model is the standard route to an interval for a derived quantity that has no closed-form variance <a class="cite" href="#ref-efron1993">(Efron and Tibshirani, 1993)</a>.</p>
+            <p><strong>Why.</strong> A parametric bootstrap from the fitted model is a standard route to an interval for a derived quantity that has no closed-form variance <a class="cite" href="#ref-efron1993">(Efron and Tibshirani, 1993)</a>.</p>
           </div>
         </div>
         <div class="callout">
@@ -864,10 +1127,10 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <p class="label">Why</p>
           <div class="prose">
             <ul>
-              <li>The split between 3′ UTR APA, among tandem sites of a last exon, and upstream-region APA, at intronic and internal-exon sites, is the standard classification <a class="cite" href="#ref-tian2017">(Tian and Manley, 2017)</a>. Upstream-region APA can change the coding sequence, while tandem 3′ UTR APA changes only the UTR, so the two are kept apart. Loss of CDK12, for example, raises intronic polyadenylation <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>.</li>
+              <li>The split between 3′ UTR APA, among tandem sites of a last exon, and upstream-region APA, at intronic and internal-exon sites, follows <a class="cite" href="#ref-tian2017">Tian and Manley (2017)</a>. Upstream-region APA can change the coding sequence, while tandem 3′ UTR APA changes only the UTR, so the two are kept apart. Loss of CDK12, for example, raises intronic polyadenylation <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>.</li>
               <li>Region shares measure how much of a gene's usage moved, on the same scale as the change in PAU, so one threshold serves every pattern. The distal share within the last exon is the 3′-end counterpart of the PDUI of DaPars <a class="cite" href="#ref-xia2014">(Xia et al., 2014)</a>. It is renormalized within the exon, so that a shift into an intron does not read as UTR shortening.</li>
               <li>Each pattern rests on a confirmed PAC call, so its direction carries stageR's error control. A shift into or out of the last exon moves all of its PACs together. Requiring the call to point against that shift stops the shift alone from creating a UTR pattern.</li>
-              <li>Low-confidence PACs cannot make a pattern, because oligo(dT) priming on intronic pre-mRNA is the classic false intronic site <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>. A change at a flagged PAC is still reported, with the <code>_potential_internal_priming</code> suffix: it is real either way, but more RNA over a genomic A-run and a new cleavage site give the same 3′ tags. Internal priming rises and falls with the RNA that covers the A-run, so it does not appear at a constant level in every sample. Gains are counted even when only the flag withheld them, because a new intronic site starts from zero reads.</li>
+              <li>Low-confidence PACs cannot make a pattern, because internal oligo(dT) priming at A-rich sequence creates false 3′ ends <a class="cite" href="#ref-nam2002">(Nam et al., 2002)</a>, and inside an intron such an end looks like an intronic PAC. A change at a flagged PAC is still reported, with the <code>_potential_internal_priming</code> suffix: it is real either way, but more RNA over a genomic A-run and a new cleavage site give the same 3′ tags. Internal priming rises and falls with the RNA that covers the A-run, so it does not appear at a constant level in every sample. Gains are counted even when only the flag withheld them, because a new intronic site starts from zero reads.</li>
             </ul>
           </div>
         </div>
@@ -910,7 +1173,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
             <ul>
               <li>Poly(A) signal strength shapes site choice. Distal sites carry the canonical hexamer more often than proximal ones <a class="cite" href="#ref-tian2005">(Tian et al., 2005)</a>, and changes in core 3′-processing factors shift usage between strong and weak sites <a class="cite" href="#ref-tian2017">(Tian and Manley, 2017)</a>. A shift toward PACs with a given motif therefore points to a mechanism.</li>
               <li>Equal gene weight stops a few highly expressed genes from dominating the score. The condition-blind gene set avoids selecting genes on the outcome being tested.</li>
-              <li>The arcsine square root is the classical variance-stabilizing transform for proportions <a class="cite" href="#ref-anscombe1948">(Anscombe, 1948)</a>, and it accepts exact 0 and 1 without pseudocounts. limma's moderated t-statistic borrows variance information across the motif rows. With about ten rows that moderation is weak, so the test is close to an ordinary linear-model t-test.</li>
+              <li>The arcsine square root is the classical variance-stabilizing transform for binomial proportions, which <a class="cite" href="#ref-anscombe1948">Anscombe (1948)</a> refined by adding 3/8 to the count and 3/4 to the total. The plain form used here accepts exact 0 and 1 without pseudocounts. limma's moderated t-statistic borrows variance information across the motif rows. With about ten rows that moderation is weak, so the test is close to an ordinary linear-model t-test.</li>
               <li>Using the main model's design keeps the covariate handling consistent between the usage and motif tests.</li>
             </ul>
           </div>
@@ -949,16 +1212,16 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
               <li>Every table with one row per PAC starts with the same identity columns: <code>pac_id</code>, <code>gene_id</code>, <code>gene_name</code>, <code>chrom</code>, <code>start</code>, <code>end</code>, <code>strand</code>, and <code>locus</code>. Gene-level tables start with <code>gene_id</code> and <code>gene_name</code>. The remaining columns run from the answer to the evidence: comparison and call, then effect, significance, annotation, the data behind the call, and model diagnostics. The atlas BED scores are capped at 1000, the BED maximum.</li>
               <li>The <code>manifest/</code> folder records the resolved parameters, the normalized sample sheet, SHA-256 checksums of every input, the software versions (Python, pysam and htslib, R, DRIMSeq, stageR, limma, BiocParallel, and ggplot2), and a run manifest with the PACusage version and a checksum of the parameters. The atlas checksum is in <code>atlas/pacs.v1.sha256</code>.</li>
               <li>Published gzip files and PDFs carry no timestamps, and every random step is seeded from <code>random_seed</code>, the atlas checksum, and its context. A fresh rerun with the same inputs and software reproduces every published file byte for byte. The only exception is Nextflow's own execution reports in <code>pipeline_info/</code>, which record the run's times.</li>
-              <li>Execution uses Nextflow DSL2 <a class="cite" href="#ref-ditommaso2017">(Di Tommaso et al., 2017)</a> with an Apptainer (Singularity) image <a class="cite" href="#ref-kurtzer2017">(Kurtzer, Sochat and Bauer, 2017)</a> on Slurm. A task killed for memory or time (exit 137, 140, or 143) is retried up to twice with scaled resources.</li>
+              <li>Execution uses Nextflow <a class="cite" href="#ref-ditommaso2017">(Di Tommaso et al., 2017)</a>, in its DSL2 syntax, with an Apptainer (formerly Singularity) image <a class="cite" href="#ref-kurtzer2017">(Kurtzer, Sochat and Bauer, 2017)</a> on Slurm. A task that exits with status 137, 140, or 143, which schedulers commonly return when they stop a task for exceeding its memory or time, is retried up to twice, with memory and time multiplied by the attempt number.</li>
             </ul>
           </div>
         </div>
         <div class="block">
           <p class="label">Why</p>
           <div class="prose">
-            <p>The volcano plot uses the raw PAC p-value, because the stage-wise PAC FDR exists only in genes that pass the screen and is exactly 0 in screened two-PAC genes. The distal PAC's share of its gene's usage is the 3′-end counterpart of the percentage of distal poly(A) site usage index (PDUI) of DaPars <a class="cite" href="#ref-xia2014">(Xia et al., 2014)</a>. The distal PAC's direction is its own confirmed call, so it carries stageR's error control, and the colors show whether a fall came from a tandem site or an intron. With three or more PACs, losing a middle PAC raises the distal share, so a distal rise does not always mean a longer 3′ UTR. Splitting calls by gene region separates tandem 3′ UTR changes from shifts to intronic sites, such as the intronic polyadenylation that follows CDK12 loss <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>. The coverage figure shows whether calls gather in poorly covered genes, where PAU estimates are least stable.</p>
+            <p>The volcano plot uses the raw PAC p-value, because the stage-wise PAC FDR exists only in genes that pass the screen and is exactly 0 in screened two-PAC genes. The distal PAC's share of its gene's usage is a gene-wide analogue of the percentage of distal polyA site usage index (PDUI) of DaPars <a class="cite" href="#ref-xia2014">(Xia et al., 2014)</a>, which compares only a gene's distal and proximal 3′ UTR isoforms. The distal PAC's direction is its own confirmed call, so it carries stageR's error control, and the colors show whether a fall came from a tandem site or an intron. With three or more PACs, losing a middle PAC raises the distal share, so a distal rise does not always mean a longer 3′ UTR. Splitting calls by gene region separates tandem 3′ UTR changes from shifts to intronic sites, such as the intronic polyadenylation that follows CDK12 loss <a class="cite" href="#ref-dubbury2018">(Dubbury, Boutz and Sharp, 2018)</a>. The coverage figure shows whether calls gather in poorly covered genes, where PAU estimates are least stable.</p>
             <p>Two comparisons against the same control share that control's estimate, so their changes in PAU correlate positively even without shared biology. Chained comparisons, where one's treatment is the other's control, are fitted in different families but estimate the middle condition from the same samples, with opposite signs, so they correlate negatively. The concordance table therefore records each pair's relation, and r is read with it. The principal components are a check on the samples rather than a test: replicates should sit together, and a sample far from its condition points to a problem before any comparison is read. The components use observed PAU without zero-filling, because a gene without reads in a sample has no usage there.</p>
-            <p>A workflow manager, a fixed container, recorded checksums and versions, a parameter schema in the nf-core style <a class="cite" href="#ref-ewels2020">(Ewels et al., 2020)</a>, and seeded randomness together let a reviewer rerun the analysis and get the same files. The integration test checks the byte-identical rerun on every change.</p>
+            <p>A workflow manager, a fixed container, recorded checksums and versions, a parameter schema of the kind nf-core pipelines use <a class="cite" href="#ref-ewels2020">(Ewels et al., 2020)</a>, and seeded randomness together let a reviewer rerun the analysis and get the same files. The integration test checks the byte-identical rerun on every change.</p>
           </div>
         </div>
       </section>
@@ -1020,7 +1283,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
             <li><strong>Calibration weighting.</strong> The kernel is read-weighted and depends on the annotation's single-end genes. Unannotated alternative ends near annotated ones broaden it, and the diagnostics warn but never stop a run. Mitochondrial contigs are excluded by default only under their common names (Step 4).</li>
             <li><strong>PAS catalog.</strong> The built-in catalog has ten hexamers. Other reported variants, such as ACTAAA, AAAAAG, and AATGAA, are not included by default, but can be supplied with <code>pas_motif_catalog</code>.</li>
             <li><strong>Internal priming is a flag.</strong> Flagged PACs are tested and can take part in increased and decreased usage calls, though not in gained or lost calls.</li>
-            <li><strong>Motif preference unit.</strong> Motif preference is tested per primary hexamer and per class. Rarer hexamers have fewer informative genes, and with about ten rows, or four classes, limma's moderation adds little. The arcsine transform is sometimes criticized for binomial data, where a GLM is preferred <a class="cite" href="#ref-warton2011">(Warton and Hui, 2011)</a>. Here the response is a gene-averaged usage rather than a binomial count.</li>
+            <li><strong>Motif preference unit.</strong> Motif preference is tested per primary hexamer and per class. Rarer hexamers have fewer informative genes, and with about ten rows, or four classes, limma's moderation adds little. <a class="cite" href="#ref-warton2011">Warton and Hui (2011)</a> argue against the arcsine transform for proportions in general, preferring logistic regression for binomial counts and the logit transform otherwise. Here the response is a gene-averaged usage, not a binomial count, and it can be exactly 0 or 1, where the logit is undefined without an offset.</li>
             <li><strong>Multiple comparisons.</strong> FDR is controlled within each treatment–control comparison. Nothing is corrected across comparisons.</li>
           </ol>
         </div>
@@ -1049,7 +1312,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <li id="ref-li2008">Li H, Ruan J, Durbin R (2008). Mapping short DNA sequencing reads and calling variants using mapping quality scores. <em>Genome Research</em> 18:1851–1858.</li>
           <li id="ref-li2009">Li H, Handsaker B, Wysoker A, et al. (2009). The Sequence Alignment/Map format and SAMtools. <em>Bioinformatics</em> 25:2078–2079.</li>
           <li id="ref-liao2014">Liao Y, Smyth GK, Shi W (2014). featureCounts: an efficient general purpose program for assigning sequence reads to genomic features. <em>Bioinformatics</em> 30:923–930.</li>
-          <li id="ref-love2018">Love MI, Soneson C, Patro R (2018). Swimming downstream: statistical analysis of differential transcript usage following Salmon quantification. <em>F1000Research</em> 7:952.</li>
+          <li id="ref-love2018">Love MI, Soneson C, Patro R (2018). Swimming downstream: statistical analysis of differential transcript usage following Salmon quantification. <em>F1000Research</em> 7:952 (version 3).</li>
           <li id="ref-mantel1959">Mantel N, Haenszel W (1959). Statistical aspects of the analysis of data from retrospective studies of disease. <em>Journal of the National Cancer Institute</em> 22:719–748.</li>
           <li id="ref-mccarthy2012">McCarthy DJ, Chen Y, Smyth GK (2012). Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation. <em>Nucleic Acids Research</em> 40:4288–4297.</li>
           <li id="ref-miura2013">Miura P, Shenker S, Andreu-Agullo C, Westholm JO, Lai EC (2013). Widespread and extensive lengthening of 3′ UTRs in the mammalian brain. <em>Genome Research</em> 23:812–825.</li>
@@ -1057,10 +1320,11 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <li id="ref-nam2002">Nam DK, Lee S, Zhou G, et al. (2002). Oligo(dT) primer generates a high frequency of truncated cDNAs through internal poly(A) priming during reverse transcription. <em>PNAS</em> 99:6152–6156.</li>
           <li id="ref-nowicka2016">Nowicka M, Robinson MD (2016). DRIMSeq: a Dirichlet-multinomial framework for multivariate count outcomes in genomics. <em>F1000Research</em> 5:1356.</li>
           <li id="ref-ojala1981">Ojala D, Montoya J, Attardi G (1981). tRNA punctuation model of RNA processing in human mitochondria. <em>Nature</em> 290:470–474.</li>
-          <li id="ref-pauws2001">Pauws E, van Kampen AH, van de Graaf SA, de Vijlder JJ (2001). Heterogeneity in polyadenylation cleavage sites in mammalian mRNA sequences: implications for SAGE analysis. <em>Nucleic Acids Research</em> 29:1690–1694.</li>
+          <li id="ref-pauws2001">Pauws E, van Kampen AH, van de Graaf SA, de Vijlder JJ, Ris-Stalpers C (2001). Heterogeneity in polyadenylation cleavage sites in mammalian mRNA sequences: implications for SAGE analysis. <em>Nucleic Acids Research</em> 29:1690–1694.</li>
           <li id="ref-proudfoot2011">Proudfoot NJ (2011). Ending the message: poly(A) signals then and now. <em>Genes &amp; Development</em> 25:1770–1782.</li>
           <li id="ref-ritchie2015">Ritchie ME, Phipson B, Wu D, et al. (2015). limma powers differential expression analyses for RNA-sequencing and microarray studies. <em>Nucleic Acids Research</em> 43:e47.</li>
           <li id="ref-rbg1986">Robins J, Breslow N, Greenland S (1986). Estimators of the Mantel–Haenszel variance consistent in both sparse data and large-strata limiting models. <em>Biometrics</em> 42:311–323.</li>
+          <li id="ref-samspec">SAM/BAM Format Specification Working Group. Sequence Alignment/Map Format Specification. <a href="https://samtools.github.io/hts-specs/SAMv1.pdf">samtools.github.io/hts-specs/SAMv1.pdf</a></li>
           <li id="ref-schurch2016">Schurch NJ, Schofield P, Gierliński M, et al. (2016). How many biological replicates are needed in an RNA-seq experiment and which differential expression tool should you use? <em>RNA</em> 22:839–851.</li>
           <li id="ref-shaffer1986">Shaffer JP (1986). Modified sequentially rejective multiple test procedures. <em>Journal of the American Statistical Association</em> 81:826–831.</li>
           <li id="ref-smith2017">Smith T, Heger A, Sudbery I (2017). UMI-tools: modeling sequencing errors in Unique Molecular Identifiers to improve quantification accuracy. <em>Genome Research</em> 27:491–499.</li>
@@ -1069,7 +1333,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <li id="ref-tian2005">Tian B, Hu J, Zhang H, Lutz CS (2005). A large-scale analysis of mRNA polyadenylation of human and mouse genes. <em>Nucleic Acids Research</em> 33:201–212.</li>
           <li id="ref-tian2017">Tian B, Manley JL (2017). Alternative polyadenylation of mRNA precursors. <em>Nature Reviews Molecular Cell Biology</em> 18:18–30.</li>
           <li id="ref-turin1960">Turin GL (1960). An introduction to matched filters. <em>IRE Transactions on Information Theory</em> 6:311–329.</li>
-          <li id="ref-vandenberge2017">Van den Berge K, Soneson C, Robinson MD, Clement L (2017). stageR: a general stage-wise method for controlling the gene-level false discovery rate in differential expression and differential transcript usage analysis. <em>Genome Biology</em> 18:151.</li>
+          <li id="ref-vandenberge2017">Van den Berge K, Soneson C, Robinson MD, Clement L (2017). stageR: a general stage-wise method for controlling the gene-level false discovery rate in differential expression and differential transcript usage. <em>Genome Biology</em> 18:151.</li>
           <li id="ref-vitter1985">Vitter JS (1985). Random sampling with a reservoir. <em>ACM Transactions on Mathematical Software</em> 11:37–57.</li>
           <li id="ref-wang2012">Wang L, Wang S, Li W (2012). RSeQC: quality control of RNA-seq experiments. <em>Bioinformatics</em> 28:2184–2185.</li>
           <li id="ref-warton2011">Warton DI, Hui FKC (2011). The arcsine is asinine: the analysis of proportions in ecology. <em>Ecology</em> 92:3–10.</li>
@@ -1082,5 +1346,29 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
     </article>
   </div>
 </div>
+<script>
+// Marks the contents entry of the section at the top of the window.
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a[href^="#"]'));
+  if (!links.length || !("IntersectionObserver" in window)) return;
+  var byId = {};
+  links.forEach(function (link) { byId[link.getAttribute("href").slice(1)] = link; });
+  var sections = Object.keys(byId)
+    .map(function (id) { return document.getElementById(id); })
+    .filter(Boolean);
+  var visible = {};
+  function mark(id) {
+    links.forEach(function (link) { link.removeAttribute("aria-current"); });
+    byId[id].setAttribute("aria-current", "location");
+  }
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) { visible[entry.target.id] = entry.isIntersecting; });
+    for (var i = 0; i < sections.length; i++) {
+      if (visible[sections[i].id]) { mark(sections[i].id); return; }
+    }
+  }, { rootMargin: "0px 0px -70% 0px" });
+  sections.forEach(function (section) { observer.observe(section); });
+})();
+</script>
 </body>
 </html>
