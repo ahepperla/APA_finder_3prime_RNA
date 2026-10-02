@@ -268,11 +268,19 @@ chi_square_p <- function(lr, df) {
 
 # Samples a family needs at min_site_usage: min_site_usage_samples, or by
 # default as many as its smallest condition has, as in the DRIMSeq workflow
-# (Love et al., 2018); never more than the family's samples. sizes are the
-# family's condition sizes.
-required_samples <- function(sizes, setting) {
+# (Love et al., 2018), less the allowed dropouts. The allowance never takes
+# the count below 2, or below the smallest condition when that has fewer, so
+# it never makes the rule stricter. Never more than the family's samples.
+# sizes are the family's condition sizes.
+required_samples <- function(sizes, setting, dropouts = 0L) {
   sizes <- as.integer(sizes)
-  wanted <- if (is.null(setting)) min(sizes) else as.integer(setting)
+  dropouts <- if (is.null(dropouts)) 0L else as.integer(dropouts)
+  wanted <- if (is.null(setting)) {
+    smallest <- min(sizes)
+    max(min(2L, smallest), smallest - dropouts)
+  } else {
+    as.integer(setting)
+  }
   min(wanted, sum(sizes))
 }
 
@@ -306,7 +314,9 @@ family_filter <- function(counts, sample_ids, groups, params, family) {
   }
   deep <- sample_totals > 0 & sample_totals >= params$min_site_usage_gene_reads
   qualifies <- deep & values >= params$min_site_usage * sample_totals - 1e-12
-  needed <- required_samples(lengths(groups), params$min_site_usage_samples)
+  needed <- required_samples(
+    lengths(groups), params$min_site_usage_samples, params$min_site_usage_dropouts
+  )
   reason[assigned] <- joined_reasons(
     site_total < params$min_site_count,
     paste0("site_count<", params$min_site_count),

@@ -843,14 +843,19 @@ test_case("M-21", "statistical filtering gives every PAC one row: tested or its 
 test_case("M-26", "a PAC is tested when enough samples of the family use it", {
   # By default as many samples as the smallest condition has; a setting
   # replaces that, and neither can exceed the family's samples.
+  # Allowed dropouts lower the default count, never below 2 or the smallest
+  # condition, and leave an explicit count alone.
   cases <- list(
-    list(c(4, 4, 3), NULL, 3L), list(c(4, 4, 3), 2L, 2L), list(c(2, 2), 20L, 4L),
-    list(c(1, 3), NULL, 1L)
+    list(c(4, 4, 3), NULL, 0L, 3L), list(c(4, 4, 3), 2L, 0L, 2L), list(c(2, 2), 20L, 0L, 4L),
+    list(c(1, 3), NULL, 0L, 1L), list(c(4, 4, 4), NULL, 1L, 3L), list(c(4, 4, 3), NULL, 1L, 2L),
+    list(c(2, 2), NULL, 1L, 2L), list(c(1, 3), NULL, 1L, 1L), list(c(4, 4), NULL, 3L, 2L),
+    list(c(4, 4), 3L, 1L, 3L), list(c(4, 4), NULL, NULL, 4L)
   )
   for (case in cases) {
-    observed <- model$required_samples(case[[1]], case[[2]])
-    check(identical(observed, case[[3]]), "sizes ", paste(case[[1]], collapse = "/"), ", setting ",
-      if (is.null(case[[2]])) "empty" else case[[2]], " gave ", observed)
+    observed <- model$required_samples(case[[1]], case[[2]], case[[3]])
+    check(identical(observed, case[[4]]), "sizes ", paste(case[[1]], collapse = "/"), ", setting ",
+      if (is.null(case[[2]])) "empty" else case[[2]], ", dropouts ",
+      if (is.null(case[[3]])) "empty" else case[[3]], " gave ", observed)
   }
 
   groups <- list(C = sprintf("c%d", 1:4), T = sprintf("t%d", 1:4), U = sprintf("u%d", 1:3))
@@ -923,6 +928,13 @@ test_case("M-26", "a PAC is tested when enough samples of the family use it", {
   single <- list(C = sprintf("c%d", 1:4), E = "e1")
   lone <- gene("lone", c(e1 = 20), single)
   check(tested_x(list(), groups = single, table = lone)[["lone"]], "a single sample did not count.")
+  # A site in 3 of a treatment's 4 samples, one replicate having dropped out,
+  # needs the allowance when every condition has 4.
+  pair <- list(C = sprintf("c%d", 1:4), T = sprintf("t%d", 1:4))
+  dropped <- gene("dropped", c(t1 = 20, t2 = 20, t3 = 20, t4 = 2), pair)
+  check(!tested_x(list(), groups = pair, table = dropped)[["dropped"]], "3 of 4 passed without an allowance.")
+  check(tested_x(list(min_site_usage_dropouts = 1L), groups = pair, table = dropped)[["dropped"]],
+    "3 of 4 failed with one dropout allowed.")
 })
 
 test_case("M-27", "the pattern threshold and the PAC-call threshold move independently", {

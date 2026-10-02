@@ -77,6 +77,17 @@ def test_calibration_quantiles_must_be_ordered(resolved_params) -> None:
         resolved_params(calibration_quantile_low=0.9, calibration_quantile_high=0.1)
 
 
+def test_usage_dropouts_lower_only_the_default_count(resolved_params) -> None:
+    allowance = resolved_params(min_site_usage_dropouts=1)
+    assert allowance["min_site_usage_dropouts"] == 1
+    assert allowance["min_site_usage_samples"] is None
+    assert resolved_params(min_site_usage_samples=3)["min_site_usage_dropouts"] == 0
+    with pytest.raises(PacusageError, match="min_site_usage_samples or min_site_usage_dropouts"):
+        resolved_params(min_site_usage_samples=3, min_site_usage_dropouts=1)
+    with pytest.raises(PacusageError, match="min_site_usage_dropouts: -1 is less than"):
+        resolved_params(min_site_usage_dropouts=-1)
+
+
 def test_command_line_integers_become_integers(tmp_path: Path, schema) -> None:
     params = resolve_encoded(
         tmp_path, schema, min_mapq="30", statistics_bootstrap_cpus="4", dm_bootstrap_replicates="0"

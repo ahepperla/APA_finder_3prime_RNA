@@ -621,6 +621,13 @@ annotated ones calibration uses.
     conditions. By default that is as many samples as the family's smallest
     condition has, as in the DRIMSeq workflow (Love et al., 2018). A sample
     counts only when the gene has `min_site_usage_gene_reads` reads in it.
+  - `min_site_usage_dropouts` lowers that default count to allow for bad
+    replicates: with 1, a design of 4 replicates per condition needs 3
+    samples. It never takes the count below 2, or below the smallest
+    condition if that has fewer. This is more lenient than the DRIMSeq
+    workflow and edgeR's `filterByExpr`, which ask for the full smallest
+    group at small replicate numbers. It can't be combined with
+    `min_site_usage_samples`.
   - The filters use the condition sizes but never which sample belongs to
     which condition, so they are blind to the comparisons, and the PACs they
     admit near a threshold have p-values as calibrated as the unfiltered
@@ -754,6 +761,9 @@ finished steps from it.
       condition size) replaces `min_site_usage_replicates`, which is ignored
       if still set.
     - The filtering reason `replicate_usage<F` is now `sample_usage<F`.
+  - **Version 0.6.1** adds `min_site_usage_dropouts` (default 0), which
+    lets the usage filter's default count fall short by that many samples.
+    Results are unchanged at the defaults.
 
 ## Troubleshooting
 

@@ -67,6 +67,13 @@ def resolve_parameters(supplied: dict[str, Any], schema: dict[str, Any]) -> dict
         raise PacusageError("Invalid parameters: " + "; ".join(details))
     if not params["calibration_quantile_low"] < params["calibration_quantile_high"]:
         raise PacusageError("calibration_quantile_low must be below calibration_quantile_high.")
+    # The allowance applies to the default count only, so an explicit count
+    # beside it would silently ignore it.
+    if params.get("min_site_usage_samples") is not None and params.get("min_site_usage_dropouts"):
+        raise PacusageError(
+            "Set min_site_usage_samples or min_site_usage_dropouts, not both: the dropout "
+            "allowance lowers the default count, the size of the family's smallest condition."
+        )
     # YAML writes 2.0 for an integer parameter given as 2.0; keep it an integer.
     for key, types in _declared_types(schema).items():
         value = params.get(key)

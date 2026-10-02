@@ -8,6 +8,37 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-01: A dropout allowance for the usage filter
+
+Status: accepted (project lead)
+
+The lead asked whether requiring the smallest condition's size less one, to
+allow for a bad replicate, is fair, and then asked for a setting.
+
+**Rule** (version 0.6.1)
+- `min_site_usage_dropouts` (integer, default 0) lowers the default count,
+  the smallest condition's size, by that many samples. With 4 replicates per
+  condition and 1 dropout, a PAC needs 3 qualifying samples.
+- It never takes the count below 2, or below the smallest condition when
+  that has fewer, so an allowance never makes the rule stricter.
+- An explicit `min_site_usage_samples` is used as it is. VALIDATE_INPUTS
+  stops when one is set beside a non-zero allowance, so neither is silently
+  ignored.
+- Results are unchanged at the default.
+
+**Why it is fair.** The count still depends only on condition sizes, so the
+filter stays blind to the comparisons. In S7's design with one dropout (2 of
+11 samples, three seeds): 84-85% of the borderline null PACs were admitted,
+5-7% of those had p <= 0.05, and 3-9% of the treatment's gene calls were
+false.
+
+**Cost.** It admits more borderline PACs, and it cannot tell 3 of 4 samples
+in one condition from 1 + 1 + 1 across three. It is more lenient than
+standard practice at small replicate numbers. The DRIMSeq workflow and
+edgeR's `filterByExpr` (4.8.2) ask for the full smallest group, and edgeR
+relaxes that only when every group has more than 10 samples, keeping at
+least 70% of the smallest group.
+
 ## 2026-10-01: The usage filter counts samples across the family
 
 Status: accepted (project lead)

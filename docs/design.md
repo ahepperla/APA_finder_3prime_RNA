@@ -248,6 +248,7 @@ min_gene_total: 20
 min_site_count: 5
 min_site_usage: 0.01
 min_site_usage_samples: null
+min_site_usage_dropouts: 0
 min_site_usage_gene_reads: 10
 min_test_supporting_samples: 2
 
@@ -887,6 +888,18 @@ of them.
   more than the family's samples.
 - A sample counts only when the gene has `min_site_usage_gene_reads` reads
   in it.
+- `min_site_usage_dropouts` (default 0) lowers the default count by that
+  many samples, to allow for bad replicates. It never takes the count below
+  2, or below the smallest condition if that has fewer, so it never makes
+  the rule stricter; it can't be combined with `min_site_usage_samples`.
+  - It departs from standard practice at small replicate numbers. The
+    DRIMSeq workflow and edgeR's `filterByExpr` ask for the full smallest
+    group size, and edgeR relaxes that only when every group has more than
+    10 samples, keeping at least 70% of the smallest group.
+  - It stays blind to condition, since it too uses only condition sizes. In
+    S7's design at one dropout (2 of 11 samples, three seeds), the filter
+    admitted 84% to 85% of the borderline null PACs, 5% to 7% of those had
+    p <= 0.05, and 3% to 9% of the treatment's gene calls were false.
 - **Why.** A share pooled over the family dilutes a site used in one
   condition, more so the more conditions share the control, and a share in
   one sample can be noise. Every condition has at least as many samples as

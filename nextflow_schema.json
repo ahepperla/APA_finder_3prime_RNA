@@ -429,6 +429,12 @@
           "default": null,
           "description": "Samples of a comparison family, from any of its conditions, in which a PAC needs min_site_usage of its gene's reads to be tested. Empty, the default, uses the size of the family's smallest condition, as in the DRIMSeq workflow; never more than the family's samples."
         },
+        "min_site_usage_dropouts": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Samples the default count may be short of, to allow for a bad replicate: a PAC then needs min_site_usage in the smallest condition's size less this, never fewer than 2 (or than the smallest condition, if it has fewer). Cannot be combined with min_site_usage_samples."
+        },
         "min_site_usage_gene_reads": {
           "type": "integer",
           "minimum": 0,
