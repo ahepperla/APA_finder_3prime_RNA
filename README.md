@@ -333,7 +333,7 @@ A PAC's call is its `event_type`:
 
 | `event_type` | When |
 |---|---|
-| `gained`, `lost` | A PAC is detected (reads in at least two samples) in only one group, and that group's usage passes the fitted-PAU thresholds. The group without it has at least `min_gene_total` reads at the gene's tested PACs. The gene and the PAC pass their FDRs. The PAC is neither ambiguous nor flagged for internal priming. |
+| `gained`, `lost` | A PAC is detected (reads in at least two samples) in only one group. Its fitted usage there is at least `event_min_treatment_pau` (default 0.05) and at most `event_max_control_pau` (default 0.01) in the other group, and the change is at least `min_abs_delta_pau`. At the defaults the change is the stricter requirement, so the group with the PAC needs at least 0.10. The group without it has at least `min_gene_total` reads at the gene's tested PACs. The gene and the PAC pass their FDRs. The PAC is neither ambiguous nor flagged for internal priming. |
 | `gained_candidate`, `lost_candidate` | The detection rules hold, but significance, stability, coverage, or confidence does not, or the comparison is exploratory. These are not confirmed calls. |
 | `increased_usage`, `decreased_usage` | The PAC is detected in both groups, passes both FDRs, and its usage changes by at least `min_abs_delta_pau`. |
 | `none` | No call. |
@@ -343,7 +343,7 @@ A gene's events are in its `.genes` row:
 | Column | When |
 |---|---|
 | `dominant_switch` | `TRUE` when the most-used PAC differs between the groups, in a gene that passes `gene_fdr`. |
-| `active_pacs_change` | `more` or `fewer` when the gene's number of active PACs differs between the groups, in a gene that passes `gene_fdr`; otherwise `none`. An active PAC has at least `active_pac_min_pau` (default 0.05) of the gene's fitted usage in a group. The `.pacs` columns `control_active_pacs` and `treatment_active_pacs` give the counts. |
+| `active_pacs_change` | `more` or `fewer` when the gene's number of active PACs differs between the groups, in a gene that passes `gene_fdr`; otherwise `none`. An active PAC has at least `active_pac_min_pau` (default 0.10, the same as `min_abs_delta_pau`) of the gene's fitted usage in a group. The `.pacs` columns `control_active_pacs` and `treatment_active_pacs` give the counts. |
 
 ### APA patterns
 
@@ -764,6 +764,11 @@ finished steps from it.
   - **Version 0.6.1** adds `min_site_usage_dropouts` (default 0), which
     lets the usage filter's default count fall short by that many samples.
     Results are unchanged at the defaults.
+  - **Version 0.7.0** raises the `active_pac_min_pau` default from 0.05 to
+    0.10, the same as `min_abs_delta_pau`. At 0.05 a PAC could count as
+    active yet never be called gained or lost, since its change could not
+    reach 0.10. `active_pacs_change` results change; set 0.05 to keep the
+    old counts.
 
 ## Troubleshooting
 

@@ -8,6 +8,33 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-01: Active PACs default to the minimum change
+
+Status: accepted (project lead, option 2 of three)
+
+The lead noticed that with the defaults an active PAC could never be called
+lost. `active_pac_min_pau` was 0.05, and a `gained` or `lost` call needs a
+change of `min_abs_delta_pau`, 0.10, besides its usage rules. A PAC between
+0.05 and 0.10 that disappeared counted as one fewer active PAC, but got no
+PAC call.
+
+**Decision** (version 0.7.0)
+- The `active_pac_min_pau` default rises to 0.10, the same as
+  `min_abs_delta_pau`. A PAC whose usage falls from active to none now
+  changes by enough to be called.
+- One edge remains: a PAC at 0.10 in one group and up to the 0.01 detection
+  bar in the other changes by as little as 0.09.
+- `event_min_treatment_pau` stays at 0.05. At the defaults the change rule is
+  stricter, so a gained or lost PAC needs at least 0.10 in its group. The
+  docs now say so.
+- `active_pacs_change` results change at the defaults; 0.05 keeps the old
+  counts.
+
+**Not chosen**
+- Dropping the change requirement from gained and lost calls, so that a site
+  switching on or off is called at any size above the presence bar.
+- Leaving the defaults and only documenting how they combine.
+
 ## 2026-10-01: A dropout allowance for the usage filter
 
 Status: accepted (project lead)

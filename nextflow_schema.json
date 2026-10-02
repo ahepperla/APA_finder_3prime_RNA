@@ -529,8 +529,8 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "default": 0.05,
-          "description": "Fitted PAU a PAC needs in a group to count as one of its gene's active PACs, for active_pacs_change."
+          "default": 0.1,
+          "description": "Fitted PAU a PAC needs in a group to count as one of its gene's active PACs, for active_pacs_change. The default matches min_abs_delta_pau, so a PAC whose usage falls from active in one group to none in the other changes by enough to be called gained or lost."
         },
         "event_max_control_pau": {
           "type": "number",

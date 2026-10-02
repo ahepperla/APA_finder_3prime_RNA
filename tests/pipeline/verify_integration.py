@@ -80,9 +80,12 @@ EXPECTED_DISTAL_CALLS = {
 # Designed genes with a dominant switch, more active PACs, and fewer active
 # PACs; the other designed genes have none.
 EXPECTED_GENE_EVENTS = {
+    # ipa01's intronic PAC has fitted PAU 0.09 in DMSO and 0.57 in TreatmentA,
+    # so at the default active_pac_min_pau of 0.10 it is active only in the
+    # treatment.
     "TreatmentA_vs_DMSO": (
         {"bg01", "bg03", "bg04", "bg05", "bg06", "gene_plus", "ipa01", "ale01"},
-        {"bg09", "gene_plus"},
+        {"bg09", "gene_plus", "ipa01"},
         {"bg01"},
     ),
     "TreatmentB_vs_Vehicle": ({"gene_plus"}, {"bg02"}, set()),

@@ -263,7 +263,7 @@ dm_zero_sensitivity_repeats: 5
 dm_zero_max_delta_pau_spread: 0.02
 random_seed: 1729
 event_min_treatment_pau: 0.05
-active_pac_min_pau: 0.05
+active_pac_min_pau: 0.10
 event_max_control_pau: 0.01
 event_min_supporting_samples: 2
 potential_internal_priming_withheld_calls: true
@@ -1109,7 +1109,9 @@ Classify PACs using both statistical evidence and detection evidence:
   the highest fitted-usage PAC differs between treatment and control;
 - **more or fewer active PACs:** in a gene that passes the contrast-specific
   gene test, the number of active PACs differs between the groups. An active
-  PAC has fitted PAU of at least `active_pac_min_pau` in a group.
+  PAC has fitted PAU of at least `active_pac_min_pau` in a group. The default,
+  0.10, matches `min_abs_delta_pau`, so a PAC whose usage falls from active to
+  none changes by enough to be called lost.
 
 The first four are PAC calls, a PAC's `event_type`. The last two are gene
 events, and only the `.genes` table records them, in `dominant_switch` and
@@ -1202,7 +1204,9 @@ Default gained-PAC requirements:
 - fitted control PAU is at most `event_max_control_pau`;
 - fitted treatment PAU is at least `event_min_treatment_pau`;
 - treatment support meets `event_min_supporting_samples`;
-- delta PAU is at least `min_abs_delta_pau`;
+- delta PAU is at least `min_abs_delta_pau`; at the defaults this is the
+  stricter of the two usage rules, so fitted treatment PAU must be at least
+  0.10;
 - PAC-level FDR passes `site_fdr`;
 - the PAC is not low confidence, `zero_boundary_unstable`, or flagged as likely
   internal priming;

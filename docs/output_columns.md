@@ -48,7 +48,7 @@ BED files, except `locus`, which is 1-based for genome browsers.
   significance, stability, coverage, confidence, or replication; they are not confirmed.
 - **Detected** (in a group): at least event_min_supporting_samples (default 2) of the
   group's samples have a read at the PAC. Gained and lost calls use this.
-- **Active PAC**: a PAC with at least active_pac_min_pau (default 0.05) of its gene's
+- **Active PAC**: a PAC with at least active_pac_min_pau (default 0.10) of its gene's
   fitted usage in a group. `active_pacs_change` in the `.genes` tables compares their
   number between the groups.
 - **Exact-boundary and proximal-tag libraries**: in an exact-boundary library, read ends
@@ -776,7 +776,7 @@ grouped by gene.
 | `observed_control_pau`, `observed_treatment_pau` | Each sample's observed PAU, as `sample=value` pairs: the PAC's reads over the reads at the gene's tested PACs, so it can differ from `counts/observed_pau.tsv.gz`; `NA` for a sample without reads there. |
 | `effect_exceeds_threshold` | `TRUE` when the absolute delta_pau is at least min_abs_delta_pau (default 0.1). |
 | `dominant_pac_control`, `dominant_pac_treatment` | pac_id of the gene's tested PAC with the highest fitted PAU in each group; the same on every row of the gene. |
-| `control_active_pacs`, `treatment_active_pacs` | Number of the gene's tested PACs that are active in each group, with fitted PAU of at least active_pac_min_pau (default 0.05). |
+| `control_active_pacs`, `treatment_active_pacs` | Number of the gene's tested PACs that are active in each group, with fitted PAU of at least active_pac_min_pau (default 0.10). |
 | `model_status` | How the gene was fitted: `fitted`; `fitted_with_zero_count_stabilization` (a PAC had no reads in a whole group, or the plain fit failed, so the results are medians of refits with small seeded values in place of zero counts, and the precision and p-values depend on random_seed); `fit_unavailable` (no usable fit); or `group_without_counts` (the control or treatment group has no reads at the gene, so it is not tested in this comparison). |
 | `precision` | The gene's Dirichlet-multinomial precision, shared by the conditions of the family: higher means the replicates vary less around the fitted usage. |
 | `alpha_control`, `alpha_treatment` | The fitted Dirichlet parameters for this PAC in each group, fitted PAU times precision. |
@@ -797,7 +797,8 @@ How `event_type` is decided, with T the min_abs_delta_pau (default 0.1):
   min_gene_total (default 20), so the control had the reads to show the PAC; and the PAC is
   not zero_boundary_unstable, not low confidence, not flagged for internal priming, and not
   in an exploratory comparison. It means not detected in the control, not necessarily
-  absent there.
+  absent there. At the defaults the delta_pau rule is the stricter one, so
+  fitted_treatment_pau must be at least 0.10.
 - `lost`: the mirror image, detected in the control but not in the treatment, with
   treatment_gene_total at least min_gene_total.
 - `gained_candidate`, `lost_candidate`: the detection, fitted-PAU, and delta_pau rules of a
@@ -822,7 +823,7 @@ APA pattern with the numbers behind it.
 | `condition` | The treatment condition. |
 | `control_condition` | Its direct control. |
 | `dominant_switch` | `TRUE` when the gene passes gene_fdr (default 0.05) and its most-used tested PAC, the one with the highest fitted PAU, differs between control and treatment. |
-| `active_pacs_change` | `more` or `fewer` when the gene has more or fewer active PACs (fitted PAU of at least active_pac_min_pau, default 0.05) in the treatment than in the control; `none` when the number is the same, the gene does not pass gene_fdr, or it has no fitted usage. |
+| `active_pacs_change` | `more` or `fewer` when the gene has more or fewer active PACs (fitted PAU of at least active_pac_min_pau, default 0.10) in the treatment than in the control; `none` when the number is the same, the gene does not pass gene_fdr, or it has no fitted usage. |
 | `apa_pattern` | How the gene's usage moved: `intronic_gain`, `intronic_loss`, `alternative_last_exon`, `utr_shortening`, or `utr_lengthening`, each possibly with the suffix `_potential_internal_priming`; `unclassified_change`; or `none`. Several patterns are joined by `;`, and the rules are listed below the table. |
 | `delta_intronic_share` | Change, treatment minus control, in the share of the gene's fitted usage at its tested PACs in introns and internal exons (the upstream region), from -1 to 1; `0` when it has no tested PAC there, and empty without fitted usage. |
 | `delta_utr_distal_share` | Change in the distal PAC's share of the main last exon's usage, the 3' counterpart of DaPars' PDUI: negative means a shorter 3' UTR. Empty unless that exon has 2 or more tested PACs and at least event_min_treatment_pau (default 0.05) of the gene's usage in both groups. |

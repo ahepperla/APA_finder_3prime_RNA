@@ -474,7 +474,7 @@ a.cite:hover { text-decoration: underline; }
     <h1>PACusage methods and rationale</h1>
     <p class="lede">PACusage finds polyadenylation site clusters (PACs) in 3′-end RNA-seq alignments, counts the reads at each one, and tests every treatment against its declared control for changes in how a gene's reads are shared among its PACs. This document goes through the pipeline in the order it runs. For each step it says what the step does, which defaults it uses, and why, with the statistical result, biological observation, or community standard behind the choice. Limitations and open questions for reviewers are collected at the end.</p>
     <div class="meta">
-      <span><strong>Version</strong> PACusage 0.6.1</span>
+      <span><strong>Version</strong> PACusage 0.7.0</span>
       <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA</span>
       <span><strong>Commit</strong> <code>4402cbb</code></span>
       <span><strong>Date</strong> 1 October 2026</span>
@@ -1084,12 +1084,12 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
           <table>
             <thead><tr><th>Call or event</th><th>Rule</th></tr></thead>
             <tbody>
-              <tr><td><code>gained</code></td><td>Not detected in the control, with fitted control PAU ≤ 0.01. Detected in the treatment, with fitted treatment PAU ≥ 0.05. The control samples together have at least 20 reads at the gene (<code>min_gene_total</code>). Change in PAU ≥ 0.1. Gene FDR and PAC FDR ≤ 0.05. Not <code>zero_boundary_unstable</code>, not low confidence (so not ambiguous and not flagged for internal priming), and not in an exploratory comparison.</td></tr>
+              <tr><td><code>gained</code></td><td>Not detected in the control, with fitted control PAU ≤ 0.01. Detected in the treatment, with fitted treatment PAU ≥ 0.05. The control samples together have at least 20 reads at the gene (<code>min_gene_total</code>). Change in PAU ≥ 0.1, which at these defaults is the stricter usage rule: the treatment needs fitted PAU ≥ 0.1. Gene FDR and PAC FDR ≤ 0.05. Not <code>zero_boundary_unstable</code>, not low confidence (so not ambiguous and not flagged for internal priming), and not in an exploratory comparison.</td></tr>
               <tr><td><code>gained_candidate</code></td><td>The detection and effect-size rules for <code>gained</code> hold, but significance, stability, or confidence does not. Not a confirmed call.</td></tr>
               <tr><td><code>lost</code>, <code>lost_candidate</code></td><td>The mirror image of <code>gained</code>. The treatment samples are the ones that must cover the gene.</td></tr>
               <tr><td><code>increased_usage</code>, <code>decreased_usage</code></td><td>Detected in both groups, gene FDR and PAC FDR ≤ 0.05, and change in PAU ≥ 0.1 in the named direction.</td></tr>
               <tr><td><code>dominant_switch</code> (<code>.genes</code>)</td><td><code>TRUE</code> when, in a gene that passes the gene screen, the PAC with the highest fitted usage differs between the groups. The <code>.pacs</code> columns <code>dominant_pac_control</code> and <code>dominant_pac_treatment</code> name the two PACs.</td></tr>
-              <tr><td><code>active_pacs_change</code> (<code>.genes</code>)</td><td><code>more</code> or <code>fewer</code> when, in a gene that passes the gene screen, the number of active PACs, tested PACs with fitted PAU ≥ 0.05 (<code>active_pac_min_pau</code>), differs between the groups; <code>none</code> otherwise. The <code>.pacs</code> columns <code>control_active_pacs</code> and <code>treatment_active_pacs</code> give the counts.</td></tr>
+              <tr><td><code>active_pacs_change</code> (<code>.genes</code>)</td><td><code>more</code> or <code>fewer</code> when, in a gene that passes the gene screen, the number of active PACs, tested PACs with fitted PAU ≥ 0.1 (<code>active_pac_min_pau</code>, the same as the minimum change), differs between the groups; <code>none</code> otherwise. The <code>.pacs</code> columns <code>control_active_pacs</code> and <code>treatment_active_pacs</code> give the counts.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1145,7 +1145,7 @@ design:     ~ model_covariates + condition   (control = reference level)</div>
               <tr><td><code>apa_pattern_min_change</code></td><td class="num">0.1</td><td>Minimum shift in a region's share for an APA pattern</td></tr>
               <tr><td><code>event_min_treatment_pau</code> / <code>event_max_control_pau</code></td><td class="num">0.05 / 0.01</td><td>Fitted usage for gained or lost</td></tr>
               <tr><td><code>event_min_supporting_samples</code></td><td class="num">2</td><td>Samples with reads to count as detected</td></tr>
-              <tr><td><code>active_pac_min_pau</code></td><td class="num">0.05</td><td>Fitted usage to count as an active PAC</td></tr>
+              <tr><td><code>active_pac_min_pau</code></td><td class="num">0.1</td><td>Fitted usage to count as an active PAC</td></tr>
               <tr><td><code>potential_internal_priming_withheld_calls</code></td><td class="num">true</td><td>Count flagged gains and losses that only the flag withheld</td></tr>
             </tbody>
           </table>
