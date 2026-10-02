@@ -435,16 +435,16 @@ def test_figure_section_orders_comparisons_then_summaries(tmp_path: Path) -> Non
     write_figures(
         tmp_path,
         [
-            "B_vs_A.calls_by_gene_region", "B_vs_A.volcano", "B_vs_A.distal_usage",
-            "A_vs_B.distal_usage", "A_vs_B.calls_by_gene_region", "A_vs_B.volcano",
+            "B_vs_A.shifts_by_gene_region", "B_vs_A.volcano", "B_vs_A.distal_usage",
+            "A_vs_B.distal_usage", "A_vs_B.shifts_by_gene_region", "A_vs_B.volcano",
             "effect_vs_coverage", "concordance", "pau_pca", "concordance_matrix",
             "event_counts", "apa_pattern_grid",
         ],
     )
     section = _figure_sections(tmp_path)
     expected = [
-        "A_vs_B.volcano", "A_vs_B.distal_usage", "A_vs_B.calls_by_gene_region",
-        "B_vs_A.volcano", "B_vs_A.distal_usage", "B_vs_A.calls_by_gene_region",
+        "A_vs_B.volcano", "A_vs_B.distal_usage", "A_vs_B.shifts_by_gene_region",
+        "B_vs_A.volcano", "B_vs_A.distal_usage", "B_vs_A.shifts_by_gene_region",
         "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",
         "effect_vs_coverage",
     ]
@@ -455,7 +455,7 @@ def test_figure_section_orders_comparisons_then_summaries(tmp_path: Path) -> Non
     assert re.findall(r"alt='([^']*)'", section)[:3] == [
         "Volcano plot for A vs B",
         "Distal PAC usage for A vs B",
-        "PAC calls by gene region for A vs B",
+        "Shifts by gene region for A vs B",
     ]
 
 

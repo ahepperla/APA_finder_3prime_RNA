@@ -47,14 +47,31 @@ pac_table <- function(...) {
   do.call(rbind, rows)
 }
 
+SHIFT_FIELDS <- c(
+  "shift_direction", "shift_from_pac_id", "shift_from_gene_region", "shift_from_event_type",
+  "shift_to_pac_id", "shift_to_gene_region", "shift_to_event_type"
+)
+
+# One genes row; shift holds its shift's fields in SHIFT_FIELDS order.
 gene_row <- function(gene_id, dominant_switch = FALSE, active_pacs_change = "none",
-                     gene_fdr = 0.5, apa_pattern = "none") {
-  data.frame(
+                     gene_fdr = 0.5, apa_pattern = "none", shift = rep(NA_character_, 7)) {
+  row <- data.frame(
     gene_id = gene_id, gene_name = toupper(gene_id), condition = "T",
     control_condition = "C", dominant_switch = dominant_switch,
     active_pacs_change = active_pacs_change, apa_pattern = apa_pattern, gene_fdr = gene_fdr,
     exploratory_insufficient_replicates = FALSE, stringsAsFactors = FALSE
   )
+  row[SHIFT_FIELDS] <- as.list(shift)
+  row
+}
+
+# A genes row whose usage moved from one PAC to another, with the regions and
+# event types given.
+shift_row <- function(gene_id, direction, from, to, from_region = "last_exon",
+                      to_region = "last_exon", from_event = "decreased_usage",
+                      to_event = "increased_usage") {
+  gene_row(gene_id, gene_fdr = 0.01, shift = c(direction, from, from_region, from_event, to,
+    to_region, to_event))
 }
 
 # A genes table for a PAC table's genes, with the given APA patterns by gene.
@@ -162,42 +179,90 @@ test_case("F-03", "distal rows sort by gene FDR with missing FDRs last", {
   check(grepl("atlas lacks coordinates for PACs: absent", missing, fixed = TRUE), "missing coordinate: ", missing)
 })
 
-test_case("F-04", "gene regions count confirmed calls only, with every region present", {
-  pacs <- pac_table(
-    pac_row("t1", "g1", event_type = "increased_usage"),
-    pac_row("t2", "g1", event_type = "lost"),
-    pac_row("t3", "g2", event_type = "gained_candidate"),
-    pac_row("i1", "g3", event_type = "gained", gene_region = "intron"),
-    pac_row("i2", "g3", event_type = "none", gene_region = "intron"),
-    pac_row("o1", "g4", event_type = "lost_candidate", gene_region = "internal_exon")
+test_case("F-04", "shifts count each gene once, by region pair and direction, with shared rows", {
+  a <- rbind(
+    shift_row("g1", "proximal", "g1_from", "g1_to"),
+    shift_row("g2", "distal", "g2_from", "g2_to"),
+    # The to side has no call of its own; the gene still counts once.
+    shift_row("g3", "distal", "g3_from", "g3_to", to_event = "none"),
+    shift_row("g4", "proximal", "g4_from", "g4_to", to_region = "intron"),
+    gene_row("g5"),
+    # An empty field, as read from a table, is no shift.
+    gene_row("g6", shift = rep("", 7))
   )
-  counts <- figures$gene_region_counts(pacs)
-  check(nrow(counts) == 8L, "rows: ", nrow(counts))
-  check(identical(as.character(counts$gene_region), rep(names(figures$GENE_REGIONS), 2)), "regions.")
-  check(identical(as.character(counts$direction), rep(c("down", "up"), each = 4)), "directions.")
-  check(identical(counts$count, c(1L, 0L, 0L, 0L, 1L, 0L, 1L, 0L)), "counts: ", paste(counts$count, collapse = ", "))
-  check(identical(counts$tested, rep(c(3L, 1L, 2L, 0L), 2)), "tested: ", paste(counts$tested, collapse = ", "))
+  b <- rbind(
+    shift_row("h1", "distal", "h1_from", "h1_to", from_region = "intron"),
+    shift_row("h2", "proximal", "h2_from", "h2_to", from_region = "downstream_of_gene",
+      to_region = "internal_exon")
+  )
+  # The pairs of both comparisons, in region order: from, then to.
+  pairs <- figures$shift_pairs(list(A = a, B = b))
+  expected_pairs <- c(
+    "last_exon|last_exon", "last_exon|intron", "intron|last_exon",
+    "downstream_of_gene|internal_exon"
+  )
+  check(identical(pairs, expected_pairs), "pairs: ", paste(pairs, collapse = ", "))
+  counts <- figures$shift_region_counts(a, pairs)
+  check(identical(as.character(counts$pair), rep(pairs, 2)), "pair rows.")
+  check(identical(as.character(counts$direction), rep(c("proximal", "distal"), each = 4)), "directions.")
+  check(identical(counts$count, c(1L, 1L, 0L, 0L, 2L, 0L, 0L, 0L)), "counts: ", paste(counts$count, collapse = ", "))
+  none <- figures$shift_pairs(list(A = rbind(gene_row("x"), gene_row("y", shift = rep("", 7)))))
+  check(identical(none, character()), "pairs without shifts: ", paste(none, collapse = ", "))
+  check(nrow(figures$shift_region_counts(gene_row("x"), none)) == 0L, "counts without pairs.")
   unexpected <- tryCatch(
-    figures$gene_region_counts(pac_table(pac_row("x", "g", gene_region = "intergenic"))),
+    figures$shift_pairs(list(A = shift_row("x", "distal", "p1", "p2", from_region = "intergenic"))),
     error = function(error) conditionMessage(error)
   )
-  check(grepl("Unexpected gene_region values: intergenic", unexpected, fixed = TRUE), unexpected)
+  check(grepl("Unexpected shift gene_region values: intergenic", unexpected, fixed = TRUE), unexpected)
 })
 
-test_case("F-05", "gene events come from the genes table, PAC events from the PAC rows", {
+test_case("F-39", "the shifts figure draws every pair's genes either side of zero, and grows with the pairs", {
+  pairs <- c("last_exon|last_exon", "last_exon|intron")
+  genes <- rbind(
+    shift_row("g1", "proximal", "a", "b"),
+    shift_row("g2", "proximal", "c", "d"),
+    shift_row("g3", "distal", "e", "f"),
+    shift_row("g4", "proximal", "g", "h", to_region = "intron")
+  )
+  plot <- figures$plot_shifts_by_gene_region(figures$shift_region_counts(genes, pairs), comparison)
+  data <- plot$data
+  check(identical(levels(data$label), c("Last exon -> Intron", "Last exon -> Last exon")), "rows: ", paste(levels(data$label), collapse = ", "))
+  check(identical(data$signed, c(-2L, -1L, 1L, 0L)), "signed counts: ", paste(data$signed, collapse = ", "))
+  check(grepl("^4 genes with a confirmed shift", plot$labels$subtitle), "subtitle: ", plot$labels$subtitle)
+  check(grepl("3 to a more proximal PAC, 1 to a more distal one$", plot$labels$subtitle), "subtitle: ", plot$labels$subtitle)
+  # A comparison without shifts keeps the rows, with a note.
+  quiet <- figures$plot_shifts_by_gene_region(figures$shift_region_counts(gene_row("x"), pairs), comparison)
+  check(identical(levels(quiet$data$label), levels(data$label)), "the empty comparison lost its rows.")
+  check(any(vapply(quiet$layers, function(layer) identical(layer$aes_params$label, "No gene has a confirmed shift"), logical(1))), "no note on the empty comparison.")
+  # No shift in any comparison: no rows, and a placeholder.
+  placeholder <- figures$plot_shifts_by_gene_region(figures$shift_region_counts(gene_row("x"), character()), comparison)
+  note <- vapply(placeholder$layers, function(layer) as.character(layer$aes_params$label %||% ""), character(1))
+  check(identical(unname(note), "No gene has a confirmed shift in any comparison"), "placeholder: ", paste(note, collapse = ", "))
+  check(identical(figures$shift_figure_height(character()), 2.5), "height without pairs.")
+  check(identical(figures$shift_figure_height(pairs), 2.75), "height for two pairs.")
+})
+
+test_case("F-05", "each gene counts once by its PAC calls; gene events come from the genes table", {
   comparisons <- data.frame(
     stem = c("A_vs_C", "B_vs_C"), condition = c("A", "B"), control_condition = "C",
     title = c("A vs C", "B vs C"), stringsAsFactors = FALSE
   )
   pacs <- pac_table(
     pac_row("p1", "g1", event_type = "gained"),
-    pac_row("p2", "g1", event_type = "gained"),
-    pac_row("p3", "g2", event_type = "increased_usage"),
-    pac_row("p4", "g2", event_type = "decreased_usage"),
-    pac_row("p5", "g3", event_type = "gained_candidate"),
-    pac_row("p6", "g3", event_type = "lost_candidate"),
-    pac_row("p7", "g4"),
-    pac_row("p8", "g5")
+    pac_row("p2", "g1", event_type = "lost"),
+    pac_row("p3", "g2", event_type = "gained"),
+    pac_row("p4", "g2", event_type = "gained"),
+    pac_row("p5", "g2", event_type = "decreased_usage"),
+    pac_row("p6", "g3", event_type = "lost"),
+    pac_row("p7", "g3", event_type = "increased_usage"),
+    pac_row("p8", "g3", event_type = "gained_candidate"),
+    pac_row("p9", "g4", event_type = "increased_usage"),
+    pac_row("p10", "g4", event_type = "decreased_usage"),
+    pac_row("p11", "g5", event_type = "decreased_usage"),
+    pac_row("p12", "g5", event_type = "lost_candidate"),
+    pac_row("p13", "g6", event_type = "gained_candidate"),
+    pac_row("p14", "g6", event_type = "lost_candidate"),
+    pac_row("p15", "g7")
   )
   genes <- rbind(
     gene_row("g1", dominant_switch = TRUE),
@@ -211,21 +276,22 @@ test_case("F-05", "gene events come from the genes table, PAC events from the PA
     list(A_vs_C = pacs, B_vs_C = pac_table()),
     list(A_vs_C = genes, B_vs_C = genes[0, , drop = FALSE])
   )
-  events <- c(figures$PAC_EVENTS, figures$GENE_EVENTS)
+  events <- c(figures$GENE_CALLS, figures$GENE_EVENTS)
   check(identical(levels(counts$event), events), "event levels.")
-  check(identical(levels(counts$level), c("PAC events", "Gene events")), "level levels.")
+  check(identical(levels(counts$level), c("Genes by PAC calls", "Gene events")), "level levels.")
   check(identical(levels(counts$comparison), c("A_vs_C", "B_vs_C")), "comparison levels.")
   first <- counts[counts$comparison == "A_vs_C", , drop = FALSE]
   observed <- stats::setNames(first$count, as.character(first$event))
+  # g1 gains and loses; g2 gains twice and g3 loses, each once; g4 and g5
+  # change usage, a candidate aside; g6 has candidates only; g7 nothing.
   expected <- c(
-    gained = 2L, increased_usage = 1L, decreased_usage = 1L, lost = 0L,
-    gained_candidate = 1L, lost_candidate = 1L, dominant_switch = 2L,
-    more_active_pacs = 1L, fewer_active_pacs = 1L
+    gained_and_lost = 1L, gained = 1L, lost = 1L, changed_usage = 2L, candidates_only = 1L,
+    dominant_switch = 2L, more_active_pacs = 1L, fewer_active_pacs = 1L
   )
   check(identical(observed, expected), "counts: ", paste(names(observed), observed, sep = "=", collapse = ", "))
-  check(identical(as.character(first$level), rep(c("PAC events", "Gene events"), c(6, 3))), "levels.")
+  check(identical(as.character(first$level), rep(c("Genes by PAC calls", "Gene events"), c(5, 3))), "levels.")
   second <- counts[counts$comparison == "B_vs_C", , drop = FALSE]
-  check(nrow(second) == 9L && all(second$count == 0L), "the empty comparison is not all zeros.")
+  check(nrow(second) == 8L && all(second$count == 0L), "the empty comparison is not all zeros.")
 })
 
 test_case("F-06", "volcano data caps zero p-values, counts missing ones, and labels one PAC per gene", {
@@ -242,7 +308,16 @@ test_case("F-06", "volcano data caps zero p-values, counts missing ones, and lab
     pac_row("no_p", "other", pvalue = NA_real_),
     pac_row("no_delta", "other", control = NA_real_, pvalue = 0.3)
   )))
-  data <- figures$volcano_data(pacs)
+  # Each geneNN loses usage at cNN to a PAC without a call; gene00 moves
+  # usage to zero.
+  genes <- do.call(rbind, c(
+    lapply(1:12, function(index) {
+      shift_row(sprintf("gene%02d", index), "distal", sprintf("c%02d", index),
+        sprintf("u%02d", index), to_event = "none")
+    }),
+    list(shift_row("gene00", "distal", "elsewhere", "zero"), gene_row("other"))
+  ))
+  data <- figures$volcano_data(pacs, genes)
   points <- data$points
   check(data$missing == 3L, "missing: ", data$missing)
   check(data$missing_candidates == 1L, "missing candidates: ", data$missing_candidates)
@@ -253,13 +328,13 @@ test_case("F-06", "volcano data caps zero p-values, counts missing ones, and lab
   check(sum(points$capped) == 1L, "capped rows: ", sum(points$capped))
   check(identical(as.character(points$call[1]), "none"), "uncalled PACs are not drawn first.")
   check(identical(as.character(points$call[points$pac_id == "candidate"]), "up_candidate"), "candidate call.")
-  # One label per gene, on its most significant confirmed PAC; candidates and
-  # uncalled PACs are not labelled.
+  # One label per gene, at the confirmed PAC its usage moved to, or else
+  # moved from; candidates and uncalled PACs are not labelled.
   expected_labels <- c("zero", sprintf("c%02d", 12:1))
   check(identical(data$labels$pac_id, expected_labels), "labels: ", paste(data$labels$pac_id, collapse = ", "))
 })
 
-test_case("F-18", "volcano labels stop at 20 genes in each direction", {
+test_case("F-18", "volcano labels stop at 20 genes on each side", {
   up <- lapply(1:25, function(index) {
     pac_row(sprintf("u%02d", index), sprintf("up%02d", index), event_type = "increased_usage",
       control = 0.3, treatment = 0.6, pvalue = 10^-(2 * index))
@@ -268,7 +343,19 @@ test_case("F-18", "volcano labels stop at 20 genes in each direction", {
     pac_row(sprintf("d%02d", index), sprintf("down%02d", index), event_type = "lost",
       control = 0.4, treatment = 0, pvalue = 10^-(2 * index + 1))
   })
-  labels <- figures$volcano_data(do.call(pac_table, c(up, down)))$labels
+  # The upNN genes gain at uNN; the downNN genes lose at dNN, with no
+  # confirmed gain, so they are labelled there.
+  genes <- do.call(rbind, c(
+    lapply(1:25, function(index) {
+      shift_row(sprintf("up%02d", index), "distal", sprintf("x%02d", index), sprintf("u%02d", index),
+        from_event = "none")
+    }),
+    lapply(1:25, function(index) {
+      shift_row(sprintf("down%02d", index), "distal", sprintf("d%02d", index),
+        sprintf("y%02d", index), from_event = "lost", to_event = "none")
+    })
+  ))
+  labels <- figures$volcano_data(do.call(pac_table, c(up, down)), genes)$labels
   check(sum(labels$call == "up") == 20L && sum(labels$call == "down") == 20L,
     "labels per direction: ", paste(table(labels$call), collapse = ", "))
   check(setequal(labels$pac_id, c(sprintf("u%02d", 6:25), sprintf("d%02d", 6:25))),
@@ -693,18 +780,25 @@ test_case("F-33", "the volcano subtitle and caption say what is left out and wha
     pac_row("no_p", "g3", pvalue = NA_real_),
     pac_row("no_p_candidate", "g3", event_type = "gained_candidate", control = 0, treatment = 0.3, pvalue = NA_real_)
   )
-  plot <- figures$plot_volcano(pacs, comparison, params, exploratory = FALSE)
+  genes <- rbind(
+    shift_row("g1", "distal", "elsewhere", "up", from_event = "none"),
+    shift_row("g2", "proximal", "down", "flat", to_event = "none"),
+    gene_row("g3")
+  )
+  plot <- figures$plot_volcano(pacs, genes, comparison, params, exploratory = FALSE)
   check(identical(plot$labels$subtitle, paste0(
-    "5 PACs tested in 3 genes; confirmed calls: 1 up, 1 down\n",
+    "5 PACs tested in 3 genes; confirmed calls: 1 up and 1 down, in 2 genes\n",
     "Not shown: 2 PACs without a p-value, including 1 candidate call"
   )), "subtitle: ", plot$labels$subtitle)
   check(grepl("^Dashed lines: a change of 0.1 either way", plot$labels$caption), "caption: ", plot$labels$caption)
+  check(grepl("\nLabels: one per gene, at the PAC its usage moved to", plot$labels$caption, fixed = TRUE), "no label note: ", plot$labels$caption)
+  check(grepl("\nEach shift shows on both sides", plot$labels$caption, fixed = TRUE), "no both-sides note: ", plot$labels$caption)
   check(grepl("\nTriangles: p-values of 0", plot$labels$caption, fixed = TRUE), "no triangle note: ", plot$labels$caption)
   # Without missing candidates or p-values of 0, neither note appears.
-  plain <- figures$plot_volcano(pacs[pacs$pac_id != "no_p_candidate", , drop = FALSE], comparison, params, FALSE)
+  plain <- figures$plot_volcano(pacs[pacs$pac_id != "no_p_candidate", , drop = FALSE], genes, comparison, params, FALSE)
   check(grepl("without a p-value$", plain$labels$subtitle), "subtitle: ", plain$labels$subtitle)
   finite <- pacs[!pacs$pac_id %in% c("down", "no_p_candidate"), , drop = FALSE]
-  check(!grepl("Triangles", figures$plot_volcano(finite, comparison, params, FALSE)$labels$caption, fixed = TRUE), "triangle note without p-values of 0.")
+  check(!grepl("Triangles", figures$plot_volcano(finite, genes, comparison, params, FALSE)$labels$caption, fixed = TRUE), "triangle note without p-values of 0.")
 })
 
 test_case("F-34", "PCA labels drop the condition's name only when every sample ID starts with it", {
@@ -756,16 +850,29 @@ test_case("F-38", "label placement has a fixed seed and no time limit", {
   check(inherits(layer$position, "PositionNudgeRepel"), "labels are not nudged off their points.")
 })
 
-test_case("F-37", "a gene with confirmed calls in both directions is labelled in each", {
+test_case("F-37", "each gene is labelled once, at the PAC its usage moved to", {
   pacs <- pac_table(
     pac_row("switch_up", "switch", event_type = "increased_usage", control = 0.3, treatment = 0.7, pvalue = 1e-30),
     pac_row("switch_down", "switch", event_type = "decreased_usage", control = 0.7, treatment = 0.3, pvalue = 1e-30),
     pac_row("switch_down2", "switch", event_type = "lost", control = 0.2, treatment = 0, pvalue = 1e-10),
+    # The label goes on the shift's PAC, not the gene's most significant one.
+    pac_row("big_a", "big", event_type = "increased_usage", control = 0.2, treatment = 0.5, pvalue = 1e-5),
+    pac_row("big_b", "big", event_type = "increased_usage", control = 0.2, treatment = 0.35, pvalue = 1e-30),
+    pac_row("big_c", "big", event_type = "decreased_usage", control = 0.6, treatment = 0.15, pvalue = 1e-30),
+    # Without a confirmed gain, the label goes where usage moved from.
+    pac_row("loss_down", "loss", event_type = "lost", control = 0.3, treatment = 0, pvalue = 1e-8),
+    pac_row("loss_up", "loss", control = 0.7, treatment = 1, pvalue = 0.2),
     pac_row("other_up", "other", event_type = "gained", control = 0, treatment = 0.4, pvalue = 1e-5)
   )
-  labels <- figures$volcano_data(pacs)$labels
+  genes <- rbind(
+    shift_row("switch", "distal", "switch_down", "switch_up"),
+    shift_row("big", "proximal", "big_c", "big_a"),
+    shift_row("loss", "distal", "loss_down", "loss_up", from_event = "lost", to_event = "none"),
+    shift_row("other", "distal", "elsewhere", "other_up", from_event = "none", to_event = "gained")
+  )
+  labels <- figures$volcano_data(pacs, genes)$labels
   observed <- paste(labels$pac_id, labels$call)
-  check(identical(sort(observed), c("other_up up", "switch_down down", "switch_up up")), "labels: ", paste(observed, collapse = ", "))
+  check(identical(sort(observed), c("big_a up", "loss_down down", "other_up up", "switch_up up")), "labels: ", paste(observed, collapse = ", "))
 })
 
 test_case("F-36", "among volcano PACs with equal p-values, the larger changes are labelled", {
@@ -773,7 +880,10 @@ test_case("F-36", "among volcano PACs with equal p-values, the larger changes ar
     pac_row(sprintf("z%02d", index), sprintf("zero%02d", index), event_type = "increased_usage",
       control = 0.1, treatment = 0.1 + (index + 10) / 100, pvalue = 0)
   })
-  labels <- figures$volcano_data(do.call(pac_table, zeros))$labels
+  genes <- do.call(rbind, lapply(1:25, function(index) {
+    shift_row(sprintf("zero%02d", index), "distal", "elsewhere", sprintf("z%02d", index))
+  }))
+  labels <- figures$volcano_data(do.call(pac_table, zeros), genes)$labels
   check(identical(labels$pac_id, sprintf("z%02d", 25:6)), "labels: ", paste(labels$pac_id, collapse = ", "))
 })
 
@@ -846,7 +956,9 @@ write_inputs <- function(directory, filled) {
     pac_row("g2_p2", "g2", "-", "none", gene_region = "intron", control = 0.5, treatment = 0.45, gene_fdr = 0.8, pvalue = 0.7, condition = "T1")
   )
   genes <- rbind(
-    gene_row("g1", dominant_switch = TRUE, gene_fdr = 0.001, apa_pattern = "utr_lengthening"),
+    gene_row("g1", dominant_switch = TRUE, gene_fdr = 0.001, apa_pattern = "utr_lengthening",
+      shift = c("distal", "g1_p1", "last_exon", "decreased_usage", "g1_p2", "last_exon",
+        "increased_usage")),
     gene_row("g2", gene_fdr = 0.8)
   )
   genes$condition <- "T1"
@@ -890,7 +1002,7 @@ write_inputs <- function(directory, filled) {
 expected_files <- sort(c(
   as.vector(outer(c("T1_vs_C", "T2_vs_C"), c(
     ".volcano.pdf", ".volcano.png", ".distal_usage.pdf", ".distal_usage.png",
-    ".distal_usage.tsv.gz", ".calls_by_gene_region.pdf", ".calls_by_gene_region.png"
+    ".distal_usage.tsv.gz", ".shifts_by_gene_region.pdf", ".shifts_by_gene_region.png"
   ), paste0)),
   "event_counts.pdf", "event_counts.png", "effect_vs_coverage.pdf", "effect_vs_coverage.png",
   "apa_pattern_grid.pdf", "apa_pattern_grid.png", "apa_patterns_by_comparison.tsv.gz",
@@ -921,7 +1033,12 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   for (name in c("event_counts.png", "effect_vs_coverage.png", "T1_vs_C.volcano.png")) {
     check(file.size(file.path(directory, "figures", name)) > 1000, name, " is nearly empty.")
   }
-  check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1000)), "event_counts size.")
+  check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1075)), "event_counts size.")
+  # One region pair, last exon to last exon, in both comparisons' figures.
+  for (stem in c("T1_vs_C", "T2_vs_C")) {
+    size <- png_size(file.path(directory, "figures", paste0(stem, ".shifts_by_gene_region.png")))
+    check(identical(size, c(1300, 500)), stem, " shifts size: ", paste(size, collapse = "x"))
+  }
   check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 800)), "coverage size.")
   sizes <- list(apa_pattern_grid = c(900, 525), concordance = c(1100, 750),
     concordance_matrix = c(950, 950), pau_pca = c(1100, 1000))

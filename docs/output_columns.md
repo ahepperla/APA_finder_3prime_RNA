@@ -51,6 +51,10 @@ BED files, except `locus`, which is 1-based for genome browsers.
 - **Active PAC**: a PAC with at least active_pac_min_pau (default 0.10) of its gene's
   fitted usage in a group. `active_pacs_change` in the `.genes` tables compares their
   number between the groups.
+- **Shift**: where a gene's usage moved, named once. PAU are shares of the gene, so usage
+  gained at one PAC is lost at others, and one shift gives calls in both directions. The
+  `shift_` columns of the `.genes` tables name the PAC the usage moved from and the PAC it
+  moved to, and say whether the new PAC is more distal or more proximal.
 - **Exact-boundary and proximal-tag libraries**: in an exact-boundary library, read ends
   mark the transcript's poly(A) junction, so a PAC is placed to the nucleotide
   (`coordinate_precision` `exact`). In a proximal-tag library, such as Plasmidsaurus 3'
@@ -815,8 +819,8 @@ Same columns as `statistics/CONDITION_vs_CONTROL.pacs.tsv.gz`. It holds the rows
 
 ### `statistics/CONDITION_vs_CONTROL.genes.tsv.gz`
 
-One row per tested gene in a comparison: its gene-level test, its gene-level events, and its
-APA pattern with the numbers behind it.
+One row per tested gene in a comparison: its gene-level test, its gene-level events, its
+APA pattern, the shift in its usage, and the numbers behind the pattern.
 
 | Column | Meaning |
 |---|---|
@@ -825,6 +829,13 @@ APA pattern with the numbers behind it.
 | `dominant_switch` | `TRUE` when the gene passes gene_fdr (default 0.05) and its most-used tested PAC, the one with the highest fitted PAU, differs between control and treatment. |
 | `active_pacs_change` | `more` or `fewer` when the gene has more or fewer active PACs (fitted PAU of at least active_pac_min_pau, default 0.10) in the treatment than in the control; `none` when the number is the same, the gene does not pass gene_fdr, or it has no fitted usage. |
 | `apa_pattern` | How the gene's usage moved: `intronic_gain`, `intronic_loss`, `alternative_last_exon`, `utr_shortening`, or `utr_lengthening`, each possibly with the suffix `_potential_internal_priming`; `unclassified_change`; or `none`. Several patterns are joined by `;`, and the rules are listed below the table. |
+| `shift_direction` | For a gene with a confirmed PAC call: `distal` when the PAC its usage moved to lies 3' of the PAC it moved from, along the transcript, and `proximal` when it lies 5'. Empty, as are the other `shift_` columns, for a gene without a confirmed call. |
+| `shift_from_pac_id` | The PAC the gene's usage moved from: its confirmed `lost` or `decreased_usage` PAC with the largest fall in fitted PAU. Without one, its PAC with the largest fitted fall, which has no confirmed call of its own. Ties go to the lower `pac_fdr`, then the PAC ID. |
+| `shift_from_gene_region` | That PAC's `gene_region`. |
+| `shift_from_event_type` | That PAC's `event_type`: `lost` or `decreased_usage`, or, in a gene without a confirmed loss, `none` or a candidate call. |
+| `shift_to_pac_id` | The PAC the gene's usage moved to: its confirmed `gained` or `increased_usage` PAC with the largest rise in fitted PAU, or without one, its PAC with the largest fitted rise. Ties go as for `shift_from_pac_id`. |
+| `shift_to_gene_region` | That PAC's `gene_region`. |
+| `shift_to_event_type` | That PAC's `event_type`: `gained` or `increased_usage`, or, in a gene without a confirmed gain, `none` or a candidate call. |
 | `delta_intronic_share` | Change, treatment minus control, in the share of the gene's fitted usage at its tested PACs in introns and internal exons (the upstream region), from -1 to 1; `0` when it has no tested PAC there, and empty without fitted usage. |
 | `delta_utr_distal_share` | Change in the distal PAC's share of the main last exon's usage, the 3' counterpart of DaPars' PDUI: negative means a shorter 3' UTR. Empty unless that exon has 2 or more tested PACs and at least event_min_treatment_pau (default 0.05) of the gene's usage in both groups. |
 | `last_exon_switch` | How much usage moved between last exons: the smaller of the largest gain and the largest loss in any last exon's share of the gene (negative when every last exon moves the same way). Empty when fewer than 2 last exons have tested PACs. |
@@ -933,13 +944,16 @@ which says how closely replicates agree.
 - `manifest/run_manifest.json`: the PACusage version, the number of samples, the
   conditions, and the checksum of `manifest/resolved_params.yaml`.
 - `figures/CONDITION_vs_CONTROL.volcano.pdf` and `.png`: each tested PAC's change in fitted
-  PAU against its PAC-level p-value, with confirmed calls colored and candidates open.
+  PAU against its PAC-level p-value, with confirmed calls colored and candidates open. Each
+  gene is labeled once, at `shift_to_pac_id`, or at `shift_from_pac_id` when only that
+  side has a confirmed call.
 - `figures/CONDITION_vs_CONTROL.distal_usage.pdf` and `.png`: each tested gene's distal PAC
   usage, control against treatment, colored by the gene's APA pattern.
-- `figures/CONDITION_vs_CONTROL.calls_by_gene_region.pdf` and `.png`: confirmed calls by
-  gene_region, losses left of zero and gains right.
-- `figures/event_counts.pdf` and `.png`: PAC calls and gene events per comparison, and the
-  genes per APA pattern.
+- `figures/CONDITION_vs_CONTROL.shifts_by_gene_region.pdf` and `.png`: each gene with a
+  confirmed call, once, by `shift_from_gene_region` and `shift_to_gene_region`, with
+  proximal shifts left of zero and distal shifts right.
+- `figures/event_counts.pdf` and `.png`: genes by their PAC calls and gene events per
+  comparison, and the genes per APA pattern.
 - `figures/apa_pattern_grid.pdf` and `.png`: up to 50 genes with an APA pattern in two or
   more comparisons, against the comparisons.
 - `figures/concordance.pdf` and `.png`: for pairs of comparisons (up to 15 panels), each

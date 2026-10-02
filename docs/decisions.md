@@ -8,6 +8,67 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-02: Figures may regroup published calls, but apply no rule of their own
+
+Status: accepted (project lead; proposed by fable-overseer at the 0.8.0
+review)
+
+How to read the AGENTS.md invariant "PLOT_FIGURES draws the calls in the
+`.pacs` and `.genes` tables and never makes its own":
+
+**Rule**
+- A figure may count, group, or intersect the calls the tables publish. In
+  0.8.0, `gene_call_counts` in `scripts/plot_usage_figures.R` counts each gene
+  once by which `event_type` values its PACs carry (a gain and a loss, a
+  gain, a loss, changed usage only, candidates only). A reader can reproduce
+  such a grouping from the tables with no parameter or threshold, so it is a
+  legend, not a call.
+- A figure may not apply a threshold, parameter, test, or positional rule to
+  produce a category, direction, or label the tables do not carry. Those
+  belong to `fit_usage_model.R`, as the shift does in 0.8.0.
+
+**Why.** The invariant keeps figure-only results from passing for calls. A
+lossless regrouping of published calls creates none; a new rule would.
+
+## 2026-10-02: Each gene's shift is named once
+
+Status: accepted (project lead, option 1 of three)
+
+The lead noticed that almost every `increased_usage` call has a matching
+`decreased_usage` call at another PAC of the same gene, as the biology
+predicts: PAU are shares of a gene, so usage gained at one PAC is lost at
+others. The figures counted and labeled calls, so they looked balanced
+between increases and decreases even when the treatment moved usage one
+way.
+
+**Decision** (version 0.8.0)
+- The `.genes` tables name each gene's shift once, in seven `shift_` columns
+  after `apa_pattern`.
+  - The to-PAC is the confirmed gain or increase with the largest change in
+    fitted PAU. The from-PAC is the confirmed loss or decrease with the
+    largest fall.
+  - A side without a confirmed call names the gene's PAC with the largest
+    fitted change that way, and its event type shows it has no confirmed
+    call.
+  - Ties go to the lower `pac_fdr`, then the PAC ID.
+  - `shift_direction` is `distal` or `proximal`.
+- `calls_by_gene_region` becomes `shifts_by_gene_region`. It counts genes by
+  where their usage moved from and to, with proximal shifts left of zero and
+  distal ones right, and every comparison's figure has the same rows.
+- `event_counts` counts genes, each once, by their PAC calls.
+- The volcano stays one point per PAC and labels each gene once, at the PAC
+  its usage moved to, or at the one it moved from when only that side has a
+  confirmed call.
+- No call, pattern, or existing column changes.
+
+**Not chosen**
+- Showing only the gaining side in the figures. It is simpler, but hides
+  treatments whose main effect is shutting a site off: in a gene with three
+  or more PACs, the loss can be the event, with the gain spread too thin to
+  call.
+- Keeping the figures and adding a note to each that every shift appears as
+  one increase and one decrease.
+
 ## 2026-10-01: Active PACs default to the minimum change
 
 Status: accepted (project lead, option 2 of three)

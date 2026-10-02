@@ -58,10 +58,15 @@ OMNIBUS_COLUMNS <- c(
   "exploratory_insufficient_replicates"
 )
 APA_METRIC_COLUMNS <- c("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
+# A gene's shift: the PACs its usage moved from and to (gene_shifts).
+SHIFT_COLUMNS <- c(
+  "shift_direction", "shift_from_pac_id", "shift_from_gene_region", "shift_from_event_type",
+  "shift_to_pac_id", "shift_to_gene_region", "shift_to_event_type"
+)
 GENE_COLUMNS <- c(
   "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-  "active_pacs_change", "apa_pattern", APA_METRIC_COLUMNS, "gene_fdr", "gene_pvalue",
-  "gene_likelihood_ratio", "gene_degrees_of_freedom", "model_status",
+  "active_pacs_change", "apa_pattern", SHIFT_COLUMNS, APA_METRIC_COLUMNS, "gene_fdr",
+  "gene_pvalue", "gene_likelihood_ratio", "gene_degrees_of_freedom", "model_status",
   "stabilization_successes", "exploratory_insufficient_replicates"
 )
 ATLAS_ANNOTATION_COLUMNS <- c(
@@ -1333,6 +1338,51 @@ gene_level_events <- function(pacs, params) {
   )
 }
 
+# One row per gene with a confirmed PAC call: the PACs its usage moved from
+# and to. A gain at one PAC is a loss at others, since a gene's fitted PAU
+# sums to 1, so one shift gives calls in both directions; this names it once.
+# The to-PAC is the gene's confirmed gain or increase with the largest change
+# in fitted PAU, and the from-PAC its confirmed loss or decrease with the
+# largest fall. Without a confirmed call in one direction, that side is the
+# gene's other PAC with the largest fitted change that way, where the usage
+# went or came from; its event type shows it has no confirmed call. Ties go
+# to the lower pac_fdr, then the PAC ID. The shift is distal when the to-PAC
+# lies 3' of the from-PAC in transcript orientation, and proximal otherwise.
+gene_shifts <- function(pacs, coordinate) {
+  up <- pacs$event_type %in% c("gained", "increased_usage")
+  down <- pacs$event_type %in% c("lost", "decreased_usage")
+  groups <- split(seq_len(nrow(pacs)), factor(pacs$gene_id, levels = unique(pacs$gene_id)))
+  groups <- groups[vapply(groups, function(index) any(up[index] | down[index]), logical(1))]
+  # The row among candidates with the largest change of the given sign.
+  pick <- function(candidates, sign) {
+    candidates[order(
+      -sign * pacs$delta_pau[candidates], pacs$pac_fdr[candidates], pacs$pac_id[candidates],
+      method = "radix"
+    )[[1L]]]
+  }
+  ends <- vapply(groups, function(index) {
+    to <- if (any(up[index])) pick(index[up[index]], 1) else NA_integer_
+    from <- if (any(down[index])) pick(index[down[index]], -1) else pick(setdiff(index, to), -1)
+    if (is.na(to)) to <- pick(setdiff(index, from), 1)
+    c(from, to)
+  }, integer(2))
+  from <- ends[1L, ]
+  to <- ends[2L, ]
+  # Positions in transcript orientation, so larger is more 3'.
+  oriented <- ifelse(pacs$strand == "-", -coordinate, coordinate)
+  data.frame(
+    gene_id = names(groups),
+    shift_direction = c("proximal", "distal")[(oriented[to] > oriented[from]) + 1L],
+    shift_from_pac_id = pacs$pac_id[from],
+    shift_from_gene_region = pacs$gene_region[from],
+    shift_from_event_type = pacs$event_type[from],
+    shift_to_pac_id = pacs$pac_id[to],
+    shift_to_gene_region = pacs$gene_region[to],
+    shift_to_event_type = pacs$event_type[to],
+    stringsAsFactors = FALSE
+  )
+}
+
 # ---- APA patterns -----------------------------------------------------------
 
 # One row per gene: its APA pattern and the numbers behind it, from each
@@ -1582,11 +1632,15 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
   event_index <- match(genes$gene_id, gene_events$gene_id)
   genes$dominant_switch <- gene_events$dominant_switch[event_index]
   genes$active_pacs_change <- gene_events$active_pacs_change[event_index]
-  patterns <- apa_patterns(pacs, as.numeric(atlas$coordinate[annotation_index]), params)
+  coordinate <- as.numeric(atlas$coordinate[annotation_index])
+  patterns <- apa_patterns(pacs, coordinate, params)
   pattern_index <- match(genes$gene_id, patterns$gene_id)
   for (column in c("apa_pattern", APA_METRIC_COLUMNS)) {
     genes[[column]] <- patterns[[column]][pattern_index]
   }
+  shifts <- gene_shifts(pacs, coordinate)
+  shift_index <- match(genes$gene_id, shifts$gene_id)
+  for (column in SHIFT_COLUMNS) genes[[column]] <- shifts[[column]][shift_index]
   genes$condition <- treatment
   genes$control_condition <- control
   genes$exploratory_insufficient_replicates <- layout$exploratory

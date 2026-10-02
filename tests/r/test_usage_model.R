@@ -1158,6 +1158,128 @@ test_case("M-24", "the genes table records every gene-level event, with or witho
   }
 })
 
+test_case("M-28", "each gene's shift names the PACs its usage moved from and to", {
+  row <- function(pac_id, gene_id, strand, coordinate, region, delta, pac_fdr, event) {
+    data.frame(
+      pac_id = pac_id, gene_id = gene_id, strand = strand, coordinate = coordinate,
+      gene_region = region, delta_pau = delta, pac_fdr = pac_fdr, event_type = event,
+      stringsAsFactors = FALSE
+    )
+  }
+  last <- "last_exon"
+  pacs <- rbind(
+    # Usage moves to the PAC at 100: proximal on the plus strand, distal on
+    # the minus strand.
+    row("plus_100", "plus", "+", 100, last, 0.3, 0.01, "increased_usage"),
+    row("plus_200", "plus", "+", 200, last, -0.3, 0.01, "decreased_usage"),
+    row("minus_100", "minus", "-", 100, last, 0.3, 0.01, "increased_usage"),
+    row("minus_200", "minus", "-", 200, last, -0.3, 0.01, "decreased_usage"),
+    # The loss is spread too thin to call, so the from side is the largest
+    # fitted fall, which has no call.
+    row("spread_100", "spread", "+", 100, "intron", 0.15, 0.01, "increased_usage"),
+    row("spread_200", "spread", "+", 200, last, -0.08, 0.2, "none"),
+    row("spread_300", "spread", "+", 300, last, -0.07, 0.3, "none"),
+    # A loss without a confirmed gain: the to side is the largest fitted
+    # rise, here a candidate downstream of the gene.
+    row("lost_100", "lost_only", "+", 100, last, 0.1, 0.2, "none"),
+    row("lost_200", "lost_only", "+", 200, last, -0.3, 0.01, "lost"),
+    row("lost_300", "lost_only", "+", 300, "downstream_of_gene", 0.2, 0.02, "gained_candidate"),
+    # On a side without a confirmed call, the largest change wins, even over a
+    # candidate.
+    row("fallback_100", "fallback", "+", 100, last, 0.12, 0.2, "gained_candidate"),
+    row("fallback_200", "fallback", "+", 200, last, -0.3, 0.01, "decreased_usage"),
+    row("fallback_300", "fallback", "+", 300, last, 0.18, 0.3, "none"),
+    # A confirmed call beats a larger change without one.
+    row("prefer_100", "prefer", "+", 100, last, 0.25, 0.3, "none"),
+    row("prefer_200", "prefer", "+", 200, last, 0.15, 0.01, "increased_usage"),
+    row("prefer_300", "prefer", "+", 300, last, -0.4, 0.01, "decreased_usage"),
+    # Among confirmed calls, the largest change wins, not the lowest FDR.
+    row("largest_100", "largest", "+", 100, last, 0.15, 0.001, "increased_usage"),
+    row("largest_200", "largest", "+", 200, last, 0.3, 0.04, "increased_usage"),
+    row("largest_300", "largest", "+", 300, last, -0.45, 0.001, "decreased_usage"),
+    # Equal changes: the lower pac_fdr wins, then the PAC ID in byte order.
+    row("tie_b", "tie", "+", 100, last, 0.2, 0.01, "increased_usage"),
+    row("tie_a", "tie", "+", 200, last, 0.2, 0.01, "increased_usage"),
+    row("tie_c", "tie", "+", 300, last, -0.2, 0.02, "decreased_usage"),
+    row("tie_d", "tie", "+", 400, last, -0.2, 0.01, "decreased_usage"),
+    # Without a confirmed call, a gene has no shift.
+    row("candidate_100", "candidate", "+", 100, last, 0.3, 0.2, "gained_candidate"),
+    row("candidate_200", "candidate", "+", 200, last, -0.3, 0.2, "none"),
+    row("uncalled_100", "uncalled", "+", 100, last, 0.05, 0.5, "none"),
+    row("uncalled_200", "uncalled", "+", 200, last, -0.05, 0.5, "none"),
+    row("unfitted_100", "unfitted", "+", 100, last, NA, NA, "none"),
+    row("unfitted_200", "unfitted", "+", 200, last, NA, NA, "none")
+  )
+  shifts <- model$gene_shifts(pacs, pacs$coordinate)
+  expected <- data.frame(
+    gene_id = c("plus", "minus", "spread", "lost_only", "fallback", "prefer", "largest", "tie"),
+    shift_direction = c("proximal", "distal", "proximal", "distal", "distal", "proximal",
+      "proximal", "proximal"),
+    shift_from_pac_id = c("plus_200", "minus_200", "spread_200", "lost_200", "fallback_200",
+      "prefer_300", "largest_300", "tie_d"),
+    shift_from_gene_region = rep(last, 8),
+    shift_from_event_type = c("decreased_usage", "decreased_usage", "none", "lost",
+      "decreased_usage", "decreased_usage", "decreased_usage", "decreased_usage"),
+    shift_to_pac_id = c("plus_100", "minus_100", "spread_100", "lost_300", "fallback_300",
+      "prefer_200", "largest_200", "tie_a"),
+    shift_to_gene_region = c(last, last, "intron", "downstream_of_gene", last, last, last, last),
+    shift_to_event_type = c("increased_usage", "increased_usage", "increased_usage",
+      "gained_candidate", "none", "increased_usage", "increased_usage", "increased_usage"),
+    stringsAsFactors = FALSE
+  )
+  for (column in names(expected)) {
+    check(
+      identical(shifts[[column]], expected[[column]]),
+      column, " was ", paste(shifts[[column]], collapse = ", ")
+    )
+  }
+  check(
+    identical(names(shifts), c("gene_id", model$SHIFT_COLUMNS)),
+    "columns were ", paste(names(shifts), collapse = ", ")
+  )
+  after <- match("apa_pattern", model$GENE_COLUMNS) + seq_along(model$SHIFT_COLUMNS)
+  check(
+    identical(model$GENE_COLUMNS[after], model$SHIFT_COLUMNS),
+    "the shift columns do not follow apa_pattern: ", paste(model$GENE_COLUMNS, collapse = ", ")
+  )
+
+  # In the fitted tables, exactly the genes with a confirmed call have a
+  # shift, and it names their own PACs, as the PAC rows record them.
+  run <- require_run(run_a)
+  confirmed <- c("gained", "increased_usage", "decreased_usage", "lost")
+  for (comparison in c("T1_vs_C", "T2_vs_C")) {
+    genes <- read_result(run$final_directory, paste0(comparison, ".genes.tsv.gz"))
+    pacs <- read_result(run$final_directory, paste0(comparison, ".pacs.tsv.gz"))
+    called <- unique(pacs$gene_id[pacs$event_type %in% confirmed])
+    shifted <- genes[!is.na(genes$shift_direction), , drop = FALSE]
+    check(length(called) > 0L, comparison, ": the run has no confirmed calls.")
+    check(
+      setequal(shifted$gene_id, called),
+      comparison, ": shifted genes were ", paste(sort(shifted$gene_id), collapse = ", ")
+    )
+    unshifted <- genes[is.na(genes$shift_direction), model$SHIFT_COLUMNS, drop = FALSE]
+    check(all(is.na(as.matrix(unshifted))), comparison, ": a gene without a shift has shift fields.")
+    for (side in c("from", "to")) {
+      index <- match(shifted[[paste0("shift_", side, "_pac_id")]], pacs$pac_id)
+      check(
+        identical(pacs$gene_id[index], shifted$gene_id),
+        comparison, ": a ", side, "-PAC belongs to another gene."
+      )
+      for (field in c("gene_region", "event_type")) {
+        check(
+          identical(pacs[[field]][index], shifted[[paste0("shift_", side, "_", field)]]),
+          comparison, ": shift_", side, "_", field, " disagrees with the PAC rows."
+        )
+      }
+      delta <- as_number(pacs$delta_pau[index])
+      check(
+        all(if (side == "from") delta < 0 else delta > 0),
+        comparison, ": a ", side, "-PAC changes the wrong way."
+      )
+    }
+  }
+})
+
 test_case("M-25", "APA patterns follow region shares and direction-matched calls", {
   params <- list(
     min_abs_delta_pau = 0.10, apa_pattern_min_change = 0.10, event_min_treatment_pau = 0.05,

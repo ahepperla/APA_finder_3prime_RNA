@@ -144,7 +144,7 @@ def main(root: Path) -> None:
     switched = genes.loc[genes["dominant_switch"].astype(str).str.lower() == "true", "gene_id"]
     assert set(shifted_genes) <= set(switched), sorted(switched)
     figures = {path.name for path in (root / "figures").iterdir()}
-    kinds = ("volcano", "distal_usage", "calls_by_gene_region")
+    kinds = ("volcano", "distal_usage", "shifts_by_gene_region")
     stems = [f"TreatmentA_vs_DMSO.{kind}" for kind in kinds]
     stems += [
         "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",

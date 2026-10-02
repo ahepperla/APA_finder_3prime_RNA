@@ -28,7 +28,9 @@ PACS_NUMERIC <- c(
 )
 GENES_REQUIRED <- c(
   "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
-  "active_pacs_change", "apa_pattern", "gene_fdr", "exploratory_insufficient_replicates"
+  "active_pacs_change", "apa_pattern", "shift_direction", "shift_from_pac_id",
+  "shift_from_gene_region", "shift_from_event_type", "shift_to_pac_id", "shift_to_gene_region",
+  "shift_to_event_type", "gene_fdr", "exploratory_insufficient_replicates"
 )
 DISTAL_COLUMNS <- c(
   "gene_id", "gene_name", "condition", "control_condition", "direction", "apa_pattern",
@@ -69,17 +71,23 @@ APA_CLASSES <- c(
   utr_lengthening = "UTR lengthening", unclassified_change = "Unclassified change",
   none = "No pattern"
 )
-PAC_EVENTS <- c(
-  "gained", "increased_usage", "decreased_usage", "lost", "gained_candidate",
-  "lost_candidate"
-)
+# On the event counts, each gene counts once by its PAC calls: the confirmed
+# calls it has, or candidates only. One shift gives calls in both directions,
+# so counting PACs would count it twice.
+GENE_CALLS <- c("gained_and_lost", "gained", "lost", "changed_usage", "candidates_only")
 GENE_EVENTS <- c("dominant_switch", "more_active_pacs", "fewer_active_pacs")
 EVENT_LABELS <- c(
-  gained = "Gained", increased_usage = "Increased usage",
-  decreased_usage = "Decreased usage", lost = "Lost",
-  gained_candidate = "Gained (candidate)", lost_candidate = "Lost (candidate)",
+  gained_and_lost = "Gained and lost PACs", gained = "Gained a PAC", lost = "Lost a PAC",
+  changed_usage = "Changed usage only", candidates_only = "Candidate calls only",
   dominant_switch = "Dominant switch", more_active_pacs = "More active PACs",
   fewer_active_pacs = "Fewer active PACs"
+)
+# A gene's shift moves its usage to a PAC 5' (proximal) or 3' (distal) of the
+# one it moved from. The shifts figure names regions briefly.
+SHIFT_DIRECTIONS <- c(proximal = "To a more proximal PAC", distal = "To a more distal PAC")
+SHIFT_REGIONS <- c(
+  last_exon = "Last exon", internal_exon = "Internal exon", intron = "Intron",
+  downstream_of_gene = "Downstream"
 )
 
 # ---- Drawing ----------------------------------------------------------------
@@ -113,10 +121,14 @@ CONCORDANCE_COLORS <- c(both = "#CC79A7", one = "#56B4E9")
 COLOR_UP <- "#D55E00"
 COLOR_DOWN <- "#0072B2"
 COLOR_NONE <- "grey70"
+# Genes that gain or lose a PAC get the call colors, near black when they do
+# both; genes whose calls only change usage are grey, so the gains and losses
+# stand out, and genes with candidate calls only are light grey. None of
+# these is near an APA pattern color drawn below them.
 EVENT_COLORS <- c(
-  gained = "#D55E00", increased_usage = "#E69F00", decreased_usage = "#56B4E9",
-  lost = "#0072B2", gained_candidate = "#EEBF99", lost_candidate = "#99C7E0",
-  dominant_switch = "#CC79A7", more_active_pacs = "#009E73", fewer_active_pacs = "#80CEB9"
+  gained_and_lost = "#222222", gained = COLOR_UP, lost = COLOR_DOWN, changed_usage = "#999999",
+  candidates_only = "grey80", dominant_switch = "#CC79A7", more_active_pacs = "#009E73",
+  fewer_active_pacs = "#80CEB9"
 )
 DIRECTION_COLORS <- c(up = COLOR_UP, down = COLOR_DOWN)
 APA_COLORS <- c(
@@ -124,6 +136,10 @@ APA_COLORS <- c(
   utr_shortening = "#0072B2", utr_lengthening = "#D55E00", unclassified_change = "#555555",
   none = "grey75"
 )
+# Proximal shifts are blue and distal ones vermillion, the hues of UTR
+# shortening and lengthening. A proximal shift need not shorten a UTR, though:
+# a move into an intron is proximal too.
+SHIFT_COLORS <- c(proximal = "#0072B2", distal = "#D55E00")
 CALL_DIRECTION_LABELS <- c(up = "Increased or gained", down = "Decreased or lost")
 MARK_SHAPES <- c(
   "Confirmed" = 16, "Candidate" = 1, "Confirmed, p = 0" = 17, "Candidate, p = 0" = 2
@@ -322,34 +338,74 @@ distal_usage_table <- function(pacs, coordinates, genes) {
   list(table = table, without_distal = length(unique(pacs$gene_id)) - nrow(table))
 }
 
-# Confirmed up and down calls by gene region, with every region and both
-# directions present. Candidates are not counted.
-gene_region_counts <- function(pacs) {
-  unknown <- setdiff(pacs$gene_region, names(GENE_REGIONS))
+# The genes of a genes table that have a shift: a confirmed PAC call, and the
+# PACs fit_usage_model.R names as where its usage moved from and to.
+shifted_genes <- function(genes) {
+  genes[!is.na(genes$shift_direction) & nzchar(genes$shift_direction), , drop = FALSE]
+}
+
+# The from -> to pairs of gene regions that shifts take in any comparison, as
+# "from|to", in region order. Every comparison's shifts figure has these rows.
+shift_pairs <- function(genes_tables) {
+  shifted <- lapply(genes_tables, shifted_genes)
+  regions <- unlist(lapply(shifted, function(genes) {
+    c(genes$shift_from_gene_region, genes$shift_to_gene_region)
+  }))
+  unknown <- setdiff(regions, names(GENE_REGIONS))
   if (length(unknown)) {
-    stop("Unexpected gene_region values: ",
+    stop("Unexpected shift gene_region values: ",
       paste(sort(unknown, method = "radix"), collapse = ", "), ".")
   }
-  classes <- factor(pacs$gene_region, levels = names(GENE_REGIONS))
-  call <- pac_calls(pacs$event_type)
-  bins <- length(GENE_REGIONS)
+  used <- unlist(lapply(shifted, function(genes) {
+    paste(genes$shift_from_gene_region, genes$shift_to_gene_region, sep = "|")
+  }))
+  pairs <- expand.grid(to = names(GENE_REGIONS), from = names(GENE_REGIONS),
+    stringsAsFactors = FALSE)
+  pairs <- paste(pairs$from, pairs$to, sep = "|")
+  pairs[pairs %in% used]
+}
+
+# Genes with a shift in one comparison, by region pair and direction, with a
+# row for every pair and direction.
+shift_region_counts <- function(genes, pairs) {
+  genes <- shifted_genes(genes)
+  key <- paste(genes$shift_from_gene_region, genes$shift_to_gene_region, sep = "|")
+  count <- function(direction) {
+    tabulate(match(key[genes$shift_direction == direction], pairs), length(pairs))
+  }
   data.frame(
-    gene_region = factor(rep(names(GENE_REGIONS), 2), levels = names(GENE_REGIONS)),
-    direction = factor(rep(c("down", "up"), each = bins), levels = c("down", "up")),
-    count = c(tabulate(classes[call == "down"], bins), tabulate(classes[call == "up"], bins)),
-    tested = rep(tabulate(classes, bins), 2)
+    pair = factor(rep(pairs, 2), levels = pairs),
+    direction = factor(rep(names(SHIFT_DIRECTIONS), each = length(pairs)),
+      levels = names(SHIFT_DIRECTIONS)),
+    count = c(count("proximal"), count("distal"))
   )
 }
 
-# PAC events count rows of .pacs, and gene events count genes flagged in
-# .genes.
+# Each gene once, by its PAC calls: both a confirmed gain and a confirmed
+# loss, one of them, changes in usage only, or candidate calls only.
+gene_call_counts <- function(pacs) {
+  genes <- function(events) unique(pacs$gene_id[pacs$event_type %in% events])
+  gained <- genes("gained")
+  lost <- genes("lost")
+  changed <- genes(c("increased_usage", "decreased_usage"))
+  candidates <- genes(c("gained_candidate", "lost_candidate"))
+  c(
+    gained_and_lost = length(intersect(gained, lost)),
+    gained = length(setdiff(gained, lost)),
+    lost = length(setdiff(lost, gained)),
+    changed_usage = length(setdiff(changed, c(gained, lost))),
+    candidates_only = length(setdiff(candidates, c(gained, lost, changed)))
+  )
+}
+
+# Genes by their PAC calls, from the .pacs rows, and gene events, from the
+# genes flagged in .genes.
 event_count_table <- function(comparisons, pacs_tables, genes_tables) {
   rows <- lapply(comparisons$stem, function(stem) {
-    pacs <- pacs_tables[[stem]]
     genes <- genes_tables[[stem]]
     genes <- genes[!duplicated(genes$gene_id), , drop = FALSE]
     counts <- c(
-      vapply(PAC_EVENTS, function(event) sum(pacs$event_type == event), integer(1)),
+      gene_call_counts(pacs_tables[[stem]]),
       dominant_switch = sum(genes$dominant_switch),
       more_active_pacs = sum(genes$active_pacs_change == "more"),
       fewer_active_pacs = sum(genes$active_pacs_change == "fewer")
@@ -360,10 +416,10 @@ event_count_table <- function(comparisons, pacs_tables, genes_tables) {
   data.frame(
     comparison = factor(counts$comparison, levels = comparisons$stem),
     level = factor(
-      ifelse(counts$event %in% GENE_EVENTS, "Gene events", "PAC events"),
-      levels = c("PAC events", "Gene events")
+      ifelse(counts$event %in% GENE_EVENTS, "Gene events", "Genes by PAC calls"),
+      levels = c("Genes by PAC calls", "Gene events")
     ),
-    event = factor(counts$event, levels = c(PAC_EVENTS, GENE_EVENTS)),
+    event = factor(counts$event, levels = c(GENE_CALLS, GENE_EVENTS)),
     count = counts$count
   )
 }
@@ -422,11 +478,13 @@ first_pattern_flagged <- function(apa_pattern) {
 
 # PACs with a change and a p-value. A p-value that underflows to 0 is drawn
 # just above the most significant finite one; this happens before binning,
-# which would otherwise drop it. In each direction, labels go on each gene's
-# most significant confirmed PAC, for at most LABEL_LIMIT genes; among equal
-# p-values, such as several of 0, the larger change comes first. A gene whose
-# usage moves between its PACs can be labelled in both directions.
-volcano_data <- function(pacs) {
+# which would otherwise drop it. A shift between PACs is a gain at one and a
+# loss at another, so each gene with a shift is labelled once: at the PAC its
+# usage moved to when that PAC has a confirmed call, otherwise at the one it
+# moved from. On each side, at most LABEL_LIMIT genes are labelled, the most
+# significant first; among equal p-values, such as several of 0, the larger
+# change comes first.
+volcano_data <- function(pacs, genes) {
   call <- pac_calls(pacs$event_type)
   kept <- is.finite(pacs$delta_pau) & !is.na(pacs$pac_pvalue)
   points <- data.frame(
@@ -444,11 +502,13 @@ volcano_data <- function(pacs) {
   points$neg_log10_p <- score
   # Uncalled PACs are drawn first, under the calls.
   points <- points[order(points$call != "none", points$pac_id, method = "radix"), , drop = FALSE]
-  confirmed <- points[points$call %in% c("up", "down"), , drop = FALSE]
-  confirmed <- confirmed[order(confirmed$pvalue, -abs(confirmed$delta_pau), confirmed$pac_id,
+  shifted <- shifted_genes(genes)
+  gaining <- shifted$shift_to_event_type %in% UP_EVENTS
+  labelled <- ifelse(gaining, shifted$shift_to_pac_id, shifted$shift_from_pac_id)
+  labels <- points[points$call %in% c("up", "down") & points$pac_id %in% labelled, , drop = FALSE]
+  labels <- labels[order(labels$pvalue, -abs(labels$delta_pau), labels$pac_id,
     method = "radix"), , drop = FALSE]
-  first <- !duplicated(confirmed[, c("gene_id", "call")])
-  labels <- limit_labels(confirmed[first, , drop = FALSE], "call")
+  labels <- limit_labels(labels, "call")
   list(
     points = points,
     labels = labels,
@@ -806,14 +866,15 @@ call_scales <- function() {
   )
 }
 
-plot_volcano <- function(pacs, comparison, params, exploratory) {
+plot_volcano <- function(pacs, genes, comparison, params, exploratory) {
   if (!nrow(pacs)) return(placeholder_plot(comparison$title, "No tested PACs"))
-  data <- volcano_data(pacs)
+  data <- volcano_data(pacs, genes)
   calls <- pac_calls(pacs$event_type)
+  called <- length(unique(pacs$gene_id[calls %in% c("up", "down")]))
   subtitle <- sprintf(
-    "%s tested in %s; confirmed calls: %s up, %s down",
+    "%s tested in %s; confirmed calls: %s up and %s down, in %s",
     plural(nrow(pacs), "PAC"), plural(length(unique(pacs$gene_id)), "gene"),
-    count_text(sum(calls == "up")), count_text(sum(calls == "down"))
+    count_text(sum(calls == "up")), count_text(sum(calls == "down")), plural(called, "gene")
   )
   if (data$missing) {
     subtitle <- paste0(subtitle, "\nNot shown: ", plural(data$missing, "PAC"), " without a p-value")
@@ -828,9 +889,13 @@ plot_volcano <- function(pacs, comparison, params, exploratory) {
   largest <- max(abs(data$points$delta_pau))
   limit <- min(1, max(0.25, ceiling(round(largest * 10, 6)) / 10))
   threshold <- params$min_abs_delta_pau
-  caption <- sprintf(
-    "Dashed lines: a change of %s either way, the smallest a call can have (min_abs_delta_pau).",
-    format(threshold)
+  caption <- paste0(
+    sprintf(
+      "Dashed lines: a change of %s either way, the smallest a call can have (min_abs_delta_pau).",
+      format(threshold)
+    ),
+    "\nLabels: one per gene, at the PAC its usage moved to, or moved from when only that side has",
+    " a confirmed call.\nEach shift shows on both sides: a gain at one PAC is a loss at the gene's others."
   )
   if (any(data$points$capped)) {
     caption <- paste0(caption, "\nTriangles: p-values of 0, drawn just above the smallest finite one.")
@@ -939,43 +1004,59 @@ plot_distal_usage <- function(result, comparison, params) {
     side_legends()
 }
 
-plot_calls_by_gene_region <- function(counts, comparison) {
-  tested <- counts$tested[counts$direction == "down"]
-  if (!sum(tested)) return(placeholder_plot(comparison$title, "No tested PACs"))
-  labels <- sprintf("%s (n = %s)", GENE_REGIONS, count_text(tested))
-  # Last exon at the top.
-  counts$label <- factor(labels[as.integer(counts$gene_region)], levels = rev(labels))
-  counts$signed <- ifelse(counts$direction == "down", -counts$count, counts$count)
+# Genes with a shift by the regions their usage moved from and to, one row per
+# pair: shifts to a more proximal PAC left of zero, to a more distal one right.
+plot_shifts_by_gene_region <- function(counts, comparison) {
+  if (!nrow(counts)) {
+    return(placeholder_plot(comparison$title, "No gene has a confirmed shift in any comparison"))
+  }
+  pairs <- strsplit(levels(counts$pair), "|", fixed = TRUE)
+  labels <- vapply(pairs, function(pair) {
+    paste(SHIFT_REGIONS[[pair[[1]]]], "->", SHIFT_REGIONS[[pair[[2]]]])
+  }, character(1))
+  # The first pair at the top.
+  counts$label <- factor(labels[as.integer(counts$pair)], levels = rev(labels))
+  counts$signed <- ifelse(counts$direction == "proximal", -counts$count, counts$count)
   limit <- max(1, abs(counts$signed)) * 1.25
   shown <- counts[counts$count > 0, , drop = FALSE]
   whole_breaks <- function(limits) {
     breaks <- pretty(limits)
     breaks[breaks == round(breaks)]
   }
+  totals <- vapply(names(SHIFT_DIRECTIONS), function(direction) {
+    sum(counts$count[counts$direction == direction])
+  }, numeric(1))
+  subtitle <- sprintf(
+    "%s with a confirmed shift, by the gene regions usage moved from -> to\n%s to a more proximal PAC, %s to a more distal one",
+    plural(sum(totals), "gene"), count_text(totals[["proximal"]]), count_text(totals[["distal"]])
+  )
+  caption <- paste0(
+    "Each gene counts once, by the PACs its usage moved from and to (the shift_ columns of the",
+    " .genes table).\nA side without a confirmed call is the gene's PAC with the largest fitted",
+    " change that way."
+  )
+  # Without any bars, the zero line would run through the note.
+  zero <- if (nrow(shown)) geom_vline(xintercept = 0, colour = "grey30", linewidth = 0.3)
   plot <- ggplot(counts, aes(x = signed, y = label, fill = direction)) +
     geom_col(width = 0.6) +
-    geom_vline(xintercept = 0, colour = "grey30", linewidth = 0.3) +
+    zero +
     geom_text(data = shown, aes(label = count_text(count), hjust = ifelse(signed < 0, 1.3, -0.3)),
       size = 2.6) +
-    scale_fill_manual(
-      values = c(down = COLOR_DOWN, up = COLOR_UP),
-      labels = c(down = "Lost or decreased", up = "Gained or increased"),
-      name = NULL, drop = FALSE
-    ) +
+    scale_fill_manual(values = SHIFT_COLORS, labels = SHIFT_DIRECTIONS, name = NULL, drop = FALSE) +
     scale_x_continuous(limits = c(-limit, limit), breaks = whole_breaks,
       labels = function(breaks) count_text(abs(breaks))) +
-    labs(
-      title = comparison$title,
-      subtitle = "Confirmed PAC calls by gene region: lost usage left of zero, gained right",
-      x = "PACs", y = NULL
-    ) +
+    labs(title = comparison$title, subtitle = subtitle, caption = caption, x = "Genes", y = NULL) +
     figure_theme()
   if (!nrow(shown)) {
-    plot <- plot + annotate("text", x = 0, y = 2.5, label = "No confirmed PAC calls",
-      size = 3, colour = "grey30")
+    plot <- plot + annotate("text", x = 0, y = (length(labels) + 1) / 2,
+      label = "No gene has a confirmed shift", size = 3, colour = "grey30")
   }
   plot
 }
+
+# The shifts figure: room for its titles, legend, and caption, and a quarter
+# inch for each region pair, at least one.
+shift_figure_height <- function(pairs) 2.25 + 0.25 * max(1L, length(pairs))
 
 # A count axis: whole-number breaks, and at least 0 to 1, so an empty facet
 # gets no fractional axis. The right-hand room holds the bar totals.
@@ -992,13 +1073,13 @@ count_axis <- function() {
   )
 }
 
-# Two plots stacked in one figure: the PAC and gene events, and the genes per
-# APA pattern, each with its own legend.
+# Two plots stacked in one figure: genes by their PAC calls and gene events,
+# and the genes per APA pattern, each with its own legend.
 plot_event_counts <- function(counts, patterns, comparisons) {
   rows <- nrow(comparisons)
   figure_stack(
     list(plot_event_bars(counts, comparisons), plot_pattern_bars(patterns, comparisons)),
-    heights = c(2 + 0.375 * rows, 1.5 + 0.375 * rows)
+    heights = c(2.375 + 0.375 * rows, 1.5 + 0.375 * rows)
   )
 }
 
@@ -1039,11 +1120,15 @@ plot_event_bars <- function(counts, comparisons) {
     scale_fill_manual(values = EVENT_COLORS, labels = EVENT_LABELS, name = NULL, drop = FALSE) +
     scale_y_discrete(limits = rev(comparisons$stem), labels = titles) +
     count_axis() +
-    guides(fill = guide_legend(nrow = 3)) +
+    # A column for the PAC calls and one for the gene events.
+    guides(fill = guide_legend(nrow = length(GENE_CALLS))) +
     labs(
       title = "Events per comparison",
-      subtitle = "PAC events count PACs; gene events count genes that pass the gene-level screen",
-      x = "Count", y = NULL
+      subtitle = paste0(
+        "Each gene counts once by its PAC calls; gene events count genes that pass the",
+        " gene-level screen"
+      ),
+      x = "Genes", y = NULL
     ) +
     figure_theme() +
     # Room on the right for the last axis label, which the separator widens.
@@ -1427,30 +1512,34 @@ run_figures_mode <- function(arguments) {
   dir.create(arguments$output_dir, recursive = TRUE, showWarnings = FALSE)
   pacs_tables <- list()
   genes_tables <- list()
+  for (stem in comparisons$stem) {
+    table_path <- function(suffix) file.path(arguments$statistics_dir, paste0(stem, suffix))
+    pacs_tables[[stem]] <- read_pacs(table_path(".pacs.tsv.gz"))
+    genes_tables[[stem]] <- read_genes(table_path(".genes.tsv.gz"))
+  }
+  # Every comparison's shifts figure has the region pairs of all of them.
+  pairs <- shift_pairs(genes_tables)
   for (index in seq_len(nrow(comparisons))) {
     comparison <- comparisons[index, , drop = FALSE]
     stem <- comparison$stem
-    table_path <- function(suffix) file.path(arguments$statistics_dir, paste0(stem, suffix))
-    pacs <- read_pacs(table_path(".pacs.tsv.gz"))
-    genes <- read_genes(table_path(".genes.tsv.gz"))
-    pacs_tables[[stem]] <- pacs
-    genes_tables[[stem]] <- genes
+    pacs <- pacs_tables[[stem]]
+    genes <- genes_tables[[stem]]
     exploratory <- any(pacs$exploratory_insufficient_replicates) ||
       any(genes$exploratory_insufficient_replicates)
     output <- file.path(arguments$output_dir, stem)
-    save_figure(plot_volcano(pacs, comparison, params, exploratory), paste0(output, ".volcano"),
-      7.5, 5.5)
+    save_figure(plot_volcano(pacs, genes, comparison, params, exploratory),
+      paste0(output, ".volcano"), 7.5, 5.5)
     distal <- distal_usage_table(pacs, coordinates, genes)
     write_gzip_tsv(distal$table[, DISTAL_COLUMNS], paste0(output, ".distal_usage.tsv.gz"))
     save_figure(plot_distal_usage(distal, comparison, params), paste0(output, ".distal_usage"),
       7, 5.75)
-    save_figure(plot_calls_by_gene_region(gene_region_counts(pacs), comparison),
-      paste0(output, ".calls_by_gene_region"), 6.5, 3.5)
+    save_figure(plot_shifts_by_gene_region(shift_region_counts(genes, pairs), comparison),
+      paste0(output, ".shifts_by_gene_region"), 6.5, shift_figure_height(pairs))
   }
   counts <- event_count_table(comparisons, pacs_tables, genes_tables)
   patterns <- pattern_count_table(comparisons, genes_tables)
   save_figure(plot_event_counts(counts, patterns, comparisons),
-    file.path(arguments$output_dir, "event_counts"), 7.5, 3.5 + 0.75 * nrow(comparisons))
+    file.path(arguments$output_dir, "event_counts"), 7.5, 3.875 + 0.75 * nrow(comparisons))
   coverage <- coverage_data(comparisons, pacs_tables)
   dropped <- sum(vapply(pacs_tables, nrow, integer(1))) - nrow(coverage)
   rows <- ceiling(nrow(comparisons) / min(3, nrow(comparisons)))

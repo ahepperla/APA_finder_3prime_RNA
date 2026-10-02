@@ -20,7 +20,10 @@ COMPARISON_FIGURES = (
         "Each point is a tested PAC: its change in fitted PAU against its PAC-level "
         "p-value. Colored points have a confirmed call and open circles a candidate "
         "call; grey PACs have no PAC call. Triangles at the top have p-values of 0. "
-        "Up to 20 genes in each direction are labeled with their names.",
+        "A gene's usage that moves between PACs is a gain at one and a loss at others, "
+        "so each shift shows on both sides. Each gene is labeled once, at the PAC its "
+        "usage moved to, or at the one it moved from when only that side has a "
+        "confirmed call; up to 20 genes on each side.",
     ),
     (
         "distal_usage",
@@ -33,19 +36,20 @@ COMPARISON_FIGURES = (
         "distal PAC fell, the largest changes, are labeled.",
     ),
     (
-        "calls_by_gene_region",
-        "PAC calls by gene region",
-        "Confirmed PAC calls by the part of the gene the PAC lies in (gene_region). Left "
-        "of zero, PACs that lost usage (lost or decreased); right of zero, PACs that "
-        "gained usage (gained or increased). Each label gives the number of PACs tested "
-        "in that region.",
+        "shifts_by_gene_region",
+        "Shifts by gene region",
+        "Each gene with a confirmed PAC call, counted once, by the gene regions its usage "
+        "moved from and to: the shift_ columns of the .genes table. Left of zero, shifts "
+        "to a more proximal PAC; right of zero, to a more distal one. Every comparison's "
+        "figure has the same rows.",
     ),
 )
 SUMMARY_FIGURES = (
     (
         "event_counts",
         "Events per comparison",
-        "PAC events count PACs, with candidates in lighter shades. Gene events count "
+        "Each gene counts once by its PAC calls: a confirmed gain and loss, a gain, a "
+        "loss, changes in usage only, or candidate calls only. Gene events count "
         "genes that pass the gene-level screen, from the dominant_switch and "
         "active_pacs_change columns of the .genes tables. The lower panel counts genes "
         "per APA pattern (apa_pattern); a gene with two patterns counts in both. Patterns "

@@ -1116,14 +1116,37 @@ Classify PACs using both statistical evidence and detection evidence:
 The first four are PAC calls, a PAC's `event_type`. The last two are gene
 events, and only the `.genes` table records them, in `dominant_switch` and
 `active_pacs_change` (`more`, `fewer`, or `none`), after `control_condition`,
-followed by the APA pattern:
+followed by the APA pattern and the gene's shift:
 
 ```text
 gene_id  gene_name  condition  control_condition  dominant_switch  active_pacs_change
-apa_pattern  delta_intronic_share  delta_utr_distal_share  last_exon_switch
+apa_pattern  shift_direction  shift_from_pac_id  shift_from_gene_region
+shift_from_event_type  shift_to_pac_id  shift_to_gene_region  shift_to_event_type
+delta_intronic_share  delta_utr_distal_share  last_exon_switch
 gene_fdr  gene_pvalue  gene_likelihood_ratio  gene_degrees_of_freedom  model_status
 stabilization_successes  exploratory_insufficient_replicates
 ```
+
+#### Shifts
+
+Name each gene's change in usage once. PAU are shares of a gene, so usage
+gained at one PAC is lost at others, and one shift gives PAC calls in both
+directions. Counting calls therefore counts every shift twice. A gene with a
+confirmed PAC call has a shift:
+
+- **to:** its confirmed gain or increase with the largest change in fitted
+  PAU;
+- **from:** its confirmed loss or decrease with the largest fall;
+- **a side without a confirmed call:** the gene's other PAC with the largest
+  fitted change that way. Fitted PAU sum to 1, so a confirmed change on one
+  side always has usage moving the other way. The PAC's own `event_type`,
+  `none` or a candidate, shows that it has no confirmed call;
+- **ties:** the lower `pac_fdr`, then the PAC ID;
+- **direction:** `distal` when the to-PAC lies 3' of the from-PAC in
+  transcript orientation, and `proximal` otherwise.
+
+The shift describes the calls and makes none, so it needs no test of its
+own. The figures read it to count and label each gene once.
 
 #### APA Patterns
 
@@ -1335,8 +1358,9 @@ make no calls of their own. For each comparison:
 - **volcano:** each tested PAC's change in fitted PAU against its PAC-level
   p-value, with confirmed gains and losses colored and candidates open.
   `pac_fdr` is missing outside screened genes, so the raw p-value is the
-  axis. Up to 20 genes in each direction are labeled by gene name, each at
-  its most significant PAC in that direction, the larger change first among
+  axis. Each gene is labeled once, at its shift's to-PAC, or at its from-PAC
+  when only that side has a confirmed call. Up to 20 genes on each side are
+  labeled, the most significant first and the larger change first among
   equal p-values.
 - **distal usage:** each tested gene's distal PAC, its most 3' tested PAC in
   a last exon or downstream, with its fitted usage in the control against
@@ -1347,15 +1371,21 @@ make no calls of their own. For each comparison:
   the pattern. Up to 20 genes whose distal PAC rose and 20 whose
   distal PAC fell, the largest changes, are labeled by gene name.
   `CONDITION_vs_CONTROL.distal_usage.tsv.gz` lists the genes.
-- **calls by gene region:** confirmed gains and losses by gene region, so
-  intronic polyadenylation shows as intron gains.
+- **shifts by gene region:** each gene with a shift, once, by the regions
+  its usage moved from and to. Proximal shifts are drawn left of zero and
+  distal ones right. The rows are the region pairs that shifts take in any
+  comparison, so the comparisons' figures line up.
 
 Across comparisons:
 
-- **event counts:** `event_counts` shows the PAC and gene events above the
-  genes per APA pattern, with the patterns that only flagged PACs support in
-  a panel of their own. These keep their pattern's color: a lighter tint of
-  intronic gain would match intronic loss.
+- **event counts:** `event_counts` shows the genes by their PAC calls and
+  the gene events above the genes per APA pattern.
+  - Each gene with a PAC call counts once by its calls: a gained and a lost
+    PAC, a gained PAC, a lost PAC, changes in usage only, or candidate calls
+    only.
+  - The patterns that only flagged PACs support are in a panel of their own.
+    They keep their pattern's color, since a lighter tint of intronic gain
+    would match intronic loss.
 - **effect against coverage:** `effect_vs_coverage` shows each PAC's change in
   PAU against the reads at its gene's tested PACs in the less-covered group.
 - **shared APA patterns:** `apa_pattern_grid` draws genes with an APA pattern
@@ -1458,7 +1488,7 @@ results/
     CONDITION_vs_CONTROL.volcano.pdf/.png
     CONDITION_vs_CONTROL.distal_usage.pdf/.png
     CONDITION_vs_CONTROL.distal_usage.tsv.gz
-    CONDITION_vs_CONTROL.calls_by_gene_region.pdf/.png
+    CONDITION_vs_CONTROL.shifts_by_gene_region.pdf/.png
     event_counts.pdf/.png
     effect_vs_coverage.pdf/.png
     apa_pattern_grid.pdf/.png

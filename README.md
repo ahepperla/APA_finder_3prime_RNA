@@ -247,7 +247,7 @@ results/
                fitted_pau.tsv.gz, gene_precision.tsv.gz
   motifs/      pac_motifs.tsv.gz, motif_scores.tsv, per-comparison motif
                preference and exploratory k-mer enrichment tables
-  figures/     per comparison: volcano, distal-usage, and gene-region figures
+  figures/     per comparison: volcano, distal-usage, and shifts figures
                (PDF and PNG) and CONDITION_vs_CONTROL.distal_usage.tsv.gz;
                across comparisons: event counts, shared APA patterns,
                concordance, effect against coverage, and the PAU PCA, with
@@ -327,7 +327,8 @@ evidence. In `.pacs` and `.calls` the groups are:
 The `.pacs` tables are the main results: one row per tested PAC. The
 `.calls` tables keep only the PACs with a call. The `.genes` tables have one
 row per tested gene: the gene-level events (`dominant_switch` and
-`active_pacs_change`), the APA pattern and its numbers, then the gene FDR.
+`active_pacs_change`), the APA pattern, the gene's shift, the pattern's
+numbers, then the gene FDR.
 
 A PAC's call is its `event_type`:
 
@@ -344,6 +345,25 @@ A gene's events are in its `.genes` row:
 |---|---|
 | `dominant_switch` | `TRUE` when the most-used PAC differs between the groups, in a gene that passes `gene_fdr`. |
 | `active_pacs_change` | `more` or `fewer` when the gene's number of active PACs differs between the groups, in a gene that passes `gene_fdr`; otherwise `none`. An active PAC has at least `active_pac_min_pau` (default 0.10, the same as `min_abs_delta_pau`) of the gene's fitted usage in a group. The `.pacs` columns `control_active_pacs` and `treatment_active_pacs` give the counts. |
+
+### Shifts
+
+PAU are shares of a gene, so usage gained at one PAC is lost at others. One
+shift therefore gives calls in both directions, typically `increased_usage`
+at the PAC the usage moved to and `decreased_usage` at the one it left. The
+`.genes` row names that shift once, for every gene with a confirmed call:
+
+- `shift_to_pac_id` is the gene's confirmed gain or increase with the
+  largest change in fitted PAU. `shift_from_pac_id` is its confirmed loss or
+  decrease with the largest fall.
+- A side without a confirmed call names the gene's PAC with the largest
+  fitted change that way: where the usage went, or came from. Its
+  `shift_to_event_type` or `shift_from_event_type` is then `none` or a
+  candidate call.
+- `shift_direction` is `distal` when the PAC the usage moved to lies 3′ of the
+  one it left, and `proximal` when it lies 5′.
+- `shift_from_gene_region` and `shift_to_gene_region` say where in the gene
+  each PAC lies.
 
 ### APA patterns
 
@@ -452,10 +472,11 @@ treatments.
   against its PAC-level p-value. Confirmed gains (`gained`,
   `increased_usage`) and losses (`lost`, `decreased_usage`) are colored,
   candidates are open circles, and PACs without a PAC call are grey (a grey
-  density above 5,000 PACs, on a log scale). Up to 20 genes in each
-  direction are labeled with their gene names, each at its most significant
-  PAC in that direction, so a gene whose usage moves between its PACs can be
-  labeled twice. Among equal p-values, such as several of 0, the larger
+  density above 5,000 PACs, on a log scale). A shift shows on both sides, as
+  a gain at one PAC and a loss at another, so each gene is labeled once: at
+  its `shift_to_pac_id`, or at its `shift_from_pac_id` when only that side
+  has a confirmed call. Up to 20 genes are labeled on each side, the most
+  significant first; among equal p-values, such as several of 0, the larger
   changes come first. The y-axis uses the raw p-value because `pac_fdr` is
   missing outside screened genes. PACs without a p-value, such as unstable
   zero-boundary fits, are counted in the subtitle, and p-values of 0 are
@@ -474,15 +495,20 @@ treatments.
   - Up to 20 genes whose distal PAC rose and 20 whose distal PAC fell, those
     with the largest changes, are labeled with their gene names. Dashed
     lines mark a change of `min_abs_delta_pau`.
-- **`CONDITION_vs_CONTROL.calls_by_gene_region`**: confirmed PAC calls by the part
-  of the gene the PAC lies in, its `gene_region` (last exon, internal exon,
-  intron, downstream of the gene), with losses to the left of zero and gains
-  to the right. A shift to intronic polyadenylation shows as intron gains.
-- **`event_counts`**: PAC calls, candidates in lighter shades, and gene
-  events from the `.genes` tables (dominant switches, and more or fewer
-  active PACs), for every comparison. A lower panel counts
-  genes per APA pattern; a gene with two patterns counts in both. Patterns
-  that only flagged PACs support are counted in a panel of their own.
+- **`CONDITION_vs_CONTROL.shifts_by_gene_region`**: each gene with a
+  confirmed call, counted once, by the gene regions its usage moved from and
+  to, such as "Last exon -> Intron" for a move to intronic polyadenylation.
+  Shifts to a more proximal PAC are drawn left of zero, and those to a more
+  distal PAC right of it. Every comparison's figure has the same rows: the
+  region pairs that shifts take in any comparison.
+- **`event_counts`**: every comparison's genes with a PAC call, each counted
+  once by its calls: a gained and a lost PAC, a gained PAC, a lost PAC,
+  changes in usage only, or candidate calls only. Beside them are the gene events from the
+  `.genes` tables: dominant switches, and more or fewer active PACs.
+  - A lower panel counts genes per APA pattern; a gene with two patterns
+    counts in both.
+  - Patterns that only flagged PACs support are counted in a panel of their
+    own.
 - **`apa_pattern_grid`**: genes with an APA pattern in two or more
   comparisons, as rows, against the comparisons.
   - Each cell shows the gene's first pattern there. A + marks two or more,
@@ -769,6 +795,15 @@ finished steps from it.
     active yet never be called gained or lost, since its change could not
     reach 0.10. `active_pacs_change` results change; set 0.05 to keep the
     old counts.
+  - **Version 0.8.0** names each gene's shift once. The calls and every
+    existing column are unchanged.
+    - The `.genes` tables gain seven `shift_` columns after `apa_pattern`.
+      Scripts that select columns by position need updating.
+    - The `CONDITION_vs_CONTROL.calls_by_gene_region` figures are now
+      `CONDITION_vs_CONTROL.shifts_by_gene_region`, which count genes by
+      where their usage moved from and to.
+    - `event_counts` counts genes rather than PACs. The volcano labels each
+      gene once.
 
 ## Troubleshooting
 

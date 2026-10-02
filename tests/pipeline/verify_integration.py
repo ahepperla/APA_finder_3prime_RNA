@@ -23,7 +23,7 @@ ROOT = REPOSITORY / "results-test"
 FIXTURES = REPOSITORY / "tests" / "fixtures"
 COMPARISONS = ("TreatmentA_vs_DMSO", "TreatmentB_vs_Vehicle", "Rescue_vs_TreatmentA")
 FAMILIES = ("DMSO", "Vehicle", "TreatmentA")
-COMPARISON_FIGURES = ("volcano", "distal_usage", "calls_by_gene_region")
+COMPARISON_FIGURES = ("volcano", "distal_usage", "shifts_by_gene_region")
 SUMMARY_FIGURES = (
     "event_counts", "apa_pattern_grid", "concordance_matrix", "concordance",
     "effect_vs_coverage", "pau_pca",
@@ -32,12 +32,13 @@ FIGURE_TABLES = ("apa_patterns_by_comparison.tsv.gz", "concordance.tsv.gz", "pau
 # Figure sizes in pixels at 200 dpi, from scripts/plot_usage_figures.R; the
 # summaries grow with the three comparisons. The concordance matrix has two
 # columns and two rows for their three pairs. The grid's height also grows
-# with its genes, so grid_pixels() computes it.
+# with its genes, so grid_pixels() computes it. The shifts figure grows with
+# the region pairs that shifts take in any comparison (three in the fixture).
 FIGURE_PIXELS = {
     "volcano": (1500, 1100),
     "distal_usage": (1400, 1150),
-    "calls_by_gene_region": (1300, 700),
-    "event_counts": (1500, 1150),
+    "shifts_by_gene_region": (1300, 600),
+    "event_counts": (1500, 1225),
     "effect_vs_coverage": (1500, 800),
     "concordance": (1100, 1050),
     "concordance_matrix": (1075, 1075),
@@ -107,6 +108,38 @@ EXPECTED_APA_PATTERNS = {
         "bg09": "unclassified_change", "ipa01": "intronic_loss", "ale01": "alternative_last_exon",
     },
 }
+# Each designed gene's shift (DESIGNED_SHIFT_COLUMNS): its direction, then the
+# region and call of the PAC its usage moved from and of the one it moved to.
+# bg09 has a confirmed call on one side only. Designed genes not listed have
+# no shift.
+EXPECTED_SHIFTS = {
+    "TreatmentA_vs_DMSO": {
+        "ale01": ("distal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg01": ("distal", "last_exon", "lost", "last_exon", "increased_usage"),
+        "bg03": ("distal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg04": ("proximal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg05": ("distal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg06": ("proximal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg09": ("distal", "last_exon", "decreased_usage", "last_exon", "gained_candidate"),
+        "gene_plus": ("proximal", "last_exon", "decreased_usage", "last_exon", "gained"),
+        "ipa01": ("proximal", "last_exon", "decreased_usage", "intron", "increased_usage"),
+    },
+    "TreatmentB_vs_Vehicle": {
+        "bg02": ("proximal", "last_exon", "decreased_usage", "last_exon", "gained"),
+        "gene_plus": ("proximal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+    },
+    "Rescue_vs_TreatmentA": {
+        "ale01": ("proximal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg01": ("proximal", "last_exon", "decreased_usage", "last_exon", "gained"),
+        "bg03": ("proximal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg04": ("distal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg05": ("proximal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg06": ("distal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "bg09": ("proximal", "last_exon", "lost_candidate", "last_exon", "increased_usage"),
+        "gene_plus": ("distal", "last_exon", "decreased_usage", "last_exon", "increased_usage"),
+        "ipa01": ("distal", "intron", "decreased_usage", "last_exon", "increased_usage"),
+    },
+}
 PAC_EVENT_TYPES = {
     "gained", "lost", "increased_usage", "decreased_usage", "gained_candidate", "lost_candidate",
     "none",
@@ -118,6 +151,16 @@ APA_PATTERN_CLASSES = (
 )
 POTENTIAL_INTERNAL_PRIMING = "_potential_internal_priming"
 APA_METRIC_COLUMNS = ("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
+SHIFT_COLUMNS = (
+    "shift_direction", "shift_from_pac_id", "shift_from_gene_region", "shift_from_event_type",
+    "shift_to_pac_id", "shift_to_gene_region", "shift_to_event_type",
+)
+# Each side of a shift names a PAC, its gene region, and its call.
+SHIFT_FIELDS = ("pac_id", "gene_region", "event_type")
+DESIGNED_SHIFT_COLUMNS = (
+    "shift_direction", "shift_from_gene_region", "shift_from_event_type", "shift_to_gene_region",
+    "shift_to_event_type",
+)
 APA_TOLERANCE = 1e-9
 
 def pac(contig: str, strand: str, coordinate: int) -> str:
@@ -235,15 +278,76 @@ def png_size(path: Path) -> tuple[int, int]:
     return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
+def pick_pac(rows: pd.DataFrame, sign: int) -> pd.Series:
+    """The row whose delta_pau goes furthest in the direction of sign, ties
+    going to the lower pac_fdr (missing last), then the PAC ID."""
+    rows = rows.assign(change=-sign * rows["delta_pau"].astype(float))
+    return rows.sort_values(["change", "pac_fdr", "pac_id"], na_position="last").iloc[0]
+
+
+def expected_shifts(pacs: pd.DataFrame, coordinates: dict) -> dict[str, dict]:
+    """Each gene's shift, recomputed from its PAC rows: its confirmed gain and
+    loss with the largest changes or, on a side without a confirmed call, its
+    other PAC with the largest fitted change that way."""
+    shifts = {}
+    for gene_id, rows in pacs.groupby("gene_id"):
+        up = rows["event_type"].isin({"gained", "increased_usage"})
+        down = rows["event_type"].isin({"lost", "decreased_usage"})
+        if up.any():
+            to = pick_pac(rows[up], 1)
+            others = rows[down] if down.any() else rows[rows["pac_id"] != to["pac_id"]]
+            source = pick_pac(others, -1)
+        elif down.any():
+            source = pick_pac(rows[down], -1)
+            to = pick_pac(rows[rows["pac_id"] != source["pac_id"]], 1)
+        else:
+            continue
+        # Transcript orientation: larger is more 3'.
+        position = {
+            side: coordinates[row["pac_id"]] * (1 if row["strand"] == "+" else -1)
+            for side, row in (("from", source), ("to", to))
+        }
+        shifts[gene_id] = {
+            "shift_direction": "distal" if position["to"] > position["from"] else "proximal",
+            **{f"shift_from_{field}": source[field] for field in SHIFT_FIELDS},
+            **{f"shift_to_{field}": to[field] for field in SHIFT_FIELDS},
+        }
+    return shifts
+
+
+def check_gene_shifts(tables: dict[str, pd.DataFrame]) -> None:
+    """Exactly the genes with a confirmed call have a shift, each one follows
+    from the gene's PAC rows, and the designed genes shift as designed."""
+    atlas = pd.read_csv(
+        ROOT / "atlas" / "pacs.v1.metadata.tsv.gz", sep="\t", usecols=["pac_id", "coordinate"]
+    )
+    coordinates = dict(zip(atlas["pac_id"], atlas["coordinate"], strict=True))
+    for name, pacs in tables.items():
+        genes = statistics_table(f"{name}.genes.tsv.gz").set_index("gene_id")
+        expected = expected_shifts(pacs, coordinates)
+        shifted = genes.index[genes["shift_direction"].notna()]
+        assert sorted(shifted) == sorted(expected), f"{name}: shifted genes {sorted(shifted)}"
+        for gene_id, fields in expected.items():
+            observed = genes.loc[gene_id, list(SHIFT_COLUMNS)].to_dict()
+            assert observed == fields, f"{name}: {gene_id} shift {observed}, not {fields}"
+        unshifted = genes.loc[genes["shift_direction"].isna(), list(SHIFT_COLUMNS)]
+        assert unshifted.isna().all().all(), f"{name}: a gene without a shift has shift fields"
+        designed = {
+            gene_id: tuple(genes.loc[gene_id, column] for column in DESIGNED_SHIFT_COLUMNS)
+            for gene_id in sorted(DESIGNED_GENES & set(shifted))
+        }
+        assert designed == EXPECTED_SHIFTS[name], f"{name}: designed shifts {designed}"
+
+
 def check_gene_events(tables: dict[str, pd.DataFrame], params: dict) -> None:
     """The genes tables flag every gene with a switch or a change in its
     number of active PACs, and the PAC tables carry only PAC calls."""
     for name, (switched, more, fewer) in EXPECTED_GENE_EVENTS.items():
         genes = statistics_table(f"{name}.genes.tsv.gz")
-        assert list(genes.columns[:7]) == [
+        assert list(genes.columns[:14]) == [
             "gene_id", "gene_name", "condition", "control_condition", "dominant_switch",
             "active_pacs_change", "apa_pattern",
-        ], name
+        ] + list(SHIFT_COLUMNS), name
         assert set(genes["active_pacs_change"]) <= {"more", "fewer", "none"}, name
         flagged = {
             "switch": set(genes.loc[is_true(genes["dominant_switch"]), "gene_id"]),
@@ -914,6 +1018,7 @@ def main() -> None:
     check_alignment_handling(trace_text)
     check_input_checksums()
     check_gene_events(tables, params)
+    check_gene_shifts(tables)
     check_apa_patterns(tables, params)
     check_figures(tables, trace_text, report_text)
     check_pattern_grid()
