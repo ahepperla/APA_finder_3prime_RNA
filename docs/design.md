@@ -1383,9 +1383,13 @@ Across comparisons:
   - Each gene with a PAC call counts once by its calls: a gained and a lost
     PAC, a gained PAC, a lost PAC, changes in usage only, or candidate calls
     only.
-  - The patterns that only flagged PACs support are in a panel of their own.
-    They keep their pattern's color, since a lighter tint of intronic gain
-    would match intronic loss.
+  - The genes per APA pattern are counted in three panels: with all tested
+    PACs, unflagged and flagged; for the patterns that unflagged PACs
+    support; and for those that only flagged PACs support. A gene never has
+    both forms of one pattern, so each count in the first is the sum of the
+    other two.
+  - The patterns that only flagged PACs support keep their pattern's color,
+    since a lighter tint of intronic gain would match intronic loss.
 - **effect against coverage:** `effect_vs_coverage` shows each PAC's change in
   PAU against the reads at its gene's tested PACs in the less-covered group.
 - **shared APA patterns:** `apa_pattern_grid` draws genes with an APA pattern

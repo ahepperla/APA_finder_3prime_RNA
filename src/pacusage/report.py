@@ -52,9 +52,10 @@ SUMMARY_FIGURES = (
         "loss, changes in usage only, or candidate calls only. Gene events count "
         "genes that pass the gene-level screen, from the dominant_switch and "
         "active_pacs_change columns of the .genes tables. The lower panel counts genes "
-        "per APA pattern (apa_pattern); a gene with two patterns counts in both. Patterns "
-        "that only PACs flagged for possible internal priming support, the "
-        "_potential_internal_priming patterns, are counted apart.",
+        "per APA pattern (apa_pattern); a gene with two patterns counts in both. It "
+        "counts them with all tested PACs, unflagged and flagged; for the patterns "
+        "unflagged PACs support; and for those that only PACs flagged for possible "
+        "internal priming support, the _potential_internal_priming patterns.",
     ),
     (
         "apa_pattern_grid",

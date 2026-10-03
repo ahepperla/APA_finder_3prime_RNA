@@ -8,6 +8,23 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-03: The pattern counts include all tested PACs
+
+Status: accepted (project lead)
+
+The lead asked for a panel of all tested PACs, unflagged and flagged, beside
+the two that split the APA patterns by whether flagged PACs support them.
+
+**Decision** (version 0.8.1)
+- `event_counts` counts genes per APA pattern in three panels: all tested
+  PACs, the patterns that unflagged PACs support, and those that only
+  flagged PACs support.
+- Under all tested PACs, a pattern counts whether or not it needs flagged
+  PACs. A gene never has both forms of one pattern, so each count there is
+  the sum of the other two.
+- It regroups the published patterns, as the entry below allows, and
+  changes no table.
+
 ## 2026-10-02: Figures may regroup published calls, but apply no rule of their own
 
 Status: accepted (project lead; proposed by fable-overseer at the 0.8.0

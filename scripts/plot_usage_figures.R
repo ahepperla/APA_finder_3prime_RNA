@@ -424,39 +424,53 @@ event_count_table <- function(comparisons, pacs_tables, genes_tables) {
   )
 }
 
-# Genes per APA pattern in each comparison, with zeros, apart for patterns
-# that only flagged PACs support; a gene with two patterns counts in both.
+# Genes per APA pattern in each comparison, with zeros: with all tested PACs,
+# apart for patterns that unflagged PACs support, and apart for those that only
+# flagged PACs support. A gene with two patterns counts in both.
 # "unclassified_change" is not a pattern, so it counts with the supported ones.
 pattern_count_table <- function(comparisons, genes_tables) {
   classes <- setdiff(names(APA_CLASSES), "none")
-  labels <- c(
-    classes, paste0(setdiff(classes, "unclassified_change"), POTENTIAL_INTERNAL_PRIMING)
-  )
+  flaggable <- setdiff(classes, "unclassified_change")
   rows <- lapply(comparisons$stem, function(stem) {
     genes <- genes_tables[[stem]]
     genes <- genes[!duplicated(genes$gene_id), , drop = FALSE]
     parts <- strsplit(genes$apa_pattern, ";", fixed = TRUE)
-    counts <- vapply(labels, function(label) {
-      sum(vapply(parts, function(part) label %in% part, logical(1)))
-    }, integer(1))
-    data.frame(comparison = stem, label = labels, count = unname(counts))
+    genes_with <- function(labels, patterns) {
+      vapply(labels, function(label) {
+        sum(vapply(patterns, function(pattern) label %in% pattern, logical(1)))
+      }, integer(1))
+    }
+    # With all tested PACs, a pattern counts whether or not it needs flagged
+    # PACs.
+    data.frame(
+      comparison = stem,
+      pattern = c(classes, classes, flaggable),
+      support = rep(PATTERN_SUPPORT, c(length(classes), length(classes), length(flaggable))),
+      count = unname(c(
+        genes_with(classes, lapply(parts, pattern_base)),
+        genes_with(classes, parts),
+        genes_with(paste0(flaggable, POTENTIAL_INTERNAL_PRIMING), parts)
+      ))
+    )
   })
   counts <- do.call(rbind, rows)
-  potential <- endsWith(counts$label, POTENTIAL_INTERNAL_PRIMING)
   data.frame(
     comparison = factor(counts$comparison, levels = comparisons$stem),
-    pattern = factor(pattern_base(counts$label), levels = classes),
-    support = factor(ifelse(potential, "flagged", "supported"), levels = PATTERN_SUPPORT),
+    pattern = factor(counts$pattern, levels = classes),
+    support = factor(counts$support, levels = PATTERN_SUPPORT),
     count = counts$count
   )
 }
 
-# Facets of the pattern counts: patterns that unflagged PACs support, and
-# those that only PACs flagged for possible internal priming do.
-PATTERN_SUPPORT <- c("supported", "flagged")
+# Facets of the pattern counts: patterns with all tested PACs, unflagged and
+# flagged, then those that unflagged PACs support, and those that only PACs
+# flagged for possible internal priming do. Long titles take two lines to fit
+# a third of the width.
+PATTERN_SUPPORT <- c("all", "supported", "flagged")
 PATTERN_SUPPORT_LABELS <- c(
+  all = "All tested PACs:\nunflagged and flagged",
   supported = "Supported by unflagged PACs",
-  flagged = "Only flagged PACs: potential internal priming"
+  flagged = "Only flagged PACs:\npotential internal priming"
 )
 
 pattern_base <- function(apa_pattern) {
@@ -1059,17 +1073,20 @@ plot_shifts_by_gene_region <- function(counts, comparison) {
 shift_figure_height <- function(pairs) 2.25 + 0.25 * max(1L, length(pairs))
 
 # A count axis: whole-number breaks, and at least 0 to 1, so an empty facet
-# gets no fractional axis. The right-hand room holds the bar totals.
-count_axis <- function() {
+# gets no fractional axis. The right-hand room, a fraction of the axis, holds
+# the bar totals. Narrower facets need more room and fewer breaks, about
+# `breaks` of them.
+count_axis <- function(room = 0.2, breaks = 5) {
+  wanted <- breaks
   scale_x_continuous(
     limits = function(range) c(0, max(range[[2]], 1)),
     breaks = function(limits) {
-      values <- pretty(limits)
+      values <- pretty(limits, n = wanted)
       # pretty() can miss a whole number by a rounding error.
       round(values[abs(values - round(values)) < 1e-9])
     },
     labels = count_text,
-    expand = expansion(mult = c(0, 0.2))
+    expand = expansion(mult = c(0, room))
   )
 }
 
@@ -1094,10 +1111,11 @@ plot_pattern_bars <- function(patterns, comparisons) {
     geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
     geom_text(data = totals, aes(x = count, y = comparison, label = count_text(count)),
       inherit.aes = FALSE, hjust = -0.3, size = 2.6) +
-    facet_wrap(~support, scales = "free_x", labeller = as_labeller(PATTERN_SUPPORT_LABELS)) +
+    facet_wrap(~support, nrow = 1, scales = "free_x",
+      labeller = as_labeller(PATTERN_SUPPORT_LABELS)) +
     scale_fill_manual(values = APA_COLORS, labels = APA_CLASSES, name = NULL, drop = FALSE) +
     scale_y_discrete(limits = rev(comparisons$stem), labels = titles) +
-    count_axis() +
+    count_axis(room = 0.35, breaks = 3) +
     guides(fill = guide_legend(nrow = 2)) +
     labs(
       title = "APA patterns per comparison",

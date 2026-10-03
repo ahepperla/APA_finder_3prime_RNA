@@ -503,12 +503,15 @@ treatments.
   region pairs that shifts take in any comparison.
 - **`event_counts`**: every comparison's genes with a PAC call, each counted
   once by its calls: a gained and a lost PAC, a gained PAC, a lost PAC,
-  changes in usage only, or candidate calls only. Beside them are the gene events from the
-  `.genes` tables: dominant switches, and more or fewer active PACs.
+  changes in usage only, or candidate calls only. Beside them are the gene
+  events from the `.genes` tables: dominant switches, and more or fewer
+  active PACs.
   - A lower panel counts genes per APA pattern; a gene with two patterns
     counts in both.
-  - Patterns that only flagged PACs support are counted in a panel of their
-    own.
+  - It counts them three ways: with all tested PACs, unflagged and flagged;
+    for the patterns that unflagged PACs support; and for those that only
+    flagged PACs support. Each count in the first is the sum of the other
+    two.
 - **`apa_pattern_grid`**: genes with an APA pattern in two or more
   comparisons, as rows, against the comparisons.
   - Each cell shows the gene's first pattern there. A + marks two or more,
@@ -804,6 +807,9 @@ finished steps from it.
       where their usage moved from and to.
     - `event_counts` counts genes rather than PACs. The volcano labels each
       gene once.
+  - **Version 0.8.1** adds a panel for all tested PACs, unflagged and
+    flagged, to the APA pattern counts in `event_counts`. Tables are
+    unchanged.
 
 ## Troubleshooting
 

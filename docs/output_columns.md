@@ -953,7 +953,8 @@ which says how closely replicates agree.
   confirmed call, once, by `shift_from_gene_region` and `shift_to_gene_region`, with
   proximal shifts left of zero and distal shifts right.
 - `figures/event_counts.pdf` and `.png`: genes by their PAC calls and gene events per
-  comparison, and the genes per APA pattern.
+  comparison, and the genes per APA pattern, with all tested PACs and apart by whether
+  the pattern needs flagged PACs.
 - `figures/apa_pattern_grid.pdf` and `.png`: up to 50 genes with an APA pattern in two or
   more comparisons, against the comparisons.
 - `figures/concordance.pdf` and `.png`: for pairs of comparisons (up to 15 panels), each

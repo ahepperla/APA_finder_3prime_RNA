@@ -383,7 +383,7 @@ test_case("F-19", "distal labels go on the 20 largest changes in each direction"
     "labels: ", paste(labels$gene_id, collapse = ", "))
 })
 
-test_case("F-21", "pattern counts give each class its genes, apart where only flagged PACs support it", {
+test_case("F-21", "pattern counts give each class its genes with all tested PACs, and apart by flagged support", {
   comparisons <- data.frame(stem = c("A_vs_C", "B_vs_C"), stringsAsFactors = FALSE)
   potential <- function(pattern) paste0(pattern, "_potential_internal_priming")
   genes <- rbind(
@@ -403,10 +403,14 @@ test_case("F-21", "pattern counts give each class its genes, apart where only fl
     "utr_lengthening", "unclassified_change"
   )
   check(identical(levels(counts$pattern), classes), "pattern levels.")
-  check(identical(levels(counts$support), c("supported", "flagged")), "support levels.")
+  check(identical(levels(counts$support), c("all", "supported", "flagged")), "support levels.")
   first <- counts[counts$comparison == "A_vs_C", , drop = FALSE]
   observed <- stats::setNames(first$count, paste(first$support, first$pattern))
+  # With all tested PACs, g6's flagged intronic gain joins g1's and g2's, and
+  # g7 counts for both its UTR shortening and its flagged intronic loss.
   expected <- c(
+    "all intronic_gain" = 3L, "all intronic_loss" = 1L, "all alternative_last_exon" = 1L,
+    "all utr_shortening" = 2L, "all utr_lengthening" = 0L, "all unclassified_change" = 1L,
     "supported intronic_gain" = 2L, "supported intronic_loss" = 0L,
     "supported alternative_last_exon" = 1L, "supported utr_shortening" = 2L,
     "supported utr_lengthening" = 0L, "supported unclassified_change" = 1L,
@@ -415,6 +419,10 @@ test_case("F-21", "pattern counts give each class its genes, apart where only fl
     "flagged utr_lengthening" = 0L
   )
   check(identical(observed, expected), "counts: ", paste(names(observed), observed, sep = "=", collapse = ", "))
+  # A gene never has both forms of a pattern, so each all-PACs count is the
+  # sum of the other two.
+  parts <- tapply(first$count[first$support != "all"], first$pattern[first$support != "all"], sum)
+  check(identical(first$count[first$support == "all"], as.vector(parts)), "all is not the sum of the parts.")
   check(all(counts$count[counts$comparison == "B_vs_C"] == 0L), "the empty comparison.")
 })
 
