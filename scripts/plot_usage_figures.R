@@ -250,6 +250,10 @@ read_genes <- function(path) {
   )
 }
 
+read_depth <- function(path) {
+  read_table(path, DEPTH_REQUIRED)
+}
+
 # Only the named columns, read with the given classes; the others are skipped.
 read_columns <- function(path, classes) {
   if (!file.exists(path)) stop("Missing table: ", path)
@@ -481,8 +485,51 @@ PATTERN_SUPPORT_LABELS <- c(
   flagged = "Only flagged PACs:\npotential internal priming"
 )
 
+# Genes a comparison left untested for depth, from its genes_without_depth
+# table. The figure groups the three too_low_* statuses as too low.
+DEPTH_REQUIRED <- c("gene_id", "depth_status")
+DEPTH_STATUSES <- c(
+  "turned_off", "turned_on", "too_low_in_treatment", "too_low_in_control", "too_low_in_both"
+)
+DEPTH_CLASSES <- c("turned_off", "turned_on", "too_low")
+DEPTH_LABELS <- c(
+  turned_off = "Turned off", turned_on = "Turned on", too_low = "Too low to test"
+)
+DEPTH_COLORS <- c(
+  turned_off = "#E69F00", turned_on = "#56B4E9", too_low = "#F0E442"
+)
+
 pattern_base <- function(apa_pattern) {
   sub(paste0(POTENTIAL_INTERNAL_PRIMING, "$"), "", apa_pattern)
+}
+
+# Genes not tested for depth in each comparison, counted by their depth_status
+# and grouped into classes. A comparison with no genes without depth still has
+# a row for every class, with a count of zero.
+depth_count_table <- function(comparisons, depth_tables) {
+  rows <- lapply(comparisons$stem, function(stem) {
+    depth <- depth_tables[[stem]]
+    unknown <- setdiff(unique(depth$depth_status), DEPTH_STATUSES)
+    if (length(unknown)) {
+      stop("Unknown depth_status values in ", stem, ": ",
+        paste(sort(unknown, method = "radix"), collapse = ", "), ".")
+    }
+    class <- ifelse(depth$depth_status %in% c("turned_off", "turned_on"), depth$depth_status,
+      "too_low")
+    genes <- unique(data.frame(gene_id = depth$gene_id, class = class, stringsAsFactors = FALSE))
+    counts <- tabulate(match(genes$class, DEPTH_CLASSES), nbins = length(DEPTH_CLASSES))
+    data.frame(
+      comparison = stem,
+      class = DEPTH_CLASSES,
+      count = counts
+    )
+  })
+  all_rows <- do.call(rbind, rows)
+  data.frame(
+    comparison = factor(all_rows$comparison, levels = comparisons$stem),
+    class = factor(all_rows$class, levels = DEPTH_CLASSES),
+    count = all_rows$count
+  )
 }
 
 # A gene's first APA pattern, which colors it, without the suffix.
@@ -1102,13 +1149,15 @@ count_axis <- function(room = 0.2, breaks = 5) {
   )
 }
 
-# Two plots stacked in one figure: genes by their PAC calls and gene events,
-# and the genes per APA pattern, each with its own legend.
-plot_event_counts <- function(counts, patterns, comparisons) {
+# Three plots stacked in one figure: genes by their PAC calls and gene events,
+# genes not tested for depth, and the genes per APA pattern, each with its own
+# legend.
+plot_event_counts <- function(counts, patterns, depth, comparisons) {
   rows <- nrow(comparisons)
   figure_stack(
-    list(plot_event_bars(counts, comparisons), plot_pattern_bars(patterns, comparisons)),
-    heights = c(2.375 + 0.375 * rows, 1.5 + 0.375 * rows)
+    list(plot_event_bars(counts, comparisons), plot_depth_bars(depth, comparisons),
+      plot_pattern_bars(patterns, comparisons)),
+    heights = c(2.375 + 0.375 * rows, 1.75 + 0.375 * rows, 1.5 + 0.375 * rows)
   )
 }
 
@@ -1136,6 +1185,33 @@ plot_pattern_bars <- function(patterns, comparisons) {
     ) +
     figure_theme() +
     theme(panel.spacing.x = grid::unit(1, "lines"))
+}
+
+# Genes each comparison left untested for depth, by class.
+plot_depth_bars <- function(counts, comparisons) {
+  titles <- strip_titles(comparisons)
+  totals <- stats::aggregate(count ~ comparison, data = counts, FUN = sum)
+  ggplot(counts, aes(x = count, y = comparison, fill = class)) +
+    geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
+    geom_text(data = totals, aes(x = count, y = comparison, label = count_text(count)),
+      inherit.aes = FALSE, hjust = -0.3, size = 2.6) +
+    scale_y_discrete(limits = rev(comparisons$stem), labels = titles) +
+    count_axis() +
+    scale_fill_manual(values = DEPTH_COLORS, labels = DEPTH_LABELS, name = NULL, drop = FALSE) +
+    guides(fill = guide_legend(nrow = 1)) +
+    labs(
+      title = "Genes not tested for depth",
+      subtitle = paste0(
+        "Genes a comparison left untested because the control or the treatment had too few",
+        " reads at them"
+      ),
+      caption = paste0(
+        "Turned off or on: no reads in one group, where the other group's expression would",
+        " have given it enough."
+      ),
+      x = "Genes", y = NULL
+    ) +
+    figure_theme()
 }
 
 plot_event_bars <- function(counts, comparisons) {
@@ -1581,10 +1657,12 @@ run_figures_mode <- function(arguments) {
   dir.create(arguments$output_dir, recursive = TRUE, showWarnings = FALSE)
   pacs_tables <- list()
   genes_tables <- list()
+  depth_tables <- list()
   for (stem in comparisons$stem) {
     table_path <- function(suffix) file.path(arguments$statistics_dir, paste0(stem, suffix))
     pacs_tables[[stem]] <- read_pacs(table_path(".pacs.tsv.gz"))
     genes_tables[[stem]] <- read_genes(table_path(".genes.tsv.gz"))
+    depth_tables[[stem]] <- read_depth(table_path(".genes_without_depth.tsv.gz"))
   }
   # Every comparison's shifts figure has the region pairs of all of them.
   pairs <- shift_pairs(genes_tables)
@@ -1607,8 +1685,9 @@ run_figures_mode <- function(arguments) {
   }
   counts <- event_count_table(comparisons, pacs_tables, genes_tables)
   patterns <- pattern_count_table(comparisons, genes_tables)
-  save_figure(plot_event_counts(counts, patterns, comparisons),
-    file.path(arguments$output_dir, "event_counts"), 7.5, 3.875 + 0.75 * nrow(comparisons))
+  depth <- depth_count_table(comparisons, depth_tables)
+  save_figure(plot_event_counts(counts, patterns, depth, comparisons),
+    file.path(arguments$output_dir, "event_counts"), 7.5, 5.625 + 1.125 * nrow(comparisons))
   coverage <- coverage_data(comparisons, pacs_tables)
   dropped <- sum(vapply(pacs_tables, nrow, integer(1))) - nrow(coverage)
   rows <- ceiling(nrow(comparisons) / min(3, nrow(comparisons)))

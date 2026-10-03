@@ -878,7 +878,7 @@ PAC usage >= 1 percent in as many samples as the smallest condition has,
   counting samples with >= 10 gene reads
 ```
 
-Every filter uses the family's samples without regard to condition. The usage
+Every PAC filter uses the family's samples without regard to condition. The usage
 filter counts the samples in which a PAC has `min_site_usage` of the gene's
 reads, from any of the family's conditions, and needs `min_site_usage_samples`
 of them.
@@ -930,6 +930,32 @@ of them.
 Record, for every PAC and family, whether it was tested and why not, in
 `statistics/FAMILY.statistical_filtering.tsv.gz`; PACs without a gene or with
 an ambiguous gene assignment are never tested.
+
+After the family fit, each comparison tests a gene only when its control and
+its treatment each have depth: `event_min_supporting_samples` samples, or all
+of a smaller group, with `min_site_usage_gene_reads` reads at the gene's
+tested PACs. A nearly silent group's handful of reads would otherwise read as
+a large shift in usage.
+- **Independence.** Unlike the PAC filters, this rule reads the condition
+  labels, but it reads only per-sample gene totals, never how they split among
+  PACs. The Dirichlet-multinomial test conditions on those totals, so under
+  the null the rule is independent of the test (Bourgon et al., 2010), as far
+  as the test's asymptotic null holds. The genes kept have the same p-values
+  as before; only the set the comparison's corrections run over changes.
+  Simulation S8 checks it.
+- The family fit, its omnibus test, precision, and zero-count stabilization
+  are unchanged; only the comparison's tables leave the genes out.
+- The genes a comparison skips are in
+  `statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz`. A gene is
+  `turned_off` when the control has depth and fewer treatment samples than a
+  group needs have any read, although at the control's mean CPM the
+  treatment's libraries would have given it depth; `turned_on` is the mirror
+  image. That is a description, not a test: not detected, at a depth where it
+  would have shown. The rest are `too_low_in_treatment`, `too_low_in_control`,
+  or `too_low_in_both`.
+- Reads here are at the gene's tested PACs, the model's totals; the usage
+  filter's `min_site_usage_gene_reads` counts a sample's reads at all of the
+  gene's PACs, so the two can differ.
 
 ### 9. Model Differential PAC Usage
 
@@ -1067,8 +1093,10 @@ family:
 8. Do not assign a PAC-level p-value when stable finite fits cannot be obtained.
    Keep the detection evidence and label the inferential result unavailable
    rather than inventing a value.
-9. When a condition has no counts for a gene, leave every comparison using
-   that condition untested (`group_without_counts`).
+9. When a condition has no counts for a gene, mark the family-wide test
+   `group_without_counts`. Every comparison using that condition lacks depth
+   for the gene, so it leaves the gene untested and lists it in
+   `genes_without_depth`.
 
 For PACs in genes that pass the contrast-specific screen or satisfy the
 pre-statistical gained/lost event criteria, estimate delta-PAU uncertainty with
@@ -1379,7 +1407,9 @@ make no calls of their own. For each comparison:
 Across comparisons:
 
 - **event counts:** `event_counts` shows the genes by their PAC calls and
-  the gene events above the genes per APA pattern.
+  the gene events, then the genes each comparison left untested for depth
+  (turned off, turned on, or too low to test), then the genes per APA
+  pattern.
   - Each gene with a PAC call counts once by its calls: a gained and a lost
     PAC, a gained PAC, a lost PAC, changes in usage only, or candidate calls
     only.
@@ -1469,6 +1499,7 @@ results/
     FAMILY.gene_omnibus.tsv.gz
     FAMILY.statistical_filtering.tsv.gz
     CONDITION_vs_CONTROL.genes.tsv.gz
+    CONDITION_vs_CONTROL.genes_without_depth.tsv.gz
     CONDITION_vs_CONTROL.pacs.tsv.gz
     CONDITION_vs_CONTROL.calls.tsv.gz
     fitted_pau.tsv.gz
@@ -1711,6 +1742,10 @@ Verify:
 - calibration after the usage filter: how often it admits a null PAC near
   the usage threshold, whether those PACs' p-values stay calibrated, and the
   false share of calls in a family with real changes (S7).
+- the depth each comparison needs: genes nearly silent in a group are not
+  tested, the null genes kept stay calibrated, real shifts at normal depth
+  are still called, and genes silent in one group are classed turned off or
+  on (S8).
 
 ## Definition of Done
 

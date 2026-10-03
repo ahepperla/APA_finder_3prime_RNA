@@ -57,6 +57,18 @@ OMNIBUS_COLUMNS <- c(
   "gene_degrees_of_freedom", "model_status", "stabilization_successes",
   "exploratory_insufficient_replicates"
 )
+# Genes a comparison family tested that one of its comparisons did not,
+# because a group had too few reads at them (comparison_depth).
+DEPTH_STATUSES <- c(
+  "turned_off", "turned_on", "too_low_in_treatment", "too_low_in_control", "too_low_in_both"
+)
+WITHOUT_DEPTH_COLUMNS <- c(
+  "gene_id", "gene_name", "condition", "control_condition", "depth_status",
+  "control_gene_total", "treatment_gene_total", "control_samples", "treatment_samples",
+  "control_samples_with_depth", "treatment_samples_with_depth",
+  "control_samples_with_reads", "treatment_samples_with_reads",
+  "control_mean_cpm", "treatment_mean_cpm", "exploratory_insufficient_replicates"
+)
 APA_METRIC_COLUMNS <- c("delta_intronic_share", "delta_utr_distal_share", "last_exon_switch")
 # A gene's shift: the PACs its usage moved from and to (gene_shifts).
 SHIFT_COLUMNS <- c(
@@ -1552,6 +1564,86 @@ gene_apa_pattern <- function(rows, coordinate, gate, flagged, called, params) {
 
 # ---- Per-comparison tables --------------------------------------------------
 
+# Samples a group needs with min_site_usage_gene_reads reads at a gene for a
+# comparison to test it: event_min_supporting_samples, or every sample of a
+# smaller group, as required_samples caps the usage filter.
+depth_samples_needed <- function(group_size, params) {
+  min(as.integer(params$event_min_supporting_samples), as.integer(group_size))
+}
+
+# Whether a comparison can test each gene of the family fit, and why not when
+# it cannot. Both groups need depth_samples_needed samples with
+# min_site_usage_gene_reads reads at the gene's tested PACs. The rule reads
+# only gene totals, never how they split among PACs, and the usage test
+# conditions on those totals, so the genes it keeps are tested as before.
+# library_sizes are each sample's reads at every PAC, for the CPM. A gene
+# without depth in one group is turned off or on there when fewer samples than
+# a group needs have any read, although at the other group's mean CPM that
+# group's libraries would have given it depth.
+comparison_depth <- function(counts, gene_ids, layout, treatment, params, library_sizes) {
+  totals <- rowsum(count_matrix(counts, layout$sample_ids), counts$gene_id, reorder = FALSE)
+  totals <- totals[gene_ids, , drop = FALSE]
+  minimum <- params$min_site_usage_gene_reads
+  group <- function(condition) {
+    ids <- layout$groups[[condition]]
+    values <- totals[, ids, drop = FALSE]
+    sizes <- library_sizes[ids]
+    cpm <- sweep(values, 2L, ifelse(sizes > 0, sizes, Inf), "/") * 1e6
+    needed <- depth_samples_needed(length(ids), params)
+    with_depth <- rowSums(values >= minimum)
+    with_reads <- rowSums(values > 0)
+    list(
+      ids = ids, sizes = sizes, needed = needed, total = rowSums(values),
+      with_depth = with_depth, with_reads = with_reads, mean_cpm = rowMeans(cpm),
+      deep = with_depth >= needed, silent = with_reads < needed
+    )
+  }
+  # Whether a group's libraries would give enough of its samples depth at
+  # another group's mean CPM.
+  would_show <- function(target, other_cpm) {
+    expected <- outer(other_cpm, target$sizes) / 1e6
+    rowSums(expected >= minimum) >= target$needed
+  }
+  control <- group(layout$control)
+  treated <- group(treatment)
+  status <- rep(NA_character_, length(gene_ids))
+  status[control$deep & !treated$deep] <- "too_low_in_treatment"
+  status[treated$deep & !control$deep] <- "too_low_in_control"
+  status[!control$deep & !treated$deep] <- "too_low_in_both"
+  status[control$deep & treated$silent & would_show(treated, control$mean_cpm)] <- "turned_off"
+  status[treated$deep & control$silent & would_show(control, treated$mean_cpm)] <- "turned_on"
+  data.frame(
+    gene_id = gene_ids,
+    tested = is.na(status),
+    depth_status = status,
+    control_gene_total = unname(control$total),
+    treatment_gene_total = unname(treated$total),
+    control_samples = length(control$ids),
+    treatment_samples = length(treated$ids),
+    control_samples_with_depth = unname(control$with_depth),
+    treatment_samples_with_depth = unname(treated$with_depth),
+    control_samples_with_reads = unname(control$with_reads),
+    treatment_samples_with_reads = unname(treated$with_reads),
+    control_mean_cpm = unname(control$mean_cpm),
+    treatment_mean_cpm = unname(treated$mean_cpm),
+    stringsAsFactors = FALSE
+  )
+}
+
+# The genes a comparison left untested for depth, as published: by status in
+# DEPTH_STATUSES order, then gene ID.
+without_depth_table <- function(depth, treatment, control, gene_names, exploratory) {
+  rows <- depth[!depth$tested, , drop = FALSE]
+  rows <- rows[order(match(rows$depth_status, DEPTH_STATUSES), rows$gene_id, method = "radix"), ,
+    drop = FALSE]
+  rows$gene_name <- unname(gene_names[rows$gene_id])
+  rows$condition <- rep(treatment, nrow(rows))
+  rows$control_condition <- rep(control, nrow(rows))
+  rows$exploratory_insufficient_replicates <- rep(exploratory, nrow(rows))
+  rownames(rows) <- NULL
+  select_columns(rows, WITHOUT_DEPTH_COLUMNS, "The genes-without-depth table")
+}
+
 # The gene test's statistics under their published names.
 gene_test_columns <- function(genes) {
   genes$gene_pvalue <- genes$pvalue
@@ -1561,19 +1653,38 @@ gene_test_columns <- function(genes) {
 }
 
 
-comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params, gene_names) {
+comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty, params, gene_names,
+                               library_sizes) {
   comparison <- comparison_row$comparison
   treatment <- comparison_row$treatment
   control <- layout$control
   contrast <- fit$contrasts[[comparison]]
-  genes <- contrast$genes
+  # The comparison tests only genes with depth in both groups. The others
+  # leave it before the multiple-testing corrections and are listed apart.
+  depth <- comparison_depth(counts, contrast$genes$gene_id, layout, treatment, params, library_sizes)
+  without_depth <- without_depth_table(depth, treatment, control, gene_names, layout$exploratory)
+  if (!identical(as.character(counts$pac_id), as.character(contrast$features$feature_id))) {
+    stop("The family counts and the fitted PACs of ", comparison, " are not in the same order.")
+  }
+  kept <- counts$gene_id %in% depth$gene_id[depth$tested]
+  if (!any(kept)) {
+    return(list(
+      comparison = comparison,
+      genes = empty_table(GENE_COLUMNS),
+      pacs = empty_table(c(PAC_COLUMNS, "feature_id")),
+      without_depth = without_depth,
+      selected = character()
+    ))
+  }
+  counts <- counts[kept, , drop = FALSE]
+  genes <- contrast$genes[depth$tested, , drop = FALSE]
   genes$gene_name <- unname(gene_names[genes$gene_id])
   genes$gene_fdr <- bh(genes$pvalue)
-  features <- contrast$features
+  features <- contrast$features[kept, , drop = FALSE]
   features$pac_fdr <- stage_adjust(genes, features, params$site_fdr)
   gene_index <- match(features$gene_id, genes$gene_id)
-  control_pau <- rowMeans(fit$proportions[, layout$groups[[control]], drop = FALSE])
-  treatment_pau <- rowMeans(fit$proportions[, layout$groups[[treatment]], drop = FALSE])
+  control_pau <- rowMeans(fit$proportions[kept, layout$groups[[control]], drop = FALSE])
+  treatment_pau <- rowMeans(fit$proportions[kept, layout$groups[[treatment]], drop = FALSE])
   masked <- empty[features$gene_id, control] | empty[features$gene_id, treatment]
   control_pau[masked] <- NA_real_
   treatment_pau[masked] <- NA_real_
@@ -1649,6 +1760,7 @@ comparison_outputs <- function(fit, comparison_row, counts, layout, atlas, empty
     comparison = comparison,
     genes = genes,
     pacs = pacs,
+    without_depth = without_depth,
     selected = bootstrap_gene_ids(
       pacs$gene_id,
       pacs$gene_fdr,
@@ -1728,6 +1840,10 @@ write_empty_family_outputs <- function(layout, output_dir) {
   for (comparison in layout$comparisons$comparison) {
     write_gzip_tsv(empty_table(GENE_COLUMNS), file.path(output_dir, paste0(comparison, ".genes.tsv.gz")))
     write_gzip_tsv(empty_table(PAC_COLUMNS), file.path(output_dir, paste0(comparison, ".pacs.tsv.gz")))
+    write_gzip_tsv(
+      empty_table(WITHOUT_DEPTH_COLUMNS),
+      file.path(output_dir, paste0(comparison, ".genes_without_depth.tsv.gz"))
+    )
   }
 }
 
@@ -1763,6 +1879,8 @@ fit_family <- function(
     batches = list()
   )
   gene_names <- atlas_gene_names(atlas)
+  # Each sample's reads at every PAC, for the genes-without-depth table's CPM.
+  library_sizes <- colSums(count_matrix(counts, layout$sample_ids))
   filtering <- family_filter(counts, layout$sample_ids, layout$groups, params, family)
   write_gzip_tsv(
     select_columns(filtering$reasons, FILTERING_COLUMNS, "The filtering table"),
@@ -1826,7 +1944,7 @@ fit_family <- function(
   outputs <- lapply(seq_len(nrow(layout$comparisons)), function(index) {
     comparison_outputs(
       fit, layout$comparisons[index, , drop = FALSE], filtered, layout, atlas, empty, params,
-      gene_names
+      gene_names, library_sizes
     )
   })
   settings <- bootstrap_settings(params)
@@ -1844,7 +1962,7 @@ fit_family <- function(
   for (output in outputs) {
     pacs <- output$pacs
     if (settings$replicates == 0L) {
-      pacs$bootstrap_status <- "disabled"
+      pacs$bootstrap_status <- rep("disabled", nrow(pacs))
     } else {
       pacs$bootstrap_status[pacs$gene_id %in% output$selected] <- "fit_unavailable"
       pending <- pacs$gene_id %in% selections$gene_id[selections$comparison == output$comparison]
@@ -1857,6 +1975,10 @@ fit_family <- function(
     write_gzip_tsv(
       select_columns(pacs, PAC_COLUMNS, "The PAC table"),
       file.path(output_dir, paste0(output$comparison, ".pacs.tsv.gz"))
+    )
+    write_gzip_tsv(
+      output$without_depth,
+      file.path(output_dir, paste0(output$comparison, ".genes_without_depth.tsv.gz"))
     )
     fitted_rows[[output$comparison]] <- select_columns(pacs, FITTED_PAU_COLUMNS, "The fitted PAU table")
   }

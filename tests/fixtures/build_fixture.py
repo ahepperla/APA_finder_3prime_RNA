@@ -7,7 +7,9 @@ adds 32 background genes so that DRIMSeq's cross-gene precision moderation
 behaves as it does on real data. Designed chr2 genes have known effects, and
 the remaining null genes are seeded Dirichlet-multinomial draws. chr3 holds
 two multi-exon genes for the APA patterns: ipa01 gains an intronic PAC in
-TreatmentA, and ale01 switches between two alternative last exons.
+TreatmentA, and ale01 switches between two alternative last exons. It also
+holds two genes too low in TreatmentA for the comparisons involving it to
+test them: off01, silent there, and low01, with a few reads.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import numpy as np
 import pysam
 
 ROOT = Path(__file__).resolve().parent
-CONTIGS = {"chr1": 2000, "chr2": 34000, "chr3": 8000}
+CONTIGS = {"chr1": 2000, "chr2": 34000, "chr3": 10000}
 READ_LENGTH = 30
 
 # (sample_id, condition, control), in sample-sheet order.
@@ -182,6 +184,45 @@ CHR3_GENES = [
 ]
 
 
+# chr3 genes for the depth a comparison needs, plus strand: (gene_id,
+# transcripts as 1-based exons, interbase PAC coordinates, reads at each PAC
+# in TreatmentA). Each has two annotated ends, so calibration leaves it out.
+# Every other sample has 40 reads at each PAC. off01 is silent in TreatmentA,
+# so TreatmentA_vs_DMSO finds it turned off and Rescue_vs_TreatmentA turned
+# on; low01's 2 reads per PAC there are too few for either to test it.
+DEPTH_GENES = [
+    (
+        "off01",
+        {
+            "off01_short": [(6001, 6100), (6401, 6600)],
+            "off01_long": [(6001, 6100), (6801, 7000)],
+        },
+        (6600, 7000),
+        0,
+    ),
+    (
+        "low01",
+        {
+            "low01_short": [(8001, 8100), (8401, 8600)],
+            "low01_long": [(8001, 8100), (8801, 9000)],
+        },
+        (8600, 9000),
+        2,
+    ),
+]
+
+
+def depth_counts() -> dict[tuple[str, str, int], dict[str, int]]:
+    return {
+        ("chr3", "+", coordinate): {
+            sample_id: reads if CONDITION[sample_id] == "TreatmentA" else 40
+            for sample_id in SAMPLES
+        }
+        for _, _, coordinates, reads in DEPTH_GENES
+        for coordinate in coordinates
+    }
+
+
 def chr3_counts(random: np.random.RandomState) -> dict[tuple[str, str, int], dict[str, int]]:
     """Counts for the chr3 genes, drawn after chr2's so its draws stay the same."""
     sites: dict[tuple[str, str, int], dict[str, int]] = {}
@@ -256,7 +297,7 @@ def write_reference() -> None:
         gtf.append(fields.format("gene") + f'\tgene_id "{gene_id}"; gene_name "{gene_id.upper()}";')
         gtf.append(fields.format("exon") + f'\tgene_id "{gene_id}"; transcript_id "{gene_id}_tx";')
     chr3 = list("C" * CONTIGS["chr3"])
-    for gene_id, transcripts, coordinates, _, _ in CHR3_GENES:
+    for gene_id, transcripts, coordinates, *_ in CHR3_GENES + DEPTH_GENES:
         for coordinate in coordinates:
             chr3[coordinate - 20 : coordinate - 14] = list("AATAAA")
         exons = [exon for parts in transcripts.values() for exon in parts]
@@ -341,7 +382,7 @@ def write_expected_counts(sites: dict[tuple[str, str, int], dict[str, int]]) -> 
     for index in range(1, BACKGROUND_GENES + 1):
         for coordinate in pac_coordinates(index, pac_count_for(index)):
             gene_by_site[("chr2", gene_strand(index), coordinate)] = f"bg{index:02d}"
-    for gene_id, _, coordinates, _, _ in CHR3_GENES:
+    for gene_id, _, coordinates, *_ in CHR3_GENES + DEPTH_GENES:
         for coordinate in coordinates:
             gene_by_site[("chr3", "+", coordinate)] = gene_id
     lines = ["\t".join(["gene_id", "pac_id", *SAMPLES])]
@@ -360,7 +401,9 @@ def main() -> None:
             path.unlink()
     # RandomState keeps a frozen stream across NumPy versions.
     random = np.random.RandomState(20260927)
-    sites = {**chr1_counts(), **background_counts(random), **chr3_counts(random)}
+    sites = {
+        **chr1_counts(), **background_counts(random), **chr3_counts(random), **depth_counts()
+    }
     check_support(sites)
     write_reference()
     layout = {"DMSO_1": (False, True), "VEH_2": (True, False)}

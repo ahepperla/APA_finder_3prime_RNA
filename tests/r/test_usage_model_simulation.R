@@ -383,6 +383,119 @@ test_case("S7", "PACs the usage filter admits near its threshold stay calibrated
   }
 })
 
+# ---- Depth in each group ----------------------------------------------------
+
+# A two-condition family, so the family test is the comparison's test, with
+# the control at depth 400 and the treatment's depth set per gene:
+# - lead's case: the control at 10/90; the treatment at 50/50 but nearly
+#   silent, at about 0.3 reads ("off") or 3 reads ("low") per sample, so a
+#   handful of reads read as an even split;
+# - nulls alike in both groups, the treatment at depths from 2 to 400;
+# - genes turned on: the control nearly silent, the treatment at depth 400;
+# - shifts at depth 400 in both groups.
+set.seed(seed + 4L)
+depth_layout <- design_samples(c(C = 4L, T = 4L))
+depth_genes <- list()
+depth_classes <- character()
+add_depth_gene <- function(gene_id, class, proportions, depths, precision = 100) {
+  counts <- do.call(cbind, lapply(names(depths), function(condition) {
+    columns <- depth_layout$sample_condition == condition
+    simulate_dm_counts(proportions[condition], precision, depths[[condition]],
+      depth_layout$sample_condition[columns])
+  }))
+  index <- length(depth_genes) + 1L
+  depth_genes[[index]] <<- gene_entry(gene_id, index, counts)
+  depth_classes[[gene_id]] <<- class
+}
+for (index in 1:20) {
+  for (level in c(off = 0.3, low = 3)) {
+    name <- if (level < 1) "off" else "low"
+    add_depth_gene(sprintf("lead_%s_%02d", name, index), paste0("lead_", name),
+      list(C = c(0.1, 0.9), T = c(0.5, 0.5)), c(C = 400, T = level))
+  }
+}
+for (depth in c(2, 5, 10, 20, 40, 400)) for (index in 1:20) {
+  add_depth_gene(sprintf("null_t%d_%02d", depth, index), "null",
+    list(C = c(0.5, 0.3, 0.2), T = c(0.5, 0.3, 0.2)), c(C = 400, T = depth))
+}
+for (index in 1:15) {
+  add_depth_gene(sprintf("on_%02d", index), "on", list(C = c(0.5, 0.5), T = c(0.5, 0.5)),
+    c(C = 0.2, T = 400))
+}
+for (index in 1:12) {
+  add_depth_gene(sprintf("shift_%02d", index), "shift",
+    list(C = c(0.5, 0.3, 0.2), T = c(0.3, 0.3, 0.4)), c(C = 400, T = 400))
+}
+depth_run <- tryCatch(
+  run_family(depth_genes, depth_layout, "C", "depth"),
+  error = function(error) error
+)
+
+test_case("S8", "a comparison tests only genes with depth in both groups", {
+  if (inherits(depth_run, "error")) stop("Depth run failed: ", conditionMessage(depth_run))
+  directory <- depth_run$run$final_directory
+  pacs <- read_result(directory, "T_vs_C.pacs.tsv.gz")
+  genes <- read_result(directory, "T_vs_C.genes.tsv.gz")
+  skipped <- read_result(directory, "T_vs_C.genes_without_depth.tsv.gz")
+  omnibus <- read_result(directory, "C.gene_omnibus.tsv.gz")
+  filtering <- read_result(directory, "C.statistical_filtering.tsv.gz")
+  status <- stats::setNames(skipped$depth_status, skipped$gene_id)
+  class_of <- function(ids) unname(depth_classes[ids])
+
+  # The gate, recomputed from the counts at the family's tested PACs.
+  counts <- depth_run$dataset$counts
+  counts <- counts[counts$pac_id %in% filtering$pac_id[as_flag(filtering$tested)], , drop = FALSE]
+  totals <- rowsum(as.matrix(counts[, depth_layout$sample_ids]), counts$gene_id)
+  deep <- function(condition) {
+    rowSums(totals[, depth_layout$sample_condition == condition, drop = FALSE] >= 10) >= 2
+  }
+  expected <- rownames(totals)[deep("C") & deep("T")]
+  check(setequal(genes$gene_id, expected), "tested genes differ from the rule: ",
+    paste(utils::head(setdiff(union(genes$gene_id, expected), intersect(genes$gene_id, expected))), collapse = ", "))
+  check(setequal(c(genes$gene_id, skipped$gene_id), omnibus$gene_id) && !any(skipped$gene_id %in% genes$gene_id),
+    "the comparison's genes and its genes without depth do not partition the family's.")
+  check(!any(pacs$gene_id %in% skipped$gene_id), "a gene without depth has PAC rows.")
+
+  # Lead's case: the family test, which still sees these genes, often calls
+  # them; the comparison tests none of them.
+  lead <- names(depth_classes)[startsWith(depth_classes, "lead_")]
+  lead_p <- as_number(omnibus$gene_pvalue[omnibus$gene_id %in% lead])
+  lead_share <- record("S8 lead's-case genes with family p<=0.05", mean(lead_p[is.finite(lead_p)] <= 0.05))
+  off <- names(depth_classes)[depth_classes == "lead_off"]
+  low <- names(depth_classes)[depth_classes == "lead_low"]
+  off_share <- record("S8 nearly silent genes turned off", mean(status[off] %in% "turned_off"))
+  low_share <- record("S8 low genes too low in the treatment", mean(status[low] %in% "too_low_in_treatment"))
+  check(sum(is.finite(lead_p)) >= 15L && lead_share >= 0.2, "only ", format(lead_share), " of ",
+    sum(is.finite(lead_p)), " lead's-case genes had family p <= 0.05; S8 needs them to.")
+  check(all(lead %in% skipped$gene_id), "lead's-case genes were tested: ", paste(setdiff(lead, skipped$gene_id), collapse = ", "))
+  check(all(status[lead] %in% c("turned_off", "too_low_in_treatment")), "lead's-case statuses: ",
+    paste(unique(status[lead]), collapse = ", "))
+  check(off_share >= 0.5 && low_share >= 0.5, "turned off ", format(off_share), ", too low ", format(low_share), ".")
+
+  # Nulls the comparison keeps stay calibrated, as in S1.
+  nulls <- genes[class_of(genes$gene_id) == "null", , drop = FALSE]
+  p <- as_number(nulls$gene_pvalue)
+  kept <- record("S8 null genes tested", length(p))
+  at_05 <- record("S8 tested null p<=0.05", mean(p <= 0.05))
+  at_01 <- record("S8 tested null p<=0.01", mean(p <= 0.01))
+  middle <- record("S8 tested null median p", stats::median(p))
+  check(kept >= 60L && kept < 120L, kept, " of 120 null genes were tested; S8 needs both kinds.")
+  check(at_05 <= 0.15 && at_01 <= 0.07, "tested nulls: ", format(at_05), " at 0.05, ", format(at_01), " at 0.01.")
+  check(middle >= 0.35 && middle <= 0.75, "tested null median p is ", format(middle), ".")
+  check(isTRUE(all.equal(as_number(genes$gene_fdr), model$bh(as_number(genes$gene_pvalue)))),
+    "gene_fdr is not BH over the tested genes.")
+
+  # Genes turned on, and shifts at full depth.
+  on <- names(depth_classes)[depth_classes == "on"]
+  on_share <- record("S8 nearly silent controls turned on", mean(status[on] %in% "turned_on"))
+  check(all(status[on] %in% c("turned_on", "too_low_in_control")) && on_share >= 0.6,
+    "turned on: ", paste(status[on], collapse = ", "))
+  shifts <- names(depth_classes)[depth_classes == "shift"]
+  calls <- pacs$event_type %in% c("gained", "lost", "increased_usage", "decreased_usage")
+  shifted <- record("S8 shifts called", length(intersect(unique(pacs$gene_id[calls]), shifts)))
+  check(all(shifts %in% genes$gene_id) && shifted >= 10L, shifted, " of 12 shifts called.")
+})
+
 cat("\nMetrics (seed ", seed, "):\n", sep = "")
 for (name in names(metrics)) cat(sprintf("  %-42s %s\n", name, format(metrics[[name]], digits = 4)))
 finish_tests()

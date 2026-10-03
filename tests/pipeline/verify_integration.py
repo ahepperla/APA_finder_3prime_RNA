@@ -40,7 +40,7 @@ FIGURE_PIXELS = {
     "volcano": (1500, 1100),
     "distal_usage": (1400, 1150),
     "shifts_by_gene_region": (1300, 600),
-    "event_counts": (1500, 1225),
+    "event_counts": (1500, 1800),
     "effect_vs_coverage": (1500, 800),
     "concordance": (1100, 1050),
     "concordance_matrix": (1075, 1075),
@@ -752,6 +752,40 @@ def check_pau_pca(params: dict, report_text: str) -> None:
     assert "<table" not in section
 
 
+# Genes each comparison leaves untested for depth: off01 is silent in
+# TreatmentA, and low01 has 2 reads per PAC there.
+EXPECTED_WITHOUT_DEPTH = {
+    "TreatmentA_vs_DMSO": {"off01": "turned_off", "low01": "too_low_in_treatment"},
+    "TreatmentB_vs_Vehicle": {},
+    "Rescue_vs_TreatmentA": {"off01": "turned_on", "low01": "too_low_in_control"},
+}
+
+
+def check_genes_without_depth(tables: dict[str, pd.DataFrame], counts: pd.DataFrame) -> None:
+    """The comparisons skip the genes without depth, and the tables' CPM uses
+    each sample's assigned reads, the column totals of the count table."""
+    sheet = pd.read_csv(ROOT / "manifest" / "normalized_samples.tsv", sep="\t")
+    library = counts[list(sheet["sample_id"])].sum()
+    for sample_id in sheet["sample_id"]:
+        quantification = pd.read_csv(ROOT / "qc" / f"{sample_id}.quantification.tsv", sep="\t")
+        assigned = int(quantification["assigned_fragments"].iloc[0])
+        assert assigned == int(library[sample_id]), sample_id
+    for name, expected in EXPECTED_WITHOUT_DEPTH.items():
+        skipped = statistics_table(f"{name}.genes_without_depth.tsv.gz")
+        observed = dict(zip(skipped["gene_id"], skipped["depth_status"], strict=True))
+        assert observed == expected, f"{name}: {observed}"
+        assert not set(skipped["gene_id"]) & set(tables[name]["gene_id"]), name
+        treatment, control = name.split("_vs_")
+        for _, row in skipped.iterrows():
+            gene = counts[counts["gene_id"] == row["gene_id"]]
+            for group, condition in (("control", control), ("treatment", treatment)):
+                ids = list(sheet.loc[sheet["condition"] == condition, "sample_id"])
+                reads = gene[ids].sum()
+                assert int(row[f"{group}_gene_total"]) == int(reads.sum()), (name, row["gene_id"])
+                cpm = (reads / library[ids] * 1e6).mean()
+                assert np.isclose(row[f"{group}_mean_cpm"], cpm), (name, row["gene_id"], group)
+
+
 def check_output_layout(tables: dict[str, pd.DataFrame], params: dict) -> None:
     """Every PAC table starts with one identity block that locates the PAC as
     the atlas BED does; gene names come from the annotation's gene lines."""
@@ -969,7 +1003,13 @@ def main() -> None:
         tested = set(filtering.loc[filtering["tested"], "pac_id"])
         for name in COMPARISONS:
             if name.endswith(f"_vs_{family}"):
-                assert set(tables[name]["pac_id"]) == tested, name
+                # A comparison tests the family's PACs except those of genes
+                # it lists as without depth.
+                skipped = statistics_table(f"{name}.genes_without_depth.tsv.gz")
+                listed = filtering["gene_id"].isin(skipped["gene_id"])
+                without = set(filtering.loc[listed, "pac_id"])
+                assert without <= tested, name
+                assert set(tables[name]["pac_id"]) == tested - without, name
         assert (filtering.loc[~filtering["tested"], "reason"].str.len() > 0).all(), family
     assert not list((ROOT / "statistics").glob("*.preference*")), "preference tables in statistics/"
     assert len(list((ROOT / "motifs").glob("*.preference.tsv.gz"))) == len(COMPARISONS)
@@ -1003,6 +1043,7 @@ def main() -> None:
         title = name.replace("_vs_", " vs ")
         assert f"<h2>{title}: PACs with a call</h2>" in report_text, name
         assert f"<h2>{title}: every tested PAC</h2>" in report_text, name
+        assert f"<h2>{title}: genes not tested for depth</h2>" in report_text, name
     assert "docs/output_columns.md</a>" in report_text
     assert "PAC-level p-value distribution" in report_text
     assert "primary_pas_motif_rna" in report_text
@@ -1014,6 +1055,7 @@ def main() -> None:
     assert f"<strong>{finite_intervals:,}</strong>Bootstrap intervals" in report_text
 
     check_output_layout(tables, params)
+    check_genes_without_depth(tables, counts)
     check_column_guide(ROOT)
 
     trace_text = (ROOT / "pipeline_info" / "execution_trace.txt").read_text()

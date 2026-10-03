@@ -995,6 +995,38 @@ test_case("F-42", "the last axis label at a panel's right edge stays on the page
   check(!draws_outside(plot, 6.5, figures$shift_figure_height(pairs)), "the shifts figure draws outside its page.")
 })
 
+test_case("F-43", "genes without depth count once each, with the too-low statuses together", {
+  comparisons <- comparisons_of(c("A_vs_C", "B_vs_C"))
+  # Each class has a different count, so swapped classes show.
+  depth_a <- data.frame(
+    gene_id = sprintf("g%d", 1:6),
+    depth_status = c("turned_off", "turned_off", "turned_on", "too_low_in_treatment",
+      "too_low_in_control", "too_low_in_both")
+  )
+  depth_b <- data.frame(gene_id = character(), depth_status = character())
+  counts <- figures$depth_count_table(comparisons, list(A_vs_C = depth_a, B_vs_C = depth_b))
+  check(identical(levels(counts$comparison), c("A_vs_C", "B_vs_C")), "comparison levels.")
+  check(identical(levels(counts$class), figures$DEPTH_CLASSES), "class levels.")
+  a <- counts[counts$comparison == "A_vs_C", , drop = FALSE]
+  b <- counts[counts$comparison == "B_vs_C", , drop = FALSE]
+  check(identical(as.character(a$class), figures$DEPTH_CLASSES) && identical(a$count, c(2L, 1L, 3L)), "A_vs_C counts: ", paste(a$class, a$count, collapse = ", "))
+  check(identical(b$count, c(0L, 0L, 0L)), "B_vs_C counts: ", paste(b$count, collapse = ", "))
+  bad <- list(A_vs_C = data.frame(gene_id = "g1", depth_status = "unknown_status"), B_vs_C = depth_b)
+  unknown <- tryCatch(
+    figures$depth_count_table(comparisons, bad),
+    error = function(error) conditionMessage(error)
+  )
+  check(grepl("Unknown depth_status values in A_vs_C: unknown_status", unknown, fixed = TRUE), "unknown error: ", unknown)
+  # plot_event_counts returns a figure_stack with three plots.
+  events <- figures$event_count_table(comparisons, list(A_vs_C = pac_table(), B_vs_C = pac_table()),
+    list(A_vs_C = gene_row("x")[0, ], B_vs_C = gene_row("x")[0, ]))
+  patterns <- figures$pattern_count_table(comparisons, list(A_vs_C = gene_row("x")[0, ], B_vs_C = gene_row("x")[0, ]))
+  stack <- figures$plot_event_counts(events, patterns, counts, comparisons)
+  check(inherits(stack, "figure_stack"), "not a figure_stack.")
+  check(length(stack$plots) == 3L, "plots in stack: ", length(stack$plots))
+  check(identical(stack$plots[[2]]$labels$title, "Genes not tested for depth"), "middle plot title: ", stack$plots[[2]]$labels$title)
+})
+
 # ---- Saving -------------------------------------------------------------------
 
 test_case("F-09", "PDFs carry no dates or producer, and PNGs have the requested size", {
@@ -1074,10 +1106,22 @@ write_inputs <- function(directory, filled) {
   sys.source(statistics_script, envir = model)
   empty_pacs <- model$empty_table(model$PAC_COLUMNS)
   empty_genes <- model$empty_table(model$GENE_COLUMNS)
+  empty_depth <- model$empty_table(model$WITHOUT_DEPTH_COLUMNS)
+  # T1_vs_C left two genes untested for depth: one turned off, one too low.
+  filled_depth <- data.frame(
+    gene_id = c("g3", "g4"), gene_name = c("G3", "G4"), condition = "T1", control_condition = "C",
+    depth_status = c("turned_off", "too_low_in_treatment"), control_gene_total = c(60, 50),
+    treatment_gene_total = c(0, 5), control_samples = 2, treatment_samples = 2,
+    control_samples_with_depth = c(2, 2), treatment_samples_with_depth = c(0, 0),
+    control_samples_with_reads = c(2, 2), treatment_samples_with_reads = c(0, 2),
+    control_mean_cpm = c(12, 10), treatment_mean_cpm = c(0, 1),
+    exploratory_insufficient_replicates = FALSE, stringsAsFactors = FALSE
+  )[, model$WITHOUT_DEPTH_COLUMNS]
   for (stem in c("T1_vs_C", "T2_vs_C")) {
     use <- filled && stem == "T1_vs_C"
     write_table(if (use) pacs else empty_pacs, file.path(statistics, paste0(stem, ".pacs.tsv.gz")))
     write_table(if (use) genes else empty_genes, file.path(statistics, paste0(stem, ".genes.tsv.gz")))
+    write_table(if (use) filled_depth else empty_depth, file.path(statistics, paste0(stem, ".genes_without_depth.tsv.gz")))
   }
   write_table(
     data.frame(pac_id = pacs$pac_id, gene_id = pacs$gene_id, coordinate = c(100, 200, 900, 800),
@@ -1141,7 +1185,7 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   for (name in c("event_counts.png", "effect_vs_coverage.png", "T1_vs_C.volcano.png")) {
     check(file.size(file.path(directory, "figures", name)) > 1000, name, " is nearly empty.")
   }
-  check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1075)), "event_counts size.")
+  check(identical(png_size(file.path(directory, "figures", "event_counts.png")), c(1500, 1575)), "event_counts size.")
   # One region pair, last exon to last exon, in both comparisons' figures.
   for (stem in c("T1_vs_C", "T2_vs_C")) {
     size <- png_size(file.path(directory, "figures", paste0(stem, ".shifts_by_gene_region.png")))
@@ -1206,6 +1250,9 @@ test_case("F-15", "the figures read only columns the statistics tables have", {
   missing_genes <- setdiff(figures$GENES_REQUIRED, model$GENE_COLUMNS)
   check(!length(missing_pacs), "not in PAC_COLUMNS: ", paste(missing_pacs, collapse = ", "))
   check(!length(missing_genes), "not in GENE_COLUMNS: ", paste(missing_genes, collapse = ", "))
+  missing_depth <- setdiff(figures$DEPTH_REQUIRED, model$WITHOUT_DEPTH_COLUMNS)
+  check(!length(missing_depth), "not in WITHOUT_DEPTH_COLUMNS: ", paste(missing_depth, collapse = ", "))
+  check(identical(figures$DEPTH_STATUSES, model$DEPTH_STATUSES), "the scripts list different depth statuses.")
 })
 
 test_case("F-16", "the figure script is ASCII only", {

@@ -68,10 +68,13 @@ coverage before making broad or negative structural claims.
   evidence from the scan.
 - Statistical filtering belongs to `fit_usage_model.R`: it filters each
   comparison family's own samples and writes the reasons, per PAC, to
-  `FAMILY.statistical_filtering.tsv.gz`.
+  `FAMILY.statistical_filtering.tsv.gz`. Each comparison then tests only
+  genes with depth in both groups, and lists the others in
+  `CONDITION_vs_CONTROL.genes_without_depth.tsv.gz`.
 - Calls belong to `fit_usage_model.R` too, including each gene's
   `apa_pattern`. PLOT_FIGURES draws the calls in the `.pacs` and `.genes`
-  tables and never makes its own. A PAC's `event_type` holds only PAC calls;
+  tables, and the classes in `genes_without_depth`, and never makes its
+  own. A PAC's `event_type` holds only PAC calls;
   gene-level events are in the `.genes` tables.
 - `docs/output_columns.md` documents every published column. The integration
   verifiers fail when a table gains, loses, or renames a column the guide

@@ -439,7 +439,7 @@
           "type": "integer",
           "minimum": 0,
           "default": 10,
-          "description": "Reads at the gene a sample needs before it can count toward min_site_usage_samples."
+          "description": "Reads at the gene a sample needs before it can count toward min_site_usage_samples. A comparison also tests a gene only when each of its groups has event_min_supporting_samples samples (or all of a smaller group) with this many reads at the gene's tested PACs; the genes it skips are listed in CONDITION_vs_CONTROL.genes_without_depth.tsv.gz."
         },
         "min_test_supporting_samples": {
           "type": "integer",
@@ -543,7 +543,7 @@
           "type": "integer",
           "minimum": 1,
           "default": 2,
-          "description": "Samples with reads a group needs for a PAC to count as detected there."
+          "description": "Samples with reads a group needs for a PAC to count as detected there. It is also the number of samples, or all of a smaller group, that each group needs with min_site_usage_gene_reads reads at a gene for a comparison to test it."
         },
         "potential_internal_priming_withheld_calls": {
           "type": "boolean",

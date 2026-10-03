@@ -84,7 +84,11 @@ BED files, except `locus`, which is 1-based for genome browsers.
 - Why did a candidate site not enter the atlas? `atlas/rejected_candidates.tsv.gz`.
 - How many reads does each PAC have in each sample, and what is its usage there?
   `counts/pac_counts.tsv.gz` and `counts/observed_pau.tsv.gz`.
-- Why was a PAC or gene not tested? `statistics/FAMILY.statistical_filtering.tsv.gz`.
+- Why was a PAC or gene not tested? `statistics/FAMILY.statistical_filtering.tsv.gz` for
+  the family's filter. A gene its family tested but one comparison did not, because a group
+  had too few reads at it, is in `statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz`.
+- Which genes were turned on or off in a comparison?
+  `statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz`.
 - Did a treatment shift usage toward sites with a particular poly(A) signal?
   `motifs/CONDITION_vs_CONTROL.preference.tsv.gz` and
   `motifs/CONDITION_vs_CONTROL.preference_class.tsv.gz`.
@@ -781,7 +785,7 @@ grouped by gene.
 | `effect_exceeds_threshold` | `TRUE` when the absolute delta_pau is at least min_abs_delta_pau (default 0.1). |
 | `dominant_pac_control`, `dominant_pac_treatment` | pac_id of the gene's tested PAC with the highest fitted PAU in each group; the same on every row of the gene. |
 | `control_active_pacs`, `treatment_active_pacs` | Number of the gene's tested PACs that are active in each group, with fitted PAU of at least active_pac_min_pau (default 0.10). |
-| `model_status` | How the gene was fitted: `fitted`; `fitted_with_zero_count_stabilization` (a PAC had no reads in a whole group, or the plain fit failed, so the results are medians of refits with small seeded values in place of zero counts, and the precision and p-values depend on random_seed); `fit_unavailable` (no usable fit); or `group_without_counts` (the control or treatment group has no reads at the gene, so it is not tested in this comparison). |
+| `model_status` | How the gene was fitted: `fitted`; `fitted_with_zero_count_stabilization` (a PAC had no reads in a whole group, or the plain fit failed, so the results are medians of refits with small seeded values in place of zero counts, and the precision and p-values depend on random_seed); or `fit_unavailable` (no usable fit). A gene with a group without reads is not tested in this comparison and is listed in `genes_without_depth` instead. |
 | `precision` | The gene's Dirichlet-multinomial precision, shared by the conditions of the family: higher means the replicates vary less around the fitted usage. |
 | `alpha_control`, `alpha_treatment` | The fitted Dirichlet parameters for this PAC in each group, fitted PAU times precision. |
 | `stabilization_successes` | For a stabilized gene, how many of the dm_zero_sensitivity_repeats refits (default 5) gave a usable result for this PAC; `0` otherwise. |
@@ -819,7 +823,8 @@ Same columns as `statistics/CONDITION_vs_CONTROL.pacs.tsv.gz`. It holds the rows
 
 ### `statistics/CONDITION_vs_CONTROL.genes.tsv.gz`
 
-One row per tested gene in a comparison: its gene-level test, its gene-level events, its
+One row per gene the comparison tested (its family tested it, and both groups have depth,
+as described under `genes_without_depth`): its gene-level test, its gene-level events, its
 APA pattern, the shift in its usage, and the numbers behind the pattern.
 
 | Column | Meaning |
@@ -843,7 +848,7 @@ APA pattern, the shift in its usage, and the numbers behind the pattern.
 | `gene_pvalue` | Raw p-value of the gene-level test: does the treatment change how the gene's reads are split among its tested PACs? |
 | `gene_likelihood_ratio` | The test's likelihood-ratio statistic; larger means stronger evidence. |
 | `gene_degrees_of_freedom` | Its degrees of freedom: the gene's tested PACs minus 1. |
-| `model_status` | How the gene was fitted: `fitted`, `fitted_with_zero_count_stabilization`, `fit_unavailable`, or `group_without_counts`, as in the `.pacs` table. |
+| `model_status` | How the gene was fitted: `fitted`, `fitted_with_zero_count_stabilization`, or `fit_unavailable`, as in the `.pacs` table. A gene with a group without reads is not tested in this comparison and is listed in `genes_without_depth` instead. |
 | `stabilization_successes` | For a stabilized gene, how many refits gave a usable gene-level test; `0` otherwise. |
 | `exploratory_insufficient_replicates` | `TRUE` when the comparison is exploratory, as in the `.pacs` table. |
 
@@ -874,6 +879,40 @@ How `apa_pattern` is decided, with T the apa_pattern_min_change (default 0.1):
 - `unclassified_change`: the gene qualifies, but no pattern applies.
 - Several patterns are listed in the order above, the supported ones first, then those
   with the `_potential_internal_priming` suffix.
+
+### `statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz`
+
+One row per gene that the comparison family tested but this comparison did not, because the
+control or the treatment had too few reads at the gene. The comparison's other tables leave
+these genes out.
+
+| Column | Meaning |
+|---|---|
+| `condition` | The treatment condition. |
+| `control_condition` | Its direct control. |
+| `depth_status` | Why the comparison did not test the gene: `turned_off`, `turned_on`, `too_low_in_treatment`, `too_low_in_control`, or `too_low_in_both`. The rules are listed below the table. |
+| `control_gene_total`, `treatment_gene_total` | Reads at the gene's tested PACs, the PACs its family tested, summed over each group's samples. |
+| `control_samples`, `treatment_samples` | Samples in each group. |
+| `control_samples_with_depth`, `treatment_samples_with_depth` | Samples in each group with at least min_site_usage_gene_reads (default 10) reads at the gene's tested PACs. A group has depth when at least event_min_supporting_samples (default 2) of its samples do, or all of them when it has fewer samples. |
+| `control_samples_with_reads`, `treatment_samples_with_reads` | Samples in each group with at least one read at the gene's tested PACs. |
+| `control_mean_cpm`, `treatment_mean_cpm` | Mean over each group's samples of the gene's reads at its tested PACs per million of the sample's assigned reads (its column total in counts/pac_counts.tsv.gz). |
+| `exploratory_insufficient_replicates` | `TRUE` when the comparison is exploratory, as in the `.pacs` table. |
+
+How `depth_status` is decided:
+- A comparison tests a gene only when both groups have depth. The rule reads only how many
+  reads each sample has at the gene, not how they are split among its PACs, so it does not
+  bias the usage test. Reads here are at the PACs the family tested; the family filter's
+  min_site_usage_gene_reads counts a sample's reads at all of the gene's PACs, so the two
+  can differ.
+- `turned_off`: the control has depth; the treatment has reads in fewer samples than a group
+  needs for depth; and at the control's mean CPM, the treatment's libraries would have given
+  enough of its samples min_site_usage_gene_reads reads. The gene was not detected in the
+  treatment at a depth where the control's expression would have shown it; that is not
+  proof that it is silent there.
+- `turned_on`: the mirror image, with the treatment's depth and the control's libraries.
+- `too_low_in_treatment`: the control has depth and the treatment does not, but it is not
+  `turned_off`. `too_low_in_control` is the mirror image.
+- `too_low_in_both`: neither group has depth.
 
 ### `statistics/FAMILY.gene_omnibus.tsv.gz`
 
@@ -915,7 +954,7 @@ fitted usage and model parameters of the `.pacs` tables.
 | `fitted_control_pau` | The PAC's fitted PAU in the control group, as in the `.pacs` table. |
 | `fitted_treatment_pau` | Its fitted PAU in the treatment group. |
 | `delta_pau` | fitted_treatment_pau minus fitted_control_pau. |
-| `model_status` | How the gene was fitted, as in the `.pacs` table. |
+| `model_status` | How the gene was fitted: `fitted`, `fitted_with_zero_count_stabilization`, or `fit_unavailable`, as in the `.pacs` table. A gene with a group without reads is not tested in this comparison and is listed in `genes_without_depth` instead. |
 | `precision` | The gene's Dirichlet-multinomial precision, as in the `.pacs` table. |
 | `alpha_control`, `alpha_treatment` | The fitted Dirichlet parameters for this PAC in each group, fitted PAU times precision. |
 
@@ -953,8 +992,9 @@ which says how closely replicates agree.
   confirmed call, once, by `shift_from_gene_region` and `shift_to_gene_region`, with
   proximal shifts left of zero and distal shifts right.
 - `figures/event_counts.pdf` and `.png`: genes by their PAC calls and gene events per
-  comparison, and the genes per APA pattern, with all tested PACs and apart by whether
-  the pattern needs flagged PACs.
+  comparison; the genes each comparison left untested for depth, by `depth_status`
+  (turned off, turned on, or too low to test); and the genes per APA pattern, with all
+  tested PACs and apart by whether the pattern needs flagged PACs.
 - `figures/apa_pattern_grid.pdf` and `.png`: up to 50 genes with an APA pattern in two or
   more comparisons, against the comparisons.
 - `figures/concordance.pdf` and `.png`: for pairs of comparisons (up to 15 panels), each

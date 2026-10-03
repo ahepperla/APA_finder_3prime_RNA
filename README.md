@@ -282,6 +282,7 @@ your question:
 | How did every tested PAC's usage change? | `statistics/CONDITION_vs_CONTROL.pacs.tsv.gz` |
 | Which genes changed, and how (APA pattern)? | `statistics/CONDITION_vs_CONTROL.genes.tsv.gz` |
 | Why was a PAC not tested? | `statistics/FAMILY.statistical_filtering.tsv.gz` |
+| Which genes did a comparison leave untested for depth, or find turned on or off? | `statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz` |
 | Where are the PACs, and what is known about each? | `atlas/pacs.v1.metadata.tsv.gz` |
 | Why was a candidate PAC rejected? | `atlas/rejected_candidates.tsv.gz` |
 | How many reads does each PAC have in each sample? | `counts/pac_counts.tsv.gz` |
@@ -506,6 +507,9 @@ treatments.
   changes in usage only, or candidate calls only. Beside them are the gene
   events from the `.genes` tables: dominant switches, and more or fewer
   active PACs.
+  - A middle panel counts the genes each comparison left untested for depth,
+    from its `genes_without_depth` table: turned off, turned on, or too low
+    to test.
   - A lower panel counts genes per APA pattern; a gene with two patterns
     counts in both.
   - It counts them three ways: with all tested PACs, unflagged and flagged;
@@ -668,6 +672,19 @@ annotated ones calibration uses.
     tests' (simulation S7).
   - `statistics/FAMILY.statistical_filtering.tsv.gz` lists every PAC as
     tested, or with the reasons it was not.
+- **Depth in each group.** A comparison tests a gene only when its control
+  and its treatment each have `event_min_supporting_samples` samples (or
+  all of a smaller group) with `min_site_usage_gene_reads` reads at the
+  gene's tested PACs. A handful of reads in a nearly silent group would
+  otherwise read as a large shift in usage.
+  - The rule reads how many reads each sample has at the gene, never how
+    they split among its PACs. The usage test conditions on those totals, so
+    the genes kept are tested exactly as before (simulation S8).
+  - The genes a comparison skips are in
+    `statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz`, with each
+    group's reads and CPM. A gene is `turned_off` or `turned_on` when one
+    group has no reads where the other group's expression would have given
+    it enough, and `too_low_in_*` otherwise. `event_counts` counts them.
 - **Model.** DRIMSeq fits a Dirichlet-multinomial model per gene with the
   design `~ model_covariates + condition`, with the family's control as the
   reference.
@@ -692,7 +709,8 @@ annotated ones calibration uses.
     magnitude while its change in PAU barely moves, so read them alongside
     `model_status` (`fitted_with_zero_count_stabilization`).
   - A condition with no reads at all for a gene leaves that gene untested in
-    its comparisons (`model_status` `group_without_counts`).
+    its comparisons, which list it in `genes_without_depth`. The family-wide
+    test marks it `group_without_counts`.
 - **Intervals.** A parametric bootstrap gives a 95% interval for the change
   in PAU in screened genes and detection candidates.
   - The intervals hold each gene's precision at its fitted value. In
@@ -819,6 +837,13 @@ finished steps from it.
     beside the panel, every figure has room for its last axis label, long
     comparison titles wrap, and gene labels are pushed apart harder so they
     no longer overlap. Figures only; tables are unchanged.
+  - **Version 0.9.0** tests a gene in a comparison only when both groups have
+    depth: `event_min_supporting_samples` samples with
+    `min_site_usage_gene_reads` reads at the gene. Calls change: genes nearly
+    silent in a group are no longer tested there, and each comparison's
+    corrections run over fewer genes. The skipped genes, including those
+    turned on or off, are in the new
+    `CONDITION_vs_CONTROL.genes_without_depth.tsv.gz` and in `event_counts`.
 
 ## Troubleshooting
 

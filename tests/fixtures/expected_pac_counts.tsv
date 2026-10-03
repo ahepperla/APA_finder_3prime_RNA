@@ -97,3 +97,7 @@ ipa01	PACv1.synthetic.chr3.+.1150	28	24	181	163	42	36	23	26	31	37
 ipa01	PACv1.synthetic.chr3.+.2400	252	276	139	117	258	284	257	274	289	243
 ale01	PACv1.synthetic.chr3.+.5000	227	240	71	58	237	257	227	235	252	232
 ale01	PACv1.synthetic.chr3.+.5600	53	60	249	222	63	63	53	65	68	48
+off01	PACv1.synthetic.chr3.+.6600	40	40	0	0	40	40	40	40	40	40
+off01	PACv1.synthetic.chr3.+.7000	40	40	0	0	40	40	40	40	40	40
+low01	PACv1.synthetic.chr3.+.8600	40	40	2	2	40	40	40	40	40	40
+low01	PACv1.synthetic.chr3.+.9000	40	40	2	2	40	40	40	40	40	40

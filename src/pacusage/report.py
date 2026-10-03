@@ -51,7 +51,9 @@ SUMMARY_FIGURES = (
         "Each gene counts once by its PAC calls: a confirmed gain and loss, a gain, a "
         "loss, changes in usage only, or candidate calls only. Gene events count "
         "genes that pass the gene-level screen, from the dominant_switch and "
-        "active_pacs_change columns of the .genes tables. The lower panel counts genes "
+        "active_pacs_change columns of the .genes tables. The middle panel counts the "
+        "genes each comparison left untested for depth, from its genes_without_depth "
+        "table: turned off, turned on, or too low to test. The lower panel counts genes "
         "per APA pattern (apa_pattern); a gene with two patterns counts in both. It "
         "counts them with all tested PACs, unflagged and flagged; for the patterns "
         "unflagged PACs support; and for those that only PACs flagged for possible "
@@ -761,6 +763,13 @@ STATISTICS_TABLES = (
         ".pacs.tsv.gz",
         "every tested PAC",
         "Every tested PAC, with its change in usage, its tests, and its annotation.",
+    ),
+    (
+        ".genes_without_depth.tsv.gz",
+        "genes not tested for depth",
+        "Genes the comparison family tested but this comparison did not, because the control "
+        "or the treatment had too few reads at them. Genes turned on or off are those with no "
+        "reads in one group where the other group's expression would have shown them.",
     ),
 )
 

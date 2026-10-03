@@ -758,6 +758,34 @@ run_variant <- tryCatch(
   error = function(error) error
 )
 
+# A variant with bootstrap intervals disabled and every T2 PAC at 1 read, so
+# T2_vs_C has no gene with depth.
+shallow <- build_usage_dataset(0L)
+shallow$counts[, t2_samples] <- 1L
+shallow_paths <- write_usage_inputs(shallow, file.path(work, "shallow_inputs"))
+run_shallow <- tryCatch(
+  run_statistics_in_process(model, shallow_paths, file.path(work, "shallow")),
+  error = function(error) error
+)
+
+test_case("M-30", "a comparison without any gene with depth writes empty tables and lists every gene", {
+  run <- require_run(run_shallow)
+  for (suffix in c(".pacs.tsv.gz", ".calls.tsv.gz")) {
+    table <- read_result(run$final_directory, paste0("T2_vs_C", suffix))
+    check(nrow(table) == 0L && identical(names(table), model$PAC_COLUMNS), "T2_vs_C", suffix, " is not empty with PAC columns.")
+  }
+  genes <- read_result(run$final_directory, "T2_vs_C.genes.tsv.gz")
+  check(nrow(genes) == 0L && identical(names(genes), model$GENE_COLUMNS), "T2_vs_C.genes is not empty with gene columns.")
+  skipped <- read_result(run$final_directory, "T2_vs_C.genes_without_depth.tsv.gz")
+  omnibus <- read_result(run$final_directory, "C.gene_omnibus.tsv.gz")
+  check(setequal(skipped$gene_id, omnibus$gene_id) && nrow(skipped) == nrow(omnibus), "T2_vs_C does not list every family gene.")
+  check(all(skipped$depth_status == "too_low_in_treatment"), "statuses: ", paste(unique(skipped$depth_status), collapse = ", "))
+  fitted <- read_result(run$final_directory, "fitted_pau.tsv.gz")
+  check(!any(fitted$condition == "T2") && any(fitted$condition == "T1"), "fitted_pau rows by condition: ", paste(unique(fitted$condition), collapse = ", "))
+  t1 <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
+  check(nrow(t1) > 0L && all(t1$bootstrap_status == "disabled"), "T1_vs_C was not tested with bootstrap disabled.")
+})
+
 test_case("M-17", "with zero bootstrap replicates, rows are marked disabled", {
   run <- require_run(run_variant)
   check(length(run$batches) == 1L, "expected one placeholder batch, found ", length(run$batches), ".")
@@ -770,12 +798,22 @@ test_case("M-17", "with zero bootstrap replicates, rows are marked disabled", {
 
 test_case("M-18", "a condition with no counts leaves only its comparisons untested", {
   run <- require_run(run_variant)
+  # A group without reads has no depth, so T2_vs_C does not test null_01 and
+  # lists it apart: turned off, since T2's libraries would have shown it.
   t2 <- read_result(run$final_directory, "T2_vs_C.pacs.tsv.gz")
-  rows <- t2[t2$gene_id == "null_01", , drop = FALSE]
-  check(nrow(rows) == 3L, "expected 3 T2 rows for null_01.")
-  check(all(rows$model_status == "group_without_counts"), "T2 rows are not group_without_counts.")
-  check(all(is.na(as_number(rows$pac_pvalue)) & is.na(as_number(rows$gene_pvalue))), "T2 has p-values.")
-  check(all(rows$event_type == "none"), "T2 rows have events: ", paste(rows$event_type, collapse = ", "))
+  check(!any(t2$gene_id == "null_01"), "T2_vs_C still tests null_01.")
+  t2_genes <- read_result(run$final_directory, "T2_vs_C.genes.tsv.gz")
+  check(!any(t2_genes$gene_id == "null_01"), "T2_vs_C's genes table lists null_01.")
+  skipped <- read_result(run$final_directory, "T2_vs_C.genes_without_depth.tsv.gz")
+  check(identical(names(skipped), model$WITHOUT_DEPTH_COLUMNS), "columns: ", paste(names(skipped), collapse = ", "))
+  row <- one_row(skipped, gene_id = "null_01")
+  check(identical(row$depth_status, "turned_off"), "null_01 status: ", row$depth_status)
+  check(as_number(row$treatment_gene_total) == 0 && as_number(row$treatment_samples_with_reads) == 0, "T2 reads at null_01.")
+  check(as_number(row$treatment_samples) == 3 && as_number(row$control_samples_with_depth) >= 2, "sample counts.")
+  check(identical(row$condition, "T2") && identical(row$control_condition, "C"), "comparison columns.")
+  check(identical(skipped$gene_id, "null_01"), "other genes without depth: ", paste(skipped$gene_id, collapse = ", "))
+  # The comparison's corrections run over the genes it tested.
+  check(isTRUE(all.equal(as_number(t2_genes$gene_fdr), model$bh(as_number(t2_genes$gene_pvalue)))), "T2 gene_fdr is not BH over its tested genes.")
   t1 <- read_result(run$final_directory, "T1_vs_C.pacs.tsv.gz")
   rows <- t1[t1$gene_id == "null_01", , drop = FALSE]
   check(all(is.finite(as_number(rows$gene_pvalue))), "T1_vs_C lost its gene p-value.")
@@ -1519,6 +1557,61 @@ test_case("M-25", "APA patterns follow region shares and direction-matched calls
       comparison, ": invalid patterns ", paste(unique(genes$apa_pattern), collapse = ", ")
     )
   }
+})
+
+test_case("M-29", "a comparison tests a gene only with depth in both groups, and says why not", {
+  # Each gene's reads are split over two PACs; depth counts them together.
+  reads <- list(
+    tested = list(C = c(20, 15), T = c(12, 30)),
+    off = list(C = c(40, 50), T = c(0, 0)),
+    on = list(C = c(0, 0), T = c(30, 40)),
+    one_deep = list(C = c(40, 50), T = c(30, 5)),
+    low_t = list(C = c(40, 50), T = c(5, 4)),
+    low_c = list(C = c(5, 4), T = c(30, 40)),
+    low_both = list(C = c(5, 4), T = c(3, 6))
+  )
+  sample_ids <- c("C_1", "C_2", "T_1", "T_2")
+  counts <- do.call(rbind, lapply(names(reads), function(gene) {
+    values <- c(reads[[gene]]$C, reads[[gene]]$T)
+    first <- floor(values / 2)
+    rows <- rbind(first, values - first)
+    colnames(rows) <- sample_ids
+    data.frame(gene_id = gene, pac_id = paste0(gene, c("_a", "_b")), rows, check.names = FALSE)
+  }))
+  layout <- list(sample_ids = sample_ids, control = "C",
+    groups = list(C = c("C_1", "C_2"), T = c("T_1", "T_2")))
+  params <- list(min_site_usage_gene_reads = 10L, event_min_supporting_samples = 2L)
+  depth <- model$comparison_depth(counts, names(reads), layout, "T", params,
+    c(C_1 = 1e6, C_2 = 1e6, T_1 = 1e6, T_2 = 1e6))
+  status <- stats::setNames(depth$depth_status, depth$gene_id)
+  expected <- c(tested = NA, off = "turned_off", on = "turned_on", one_deep = "too_low_in_treatment",
+    low_t = "too_low_in_treatment", low_c = "too_low_in_control", low_both = "too_low_in_both")
+  check(identical(status, expected), "statuses: ", paste(names(status), status, sep = "=", collapse = ", "))
+  check(identical(depth$tested, unname(is.na(expected))), "tested flags.")
+  off <- depth[depth$gene_id == "off", , drop = FALSE]
+  check(off$control_gene_total == 90 && off$control_samples_with_depth == 2 && off$treatment_samples_with_reads == 0, "off counts.")
+  check(isTRUE(all.equal(off$control_mean_cpm, 45)), "off control CPM: ", off$control_mean_cpm)
+  # Shallow treatment libraries could not have shown the gene: at 45 CPM, a
+  # library of 100,000 reads gives 4.5 reads, so silence there is too low,
+  # not turned off.
+  shallow <- model$comparison_depth(counts, names(reads), layout, "T", params,
+    c(C_1 = 1e6, C_2 = 1e6, T_1 = 1e5, T_2 = 1e5))
+  check(identical(shallow$depth_status[shallow$gene_id == "off"], "too_low_in_treatment"), "shallow off: ", shallow$depth_status[shallow$gene_id == "off"])
+  check(isTRUE(all.equal(shallow$treatment_mean_cpm[shallow$gene_id == "on"], 350)), "shallow on CPM.")
+  # A one-sample group needs its one sample deep.
+  single <- counts[, c("gene_id", "pac_id", "C_1", "C_2", "T_1")]
+  layout_single <- list(sample_ids = c("C_1", "C_2", "T_1"), control = "C",
+    groups = list(C = c("C_1", "C_2"), T = "T_1"))
+  one <- model$comparison_depth(single, names(reads), layout_single, "T", params,
+    c(C_1 = 1e6, C_2 = 1e6, T_1 = 1e6))
+  one_status <- stats::setNames(one$depth_status, one$gene_id)
+  check(is.na(one_status[["tested"]]) && is.na(one_status[["one_deep"]]), "a deep single sample was not enough.")
+  check(identical(one_status[["off"]], "turned_off") && identical(one_status[["low_t"]], "too_low_in_treatment"), "single-sample statuses: ", paste(one_status, collapse = ", "))
+  check(identical(model$depth_samples_needed(1L, params), 1L) && identical(model$depth_samples_needed(4L, params), 2L), "samples needed.")
+  # The published table lists the untested genes in status order.
+  table <- model$without_depth_table(depth, "T", "C", c(off = "OFF"), FALSE)
+  check(identical(names(table), model$WITHOUT_DEPTH_COLUMNS), "table columns.")
+  check(identical(table$gene_id, c("off", "on", "low_t", "one_deep", "low_c", "low_both")), "table order: ", paste(table$gene_id, collapse = ", "))
 })
 
 finish_tests()

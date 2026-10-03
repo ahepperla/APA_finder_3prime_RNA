@@ -8,6 +8,57 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-03: A comparison tests only genes with depth in both groups
+
+Status: accepted (project lead)
+
+In one treatment, many of the lead's calls came from genes nearly silent
+after treatment. Two PACs with one read each read as an even split against
+the control's well-supported 10/90. The family filter, blind to condition,
+admits such genes on the control's reads, and only gained and lost calls
+checked coverage. The lead kept the remedy to PAU analysis: no
+gene-expression test and no shrunken effect sizes.
+
+**Decision** (version 0.9.0)
+- **The rule:** a comparison tests a gene only when its control and its
+  treatment each have `event_min_supporting_samples` (2) samples with
+  `min_site_usage_gene_reads` (10) reads at the gene's tested PACs. A
+  smaller group needs all of its samples, so a one-replicate exploratory
+  group needs its one sample deep. No parameters were added.
+- **What changes:** genes failing the rule leave the comparison before BH and
+  stageR, and leave its `.pacs`, `.genes`, `.calls`, and `fitted_pau` rows.
+  The family fit, its omnibus test, precision, stabilization, the family
+  filter, and every call rule are unchanged, as is the gained/lost
+  `min_gene_total` coverage rule, which the new rule implies at the
+  defaults in groups of two or more samples.
+- **The new table:** `CONDITION_vs_CONTROL.genes_without_depth.tsv.gz` lists
+  the skipped genes with each group's reads, samples, and mean CPM. Its
+  statuses are `turned_off` and `turned_on` (one group has reads in fewer
+  samples than depth needs, where the other's mean CPM would have given it
+  depth), and otherwise `too_low_in_treatment`, `too_low_in_control`, or
+  `too_low_in_both`. `event_counts` counts them in a third plot, and the
+  report shows each comparison's table.
+
+**Why**
+- **Independence:** the family filter reads PAC shares, so it must be blind
+  to the labels (2026-10-01). This rule reads the labels but only per-sample
+  gene totals, never how they split among PACs. The Dirichlet-multinomial
+  test conditions on those totals, so under the null the rule is independent
+  of the test (Bourgon et al., 2010), as far as the test's asymptotic null
+  holds. It is a comparison-level step after the family fit, beside the
+  label-blind filter, and supersedes none of the 2026-10-01 entries.
+- **Simulation S8, three seeds:**
+  - 71% to 74% of genes whose treatment had a few reads at an even split
+    had p <= 0.05, and none is tested now;
+  - the null genes kept had p <= 0.05 in 2.7% to 5.1% of cases;
+  - every shift at normal depth was still called.
+- **Turned on and off:** the guard against shallow libraries makes these a
+  description, not a test: not detected, at a depth where the gene would
+  have shown.
+- **Dropped:** a gene-expression test with edgeR, which would be a separate
+  analysis, and the shrunken effect sizes. The depth rule removes the
+  low-read calls directly.
+
 ## 2026-10-03: Figure text kept on the page and labels kept apart
 
 Status: accepted (project lead; supersedes the 10,000-iteration detail of
