@@ -893,7 +893,7 @@ these genes out.
 | `depth_status` | Why the comparison did not test the gene: `turned_off`, `turned_on`, `too_low_in_treatment`, `too_low_in_control`, or `too_low_in_both`. The rules are listed below the table. |
 | `control_gene_total`, `treatment_gene_total` | Reads at the gene's tested PACs, the PACs its family tested, summed over each group's samples. |
 | `control_samples`, `treatment_samples` | Samples in each group. |
-| `control_samples_with_depth`, `treatment_samples_with_depth` | Samples in each group with at least min_site_usage_gene_reads (default 10) reads at the gene's tested PACs. A group has depth when at least event_min_supporting_samples (default 2) of its samples do, or all of them when it has fewer samples. |
+| `control_samples_with_depth`, `treatment_samples_with_depth` | Samples in each group with at least min_site_usage_gene_reads (default 10) reads at the gene's tested PACs and, when min_group_gene_cpm is set (default 0, off), at least that many reads per million of the sample's assigned reads there. A group has depth when at least event_min_supporting_samples (default 2) of its samples do, or all of them when it has fewer samples. |
 | `control_samples_with_reads`, `treatment_samples_with_reads` | Samples in each group with at least one read at the gene's tested PACs. |
 | `control_mean_cpm`, `treatment_mean_cpm` | Mean over each group's samples of the gene's reads at its tested PACs per million of the sample's assigned reads (its column total in counts/pac_counts.tsv.gz). |
 | `exploratory_insufficient_replicates` | `TRUE` when the comparison is exploratory, as in the `.pacs` table. |
@@ -906,7 +906,8 @@ How `depth_status` is decided:
   can differ.
 - `turned_off`: the control has depth; the treatment has reads in fewer samples than a group
   needs for depth; and at the control's mean CPM, the treatment's libraries would have given
-  enough of its samples min_site_usage_gene_reads reads. The gene was not detected in the
+  enough of its samples min_site_usage_gene_reads reads (and that CPM is at least
+  min_group_gene_cpm). The gene was not detected in the
   treatment at a depth where the control's expression would have shown it; that is not
   proof that it is silent there.
 - `turned_on`: the mirror image, with the treatment's depth and the control's libraries.

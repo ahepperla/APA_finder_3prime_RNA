@@ -677,6 +677,11 @@ annotated ones calibration uses.
   all of a smaller group) with `min_site_usage_gene_reads` reads at the
   gene's tested PACs. A handful of reads in a nearly silent group would
   otherwise read as a large shift in usage.
+  - `min_group_gene_cpm` (default 0, off) adds an expression floor: a sample
+    then counts only when it also has that many reads per million of its
+    assigned reads at the gene. The read count sets whether usage can be
+    estimated; the floor drops genes too lowly expressed to matter, however
+    deep the sequencing.
   - The rule reads how many reads each sample has at the gene, never how
     they split among its PACs. The usage test conditions on those totals, so
     the genes kept are tested exactly as before (simulation S8).
@@ -844,6 +849,8 @@ finished steps from it.
     corrections run over fewer genes. The skipped genes, including those
     turned on or off, are in the new
     `CONDITION_vs_CONTROL.genes_without_depth.tsv.gz` and in `event_counts`.
+  - **Version 0.9.1** adds `min_group_gene_cpm` (default 0, off), an optional
+    expression floor for that rule. Results are unchanged at the default.
 
 ## Troubleshooting
 

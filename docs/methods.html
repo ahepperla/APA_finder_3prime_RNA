@@ -474,7 +474,7 @@ a.cite:hover { text-decoration: underline; }
     <h1>PACusage methods and rationale</h1>
     <p class="lede">PACusage finds polyadenylation site clusters (PACs) in 3′-end RNA-seq alignments, counts the reads at each one, and tests every treatment against its declared control for changes in how a gene's reads are shared among its PACs. This document goes through the pipeline in the order it runs. For each step it says what the step does, which defaults it uses, and why, with the statistical result, biological observation, or community standard behind the choice. Limitations and open questions for reviewers are collected at the end.</p>
     <div class="meta">
-      <span><strong>Version</strong> PACusage 0.9.0</span>
+      <span><strong>Version</strong> PACusage 0.9.1</span>
       <span><strong>Code</strong> github.com/ahepperla/APA_finder_3prime_RNA</span>
       <span><strong>Commit</strong> <code>3253705</code></span>
       <span><strong>Date</strong> 3 October 2026</span>
@@ -966,7 +966,7 @@ a.cite:hover { text-decoration: underline; }
               <li>A gene needs at least 20 reads and at least 2 PACs that pass.</li>
               <li>PACs with no gene or an ambiguous gene are never tested.</li>
               <li>Every PAC gets a row in <code>statistics/FAMILY.statistical_filtering.tsv.gz</code>: tested, or the reasons it was not.</li>
-              <li>After the family fit, a comparison tests a gene only when its control and its treatment each have at least 2 samples (or all of a smaller group) with at least 10 reads at the gene's tested PACs. The genes it skips are listed in <code>statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz</code>, as turned off or on when one group has no reads where the other's expression would have shown it, or as too low to test.</li>
+              <li>After the family fit, a comparison tests a gene only when its control and its treatment each have at least 2 samples (or all of a smaller group) with at least 10 reads at the gene's tested PACs; <code>min_group_gene_cpm</code> (off by default) can also require a minimum CPM in those samples. The genes it skips are listed in <code>statistics/CONDITION_vs_CONTROL.genes_without_depth.tsv.gz</code>, as turned off or on when one group has no reads where the other's expression would have shown it, or as too low to test.</li>
             </ul>
           </div>
         </div>

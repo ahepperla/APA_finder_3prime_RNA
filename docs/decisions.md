@@ -8,6 +8,30 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-03: An optional CPM floor for the depth rule
+
+Status: accepted (project lead)
+
+The lead asked why the depth rule counts reads rather than CPM, and then
+asked for an optional CPM floor, off by default.
+
+**Decision** (version 0.9.1)
+- `min_group_gene_cpm` (number, default 0, off): when set, a sample counts
+  toward its group's depth only when it also has at least that many reads
+  per million of its assigned reads at the gene's tested PACs.
+- The turned-off and turned-on guard also requires the other group's mean
+  CPM to meet the floor, so "would have shown it" means the same depth.
+
+**Why**
+- The read count stays the rule. A usage estimate's uncertainty depends on
+  the reads behind it, not on the gene's share of the library: at 2 CPM a
+  40-million-read sample has about 80 reads, while a 2-million-read sample
+  has 4.
+- The floor answers a different question: whether a gene is expressed
+  enough to matter, however deep the sequencing.
+- Library sizes are fixed, so the floor is still a function of the gene
+  totals, and the rule stays independent of the usage test.
+
 ## 2026-10-03: A comparison tests only genes with depth in both groups
 
 Status: accepted (project lead)

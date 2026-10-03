@@ -155,6 +155,7 @@ statistics_params <- function(replicates = 40L) {
     min_site_usage_samples = NULL,
     min_site_usage_dropouts = 0L,
     min_site_usage_gene_reads = 10L,
+    min_group_gene_cpm = 0,
     min_test_supporting_samples = 2L,
     min_replicates_per_condition = 2L,
     insufficient_replicates_policy = "error",

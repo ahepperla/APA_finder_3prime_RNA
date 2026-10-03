@@ -441,6 +441,12 @@
           "default": 10,
           "description": "Reads at the gene a sample needs before it can count toward min_site_usage_samples. A comparison also tests a gene only when each of its groups has event_min_supporting_samples samples (or all of a smaller group) with this many reads at the gene's tested PACs; the genes it skips are listed in CONDITION_vs_CONTROL.genes_without_depth.tsv.gz."
         },
+        "min_group_gene_cpm": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Optional expression floor for a comparison's depth rule: a sample counts toward its group's depth only when it also has at least this many reads per million of its assigned reads at the gene's tested PACs. 0, the default, turns it off, leaving the read count alone."
+        },
         "min_test_supporting_samples": {
           "type": "integer",
           "minimum": 1,

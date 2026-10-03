@@ -1608,6 +1608,22 @@ test_case("M-29", "a comparison tests a gene only with depth in both groups, and
   check(is.na(one_status[["tested"]]) && is.na(one_status[["one_deep"]]), "a deep single sample was not enough.")
   check(identical(one_status[["off"]], "turned_off") && identical(one_status[["low_t"]], "too_low_in_treatment"), "single-sample statuses: ", paste(one_status, collapse = ", "))
   check(identical(model$depth_samples_needed(1L, params), 1L) && identical(model$depth_samples_needed(4L, params), 2L), "samples needed.")
+  # The optional CPM floor: a sample also needs that many reads per million.
+  # At 14 CPM, T_1's 12 reads (12 CPM) no longer count, so the tested gene is
+  # too low in the treatment; off stays turned off, its control at 40 and 50.
+  floored <- model$comparison_depth(counts, names(reads), layout, "T",
+    c(params, list(min_group_gene_cpm = 14)), c(C_1 = 1e6, C_2 = 1e6, T_1 = 1e6, T_2 = 1e6))
+  floored_status <- stats::setNames(floored$depth_status, floored$gene_id)
+  check(identical(floored_status[["tested"]], "too_low_in_treatment"), "floored tested: ", floored_status[["tested"]])
+  check(identical(floored$treatment_samples_with_depth[floored$gene_id == "tested"], 1), "samples meeting the floor.")
+  check(identical(floored_status[["off"]], "turned_off") && identical(floored_status[["on"]], "turned_on"), "floored on/off.")
+  # A floor above the control's 45 CPM keeps off from looking turned off.
+  high <- model$comparison_depth(counts, names(reads), layout, "T",
+    c(params, list(min_group_gene_cpm = 60)), c(C_1 = 1e6, C_2 = 1e6, T_1 = 1e6, T_2 = 1e6))
+  check(identical(high$depth_status[high$gene_id == "off"], "too_low_in_both"), "high floor off: ", high$depth_status[high$gene_id == "off"])
+  zero <- model$comparison_depth(counts, names(reads), layout, "T",
+    c(params, list(min_group_gene_cpm = 0)), c(C_1 = 1e6, C_2 = 1e6, T_1 = 1e6, T_2 = 1e6))
+  check(identical(zero$depth_status, depth$depth_status), "a floor of 0 changed the statuses.")
   # The published table lists the untested genes in status order.
   table <- model$without_depth_table(depth, "T", "C", c(off = "OFF"), FALSE)
   check(identical(names(table), model$WITHOUT_DEPTH_COLUMNS), "table columns.")

@@ -1573,9 +1573,11 @@ depth_samples_needed <- function(group_size, params) {
 
 # Whether a comparison can test each gene of the family fit, and why not when
 # it cannot. Both groups need depth_samples_needed samples with
-# min_site_usage_gene_reads reads at the gene's tested PACs. The rule reads
-# only gene totals, never how they split among PACs, and the usage test
-# conditions on those totals, so the genes it keeps are tested as before.
+# min_site_usage_gene_reads reads at the gene's tested PACs and, when
+# min_group_gene_cpm is set, that many reads per million. The rule reads only
+# gene totals and library sizes, never how reads split among PACs, and the
+# usage test conditions on those totals, so the genes it keeps are tested as
+# before.
 # library_sizes are each sample's reads at every PAC, for the CPM. A gene
 # without depth in one group is turned off or on there when fewer samples than
 # a group needs have any read, although at the other group's mean CPM that
@@ -1584,13 +1586,15 @@ comparison_depth <- function(counts, gene_ids, layout, treatment, params, librar
   totals <- rowsum(count_matrix(counts, layout$sample_ids), counts$gene_id, reorder = FALSE)
   totals <- totals[gene_ids, , drop = FALSE]
   minimum <- params$min_site_usage_gene_reads
+  # Absent or 0, the CPM floor is off.
+  cpm_floor <- if (is.null(params$min_group_gene_cpm)) 0 else params$min_group_gene_cpm
   group <- function(condition) {
     ids <- layout$groups[[condition]]
     values <- totals[, ids, drop = FALSE]
     sizes <- library_sizes[ids]
     cpm <- sweep(values, 2L, ifelse(sizes > 0, sizes, Inf), "/") * 1e6
     needed <- depth_samples_needed(length(ids), params)
-    with_depth <- rowSums(values >= minimum)
+    with_depth <- rowSums(values >= minimum & cpm >= cpm_floor)
     with_reads <- rowSums(values > 0)
     list(
       ids = ids, sizes = sizes, needed = needed, total = rowSums(values),
@@ -1602,7 +1606,7 @@ comparison_depth <- function(counts, gene_ids, layout, treatment, params, librar
   # another group's mean CPM.
   would_show <- function(target, other_cpm) {
     expected <- outer(other_cpm, target$sizes) / 1e6
-    rowSums(expected >= minimum) >= target$needed
+    rowSums(expected >= minimum) >= target$needed & other_cpm >= cpm_floor
   }
   control <- group(layout$control)
   treated <- group(treatment)

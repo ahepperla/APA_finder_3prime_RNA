@@ -935,7 +935,12 @@ After the family fit, each comparison tests a gene only when its control and
 its treatment each have depth: `event_min_supporting_samples` samples, or all
 of a smaller group, with `min_site_usage_gene_reads` reads at the gene's
 tested PACs. A nearly silent group's handful of reads would otherwise read as
-a large shift in usage.
+a large shift in usage. The rule counts reads because the uncertainty of a
+usage estimate depends on reads, not on the gene's share of the library.
+`min_group_gene_cpm` (default 0, off) optionally adds an expression floor: a
+sample then also needs that many reads per million of its assigned reads at
+the gene. Library sizes are fixed, so the floor is still a function of the
+gene totals and keeps the rule independent of the usage test.
 - **Independence.** Unlike the PAC filters, this rule reads the condition
   labels, but it reads only per-sample gene totals, never how they split among
   PACs. The Dirichlet-multinomial test conditions on those totals, so under
