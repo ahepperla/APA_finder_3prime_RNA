@@ -105,17 +105,25 @@ CONCORDANCE_PANEL_LIMIT <- 15
 # ggrepel's search for label positions stops after a time limit by default,
 # which would make the layout depend on the machine's speed. With no time
 # limit, it stops when no label overlaps another or after this many
-# iterations, from this seed.
+# iterations, from this seed. Its default force and 10,000 iterations left
+# crowded labels overlapping, one's halo hiding part of the other; this
+# force and cap separate them with leader lines little longer.
 LABEL_SEED <- 1L
-LABEL_ITERATIONS <- 10000L
-# Facet strip titles longer than this go on two lines.
-STRIP_TITLE_LIMIT <- 36
+LABEL_ITERATIONS <- 100000L
+LABEL_FORCE <- 32
+# Comparison titles longer than this go on two lines, and a condition name
+# longer than this breaks after an underscore. A panel a third of the figure
+# wide holds about 32 capitals.
+STRIP_TITLE_LIMIT <- 30
 # Okabe-Ito colors for conditions on the PCA, with the pale yellow last;
 # shapes change every eight conditions.
 CONDITION_COLORS <- c(
   "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7", "#000000", "#F0E442"
 )
 CONDITION_SHAPES <- c(16, 17, 15, 18)
+# The PCA's legend lists the conditions beside the panel, at most this many to
+# a column.
+PCA_LEGEND_ROWS <- 20
 # Concordance points called in both comparisons of a pair, or in one.
 CONCORDANCE_COLORS <- c(both = "#CC79A7", one = "#56B4E9")
 COLOR_UP <- "#D55E00"
@@ -464,12 +472,12 @@ pattern_count_table <- function(comparisons, genes_tables) {
 
 # Facets of the pattern counts: patterns with all tested PACs, unflagged and
 # flagged, then those that unflagged PACs support, and those that only PACs
-# flagged for possible internal priming do. Long titles take two lines to fit
-# a third of the width.
+# flagged for possible internal priming do. Each title takes two lines, to fit
+# a third of the width beside long comparison titles.
 PATTERN_SUPPORT <- c("all", "supported", "flagged")
 PATTERN_SUPPORT_LABELS <- c(
   all = "All tested PACs:\nunflagged and flagged",
-  supported = "Supported by unflagged PACs",
+  supported = "Supported by\nunflagged PACs",
   flagged = "Only flagged PACs:\npotential internal priming"
 )
 
@@ -731,6 +739,8 @@ pau_pca <- function(pau, samples, minimum) {
 
 # ---- Figures ----------------------------------------------------------------
 
+# The right margin holds half the last x-axis label, which is centered on the
+# panel's edge when no legend sits beside it.
 figure_theme <- function() {
   theme_bw(base_size = 9) +
     theme(
@@ -740,6 +750,7 @@ figure_theme <- function() {
       plot.subtitle = element_text(colour = "grey25"),
       plot.caption = element_text(colour = "grey35", hjust = 0, size = rel(0.85)),
       plot.caption.position = "plot",
+      plot.margin = margin(5.5, 14, 5.5, 5.5),
       legend.position = "bottom"
     )
 }
@@ -770,8 +781,9 @@ plural <- function(count, word) {
   paste(count_text(count), if (count == 1) word else paste0(word, "s"))
 }
 
-# Comparison titles for facet strips, each on two lines when it is longer than
-# STRIP_TITLE_LIMIT characters.
+# Comparison titles for facet strips and the count axes, each on two lines
+# when it is longer than STRIP_TITLE_LIMIT characters, so a long one neither
+# overflows its strip nor narrows the panels beside the axis.
 strip_titles <- function(comparisons) {
   titles <- stats::setNames(comparisons$title, comparisons$stem)
   long <- nchar(titles) > STRIP_TITLE_LIMIT
@@ -789,7 +801,7 @@ repel_text <- function(data, mapping, point_size, nudge_y, nudge_x = 0, size = 2
                        colour = "grey10") {
   ggrepel::geom_text_repel(
     data = data, mapping = mapping, size = size, colour = colour, point.size = point_size,
-    bg.colour = "white", bg.r = 0.12, box.padding = 0.4, point.padding = 0.1, force = 2,
+    bg.colour = "white", bg.r = 0.12, box.padding = 0.4, point.padding = 0.1, force = LABEL_FORCE,
     min.segment.length = 0, segment.colour = "grey40", segment.size = 0.25,
     max.overlaps = Inf, max.time = Inf, max.iter = LABEL_ITERATIONS, seed = LABEL_SEED,
     position = ggrepel::position_nudge_repel(x = nudge_x, y = nudge_y), show.legend = FALSE
@@ -1105,7 +1117,7 @@ figure_stack <- function(plots, heights) {
 }
 
 plot_pattern_bars <- function(patterns, comparisons) {
-  titles <- stats::setNames(comparisons$title, comparisons$stem)
+  titles <- strip_titles(comparisons)
   totals <- stats::aggregate(count ~ comparison + support, data = patterns, FUN = sum)
   ggplot(patterns, aes(x = count, y = comparison, fill = pattern)) +
     geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
@@ -1123,12 +1135,11 @@ plot_pattern_bars <- function(patterns, comparisons) {
       x = "Genes", y = NULL
     ) +
     figure_theme() +
-    # Room on the right for the last axis label, which the separator widens.
-    theme(panel.spacing.x = grid::unit(1, "lines"), plot.margin = margin(5.5, 14, 5.5, 5.5))
+    theme(panel.spacing.x = grid::unit(1, "lines"))
 }
 
 plot_event_bars <- function(counts, comparisons) {
-  titles <- stats::setNames(comparisons$title, comparisons$stem)
+  titles <- strip_titles(comparisons)
   totals <- stats::aggregate(count ~ comparison + level, data = counts, FUN = sum)
   ggplot(counts, aes(x = count, y = comparison, fill = event)) +
     geom_col(width = 0.7, position = position_stack(reverse = TRUE)) +
@@ -1149,8 +1160,7 @@ plot_event_bars <- function(counts, comparisons) {
       x = "Genes", y = NULL
     ) +
     figure_theme() +
-    # Room on the right for the last axis label, which the separator widens.
-    theme(panel.spacing.x = grid::unit(1, "lines"), plot.margin = margin(5.5, 14, 5.5, 5.5))
+    theme(panel.spacing.x = grid::unit(1, "lines"))
 }
 
 plot_effect_vs_coverage <- function(data, comparisons, params, dropped) {
@@ -1189,9 +1199,31 @@ eighths <- function(inches) ceiling(inches * 8 - 1e-9) / 8
 # Comparison titles on two lines, for the grid's vertical column labels.
 grid_titles <- function(comparisons) {
   stats::setNames(
-    ascii_text(paste0(comparisons$condition, "\nvs ", comparisons$control_condition)),
+    ascii_text(paste0(wrap_name(comparisons$condition), "\nvs ",
+      wrap_name(comparisons$control_condition))),
     comparisons$stem
   )
+}
+
+# Names longer than STRIP_TITLE_LIMIT broken into lines of at most that many
+# characters, each after an underscore, hyphen, or period; a stretch without
+# one stays whole.
+wrap_name <- function(names) {
+  vapply(names, function(name) {
+    if (nchar(name) <= STRIP_TITLE_LIMIT) return(name)
+    parts <- regmatches(name, gregexpr("[^_.-]*[_.-]?", name))[[1]]
+    lines <- character()
+    line <- ""
+    for (part in parts[nzchar(parts)]) {
+      if (nzchar(line) && nchar(line) + nchar(part) > STRIP_TITLE_LIMIT) {
+        lines <- c(lines, line)
+        line <- part
+      } else {
+        line <- paste0(line, part)
+      }
+    }
+    paste(c(lines, line), collapse = "\n")
+  }, character(1), USE.NAMES = FALSE)
 }
 
 # Room for the grid's vertical column labels, from their longest line.
@@ -1455,12 +1487,16 @@ plot_pau_pca <- function(pca, params) {
   # stay legible as text.
   shade <- grDevices::col2rgb(colors[as.character(pca$condition)]) * 0.7
   ink <- grDevices::rgb(shade[1, ], shade[2, ], shade[3, ], maxColorValue = 255)
+  # The color and shape legends merge into one, so both take the columns.
+  legend <- guide_legend(ncol = pca_legend_columns(conditions))
   ggplot(pca, aes(x = PC1, y = PC2, colour = condition, shape = condition)) +
     geom_point(size = 2.2) +
     repel_text(pca, aes(label = label), point_size = 2.2, size = 2.3, colour = ink,
       nudge_y = 0.04 * max(diff(range(pca$PC2)), 1e-9)) +
-    scale_colour_manual(values = colors, labels = ascii_text(conditions), name = NULL) +
-    scale_shape_manual(values = shapes, labels = ascii_text(conditions), name = NULL) +
+    scale_colour_manual(values = colors, labels = ascii_text(conditions), name = NULL,
+      guide = legend) +
+    scale_shape_manual(values = shapes, labels = ascii_text(conditions), name = NULL,
+      guide = legend) +
     scale_x_continuous(expand = expansion(mult = 0.1)) +
     scale_y_continuous(expand = expansion(mult = 0.1)) +
     labs(
@@ -1468,7 +1504,22 @@ plot_pau_pca <- function(pca, params) {
       x = sprintf("PC1 (%.1f%% of variance)", 100 * pca$pc1_variance_fraction[[1]]),
       y = sprintf("PC2 (%.1f%% of variance)", 100 * pca$pc2_variance_fraction[[1]])
     ) +
-    figure_theme()
+    figure_theme() +
+    side_legends()
+}
+
+pca_legend_columns <- function(conditions) {
+  max(1L, as.integer(ceiling(length(unique(conditions)) / PCA_LEGEND_ROWS)))
+}
+
+# Inches for the PCA: a panel about five inches wide, and beside it the
+# legend's columns, each wide enough for the longest condition name at about
+# 0.075 inch a character, capitals included, after its key.
+pca_size <- function(pca) {
+  if (is.null(pca)) return(c(width = 5.5, height = 5))
+  conditions <- unique(pca$condition)
+  column <- 0.4 + 0.075 * max(nchar(conditions))
+  c(width = eighths(5.5 + pca_legend_columns(conditions) * column), height = 5.5)
 }
 
 # Samples' labels on the PCA: each ID without its condition's name and the
@@ -1598,7 +1649,8 @@ run_across_comparisons <- function(arguments, params, samples, comparisons, pacs
   }
   utils::write.table(pca_table, output("pau_pca.tsv"), sep = "\t", quote = FALSE,
     row.names = FALSE, na = "")
-  save_figure(plot_pau_pca(pca, params), output("pau_pca"), 5.5, 5)
+  size <- pca_size(pca)
+  save_figure(plot_pau_pca(pca, params), output("pau_pca"), size[["width"]], size[["height"]])
 }
 
 # Appends the ggplot2 and ggrepel versions to a software-versions table,

@@ -34,6 +34,8 @@ FIGURE_TABLES = ("apa_patterns_by_comparison.tsv.gz", "concordance.tsv.gz", "pau
 # columns and two rows for their three pairs. The grid's height also grows
 # with its genes, so grid_pixels() computes it. The shifts figure grows with
 # the region pairs that shifts take in any comparison (three in the fixture).
+# The PCA widens for its legend column, from the longest condition name
+# (TreatmentA).
 FIGURE_PIXELS = {
     "volcano": (1500, 1100),
     "distal_usage": (1400, 1150),
@@ -42,7 +44,7 @@ FIGURE_PIXELS = {
     "effect_vs_coverage": (1500, 800),
     "concordance": (1100, 1050),
     "concordance_matrix": (1075, 1075),
-    "pau_pca": (1100, 1000),
+    "pau_pca": (1350, 1100),
 }
 CONFIRMED_EVENTS = {"gained", "increased_usage", "lost", "decreased_usage"}
 DISTAL_COLUMNS = [

@@ -852,9 +852,12 @@ test_case("F-38", "label placement has a fixed seed and no time limit", {
   # default half-second limit, so it would not notice the limit coming back.
   layer <- figures$repel_text(data.frame(x = 1, y = 1, label = "a"),
     aes(x = x, y = y, label = label), point_size = 1, nudge_y = 0)
+  # ggrepel's default force and 10,000 iterations left crowded labels
+  # overlapping at a real run's scale.
   settings <- layer$geom_params[c("max.time", "max.iter", "max.overlaps", "seed")]
-  check(identical(settings, list(max.time = Inf, max.iter = 10000L, max.overlaps = Inf, seed = 1L)),
+  check(identical(settings, list(max.time = Inf, max.iter = 100000L, max.overlaps = Inf, seed = 1L)),
     "settings: ", paste(names(settings), unlist(settings), collapse = ", "))
+  check(identical(layer$geom_params$force, 32), "force: ", layer$geom_params$force)
   check(inherits(layer$position, "PositionNudgeRepel"), "labels are not nudged off their points.")
 })
 
@@ -893,6 +896,103 @@ test_case("F-36", "among volcano PACs with equal p-values, the larger changes ar
   }))
   labels <- figures$volcano_data(do.call(pac_table, zeros), genes)$labels
   check(identical(labels$pac_id, sprintf("z%02d", 25:6)), "labels: ", paste(labels$pac_id, collapse = ", "))
+})
+
+# ---- Layout -------------------------------------------------------------------
+
+# The thirteen conditions of the lead's design, four samples each, placed
+# around a circle.
+lead_pca <- function() {
+  conditions <- c(
+    "AS_CDK12_13_CR8", "AS_CDK12_13_DMSO", "AS_CDK12_13_PHA", "AS_CDK12_CR8", "AS_CDK12_DMSO",
+    "AS_CDK12_PHA", "AS_CDK13_CR8", "AS_CDK13_DMSO", "AS_CDK13_PHA", "AS_NT_CR8", "AS_NT_DMSO",
+    "AS_NT_PHA", "WT_NT_DMSO"
+  )
+  condition <- rep(conditions, each = 4)
+  angle <- 2 * pi * (rep(seq_along(conditions), each = 4) + rep(0:3, 13) / 40) / 13
+  pca <- data.frame(
+    sample_id = paste0(condition, "_rep", 1:4), condition = condition,
+    PC1 = 10 * cos(angle), PC2 = 6 * sin(angle), pc1_variance_fraction = 0.54,
+    pc2_variance_fraction = 0.13, stringsAsFactors = FALSE
+  )
+  attr(pca, "pacs") <- 171270L
+  attr(pca, "genes") <- 9470L
+  pca
+}
+
+# Whether a plot draws anything outside its width and height. It is drawn in
+# the middle of a larger page, at its own size, and the PNG is compared with
+# one whose margins are painted over.
+draws_outside <- function(plot, width, height) {
+  render <- function(cover) {
+    path <- tempfile(fileext = ".png")
+    grDevices::png(path, width = (width + 2) * 200, height = (height + 2) * 200, res = 200)
+    grid::grid.newpage()
+    print(plot, newpage = FALSE,
+      vp = grid::viewport(width = grid::unit(width, "in"), height = grid::unit(height, "in")))
+    if (cover) {
+      white <- grid::gpar(fill = "white", col = NA)
+      inch <- grid::unit(1, "in")
+      grid::grid.rect(x = 0, width = inch, just = "left", gp = white)
+      grid::grid.rect(x = 1, width = inch, just = "right", gp = white)
+      grid::grid.rect(y = 0, height = inch, just = "bottom", gp = white)
+      grid::grid.rect(y = 1, height = inch, just = "top", gp = white)
+    }
+    grDevices::dev.off()
+    readBin(path, "raw", file.size(path))
+  }
+  !identical(render(FALSE), render(TRUE))
+}
+
+test_case("F-40", "the PCA's legend sits beside the panel, in columns, and the figure widens for it", {
+  pca <- lead_pca()
+  plot <- figures$plot_pau_pca(pca, params)
+  check(identical(plot$theme$legend.position, "right"), "legend position: ", plot$theme$legend.position)
+  check(identical(plot$scales$get_scales("colour")$guide$params$ncol, 1L), "one column for 13 conditions.")
+  size <- figures$pca_size(pca)
+  check(identical(size, c(width = 7.125, height = 5.5)), "size: ", paste(size, collapse = " x "))
+  # A bottom legend of these 13 names was wider than the figure.
+  check(!draws_outside(plot, size[["width"]], size[["height"]]), "the PCA draws outside its page.")
+  # 41 conditions take three columns, and the figure widens for each.
+  many <- data.frame(sample_id = sprintf("S%02d", 1:41), condition = sprintf("C%02d", 1:41),
+    PC1 = 1:41, PC2 = (1:41)^2, pc1_variance_fraction = 0.5, pc2_variance_fraction = 0.2)
+  attr(many, "pacs") <- 10L
+  attr(many, "genes") <- 5L
+  check(identical(figures$pca_legend_columns(many$condition), 3L), "columns for 41 conditions.")
+  check(identical(figures$pca_size(many), c(width = 7.375, height = 5.5)), "size for 41 conditions: ", paste(figures$pca_size(many), collapse = " x "))
+  check(identical(figures$pca_size(NULL), c(width = 5.5, height = 5)), "placeholder size.")
+})
+
+test_case("F-41", "long comparison titles and condition names wrap", {
+  check(identical(figures$wrap_name(c("AS_NT_DMSO", "MW_CDK12_13_PHA_LONG_TREATMENT_NAMEX")),
+    c("AS_NT_DMSO", "MW_CDK12_13_PHA_LONG_\nTREATMENT_NAMEX")), "wrapped names.")
+  # A name without a break point stays whole.
+  check(identical(figures$wrap_name(strrep("A", 40)), strrep("A", 40)), "an unbreakable name.")
+  comparisons <- comparisons_of(c("T_vs_C", "AS_CDK12_13_CR8_vs_AS_CDK12_13_DMSO"))
+  titles <- figures$strip_titles(comparisons)
+  check(identical(unname(titles), c("T vs C", "AS_CDK12_13_CR8\nvs AS_CDK12_13_DMSO")), "strip titles: ", paste(titles, collapse = " | "))
+  # The count axes use the same titles, so a long one narrows the panels less.
+  counts <- figures$event_count_table(comparisons, list(T_vs_C = pac_table(), AS_CDK12_13_CR8_vs_AS_CDK12_13_DMSO = pac_table()),
+    list(T_vs_C = gene_row("x")[0, ], AS_CDK12_13_CR8_vs_AS_CDK12_13_DMSO = gene_row("x")[0, ]))
+  axis <- ggplot2::ggplot_build(figures$plot_event_bars(counts, comparisons))$layout$panel_params[[1]]$y$get_labels()
+  check("AS_CDK12_13_CR8\nvs AS_CDK12_13_DMSO" %in% axis, "event axis labels: ", paste(axis, collapse = " | "))
+  check(all(lengths(strsplit(figures$PATTERN_SUPPORT_LABELS, "\n", fixed = TRUE)) == 2L), "pattern facet titles are not all two lines.")
+})
+
+test_case("F-42", "the last axis label at a panel's right edge stays on the page", {
+  # 4,364 genes each way put the axis's last break, 6,000, on the panel's
+  # right edge, so half the five-character label needs the right margin.
+  regions <- names(figures$GENE_REGIONS)
+  pairs <- paste(rep(regions, each = 4), rep(regions, 4), sep = "|")
+  counts <- data.frame(
+    pair = factor(rep(pairs, 2), levels = pairs),
+    direction = factor(rep(c("proximal", "distal"), each = 16), levels = c("proximal", "distal")),
+    count = c(4364L, 580L, 1870L, 260L, 290L, 50L, 160L, 10L, 910L, 90L, 380L, 40L, 160L, 20L,
+      90L, 0L, 4364L, 360L, 890L, 90L, 630L, 110L, 70L, 20L, 2110L, 220L, 500L, 130L, 320L, 30L,
+      30L, 10L)
+  )
+  plot <- figures$plot_shifts_by_gene_region(counts, comparison)
+  check(!draws_outside(plot, 6.5, figures$shift_figure_height(pairs)), "the shifts figure draws outside its page.")
 })
 
 # ---- Saving -------------------------------------------------------------------
@@ -1049,7 +1149,7 @@ test_case("F-12", "the command line writes every figure and the distal-usage tab
   }
   check(identical(png_size(file.path(directory, "figures", "effect_vs_coverage.png")), c(1500, 800)), "coverage size.")
   sizes <- list(apa_pattern_grid = c(900, 525), concordance = c(1100, 750),
-    concordance_matrix = c(950, 950), pau_pca = c(1100, 1000))
+    concordance_matrix = c(950, 950), pau_pca = c(1225, 1100))
   for (name in names(sizes)) {
     size <- png_size(file.path(directory, "figures", paste0(name, ".png")))
     check(identical(size, sizes[[name]]), name, " size: ", paste(size, collapse = "x"))

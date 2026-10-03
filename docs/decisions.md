@@ -8,6 +8,53 @@ with the project lead's approval.
 
 Entry format: a dated heading, a status line, the decision, and the reason.
 
+## 2026-10-03: Figure text kept on the page and labels kept apart
+
+Status: accepted (project lead; supersedes the 10,000-iteration detail of
+"Figure labels placed by ggrepel, and the figures reworked")
+
+The lead found the PCA legend cut off at the right edge, its last condition
+missing, and asked for an audit of every figure.
+
+**Decision** (version 0.8.2)
+- The PCA's legend sits beside the panel, in columns of at most 20
+  conditions. This applies the 2026-10-01 rule that one-panel figures put
+  their legends to the right; the PCA was its one exception. The figure is
+  5.5 inches tall, and 5.5 inches wide plus 0.4 + 0.075 inch per character
+  of the longest condition name for each legend column.
+- Every figure's right margin is 14 pt, which holds half an axis label.
+- ggrepel places labels with force 32 and at most 100,000 iterations, from
+  the same seed and with no time limit. This replaces the 10,000 iterations
+  in the 2026-10-01 entry.
+- Comparison titles over 30 characters take two or more lines, on facet
+  strips and on the count axes. A condition name over 30 characters breaks
+  after an underscore, hyphen, or period.
+
+**Why**
+
+The audit drew every figure from synthetic tables in the lead's design (13
+conditions, 12 comparisons, 10,000 genes, three seeds), from the lead's real
+PCA coordinates, and from a set of long, wide condition names. It checked
+for three faults: anything drawn past a figure's edges (each figure drawn on
+a larger page), text that a panel or strip cut off (the text drawn alone,
+with and without clipping), and overlapping ggrepel labels.
+- The PCA's 13-condition legend sat under the panel, wider than the
+  5.5-inch figure.
+- The last x-axis label is centered on the panel's right edge. With 439
+  genes each way, the shifts figure's 600 crossed the page's edge.
+- At ggrepel's default force and 10,000 iterations, 28 to 40 label pairs
+  overlapped on each set's 24 volcano and distal plots, one label's halo
+  hiding part of the other. With the new settings, overlapping pairs fell
+  from 103 to 2 among 2,880 labels, and the 2 left nearly touch but stay
+  legible. The median leader line grew from about 0.16 to 0.23 inch, while
+  the longest lines, and the number over an inch, fell.
+- Strip titles of up to 36 characters stayed on one line, but a third of
+  the figure holds about 32 capitals. A long comparison title on the event
+  counts' axis also narrowed the pattern panels until a facet title was cut.
+- Limit: when both names in a comparison exceed 30 characters, its
+  count-axis label takes up to four lines and can touch its neighbours.
+  Only the stress names reach this.
+
 ## 2026-10-03: The pattern counts include all tested PACs
 
 Status: accepted (project lead)

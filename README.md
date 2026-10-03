@@ -567,6 +567,11 @@ plot they start toward the open middle of their half of the plot. The search
 starts from a fixed seed and has no time limit, so reruns place the labels the
 same way.
 
+Comparison titles over 30 characters take two or more lines on facet strips
+and count axes, and a condition name over 30 characters breaks after an
+underscore, hyphen, or period. The PCA lists its conditions beside the panel,
+20 to a column, and widens for each column.
+
 The PDFs use the standard Helvetica font, which is not embedded, and carry no
 dates, so reruns reproduce them byte for byte. PNG rendering depends on the
 fonts on the machine, so PNGs match between reruns on the same machine with
@@ -810,6 +815,10 @@ finished steps from it.
   - **Version 0.8.1** adds a panel for all tested PACs, unflagged and
     flagged, to the APA pattern counts in `event_counts`. Tables are
     unchanged.
+  - **Version 0.8.2** keeps figure text on the page. The PCA legend sits
+    beside the panel, every figure has room for its last axis label, long
+    comparison titles wrap, and gene labels are pushed apart harder so they
+    no longer overlap. Figures only; tables are unchanged.
 
 ## Troubleshooting
 
